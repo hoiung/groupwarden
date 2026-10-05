@@ -3,6 +3,7 @@ module github.com/hoiung/groupwarden
 go 1.27.1
 
 require (
+	filippo.io/age v1.3.2
 	github.com/mdp/qrterminal/v3 v3.2.1
 	go.mau.fi/whatsmeow v0.0.0-20261005195255-6bb48c0f1ff0
 	go.yaml.in/yaml/v3 v3.0.5
@@ -12,6 +13,7 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/beeper/argo-go v1.1.2 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
