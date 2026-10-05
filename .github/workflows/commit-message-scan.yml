@@ -1,0 +1,108 @@
+name: Commit message secret scan
+
+# Closes the 2026-04-27 governance gap.
+# Scans every push for .secret-blocklist matches in the new commit messages
+# (range: ${{ github.event.before }}..${{ github.event.after }}).
+#
+# Alert-mechanism design rule (mirrors issue-body-scan.yml):
+#   - The script suppresses matched content from stdout; only line numbers +
+#     categories printed to the Actions log.
+#   - On match: workflow fails loudly (red X). Push has already landed by the
+#     time CI fires, so the response loop is "fix forward" — either rewrite
+#     the offending commit (when feasible: branch is fresh + no downstream
+#     consumers) or accept the leak per `a private secret-scan log file` private-
+#     channel pattern.
+#
+# Canonical template: dotfiles/github/workflows/commit-message-scan.yml.
+# Propagated to each public mirror's .github/workflows/commit-message-scan.yml
+# via drift-manifest.json vendored_files entry. DO NOT hand-edit mirror copies.
+
+on:
+  push:
+    branches:
+      - "**"
+
+concurrency:
+  # Per-branch queue: every branch gets its own scan slot.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan commit messages for secrets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          # Need history to compare before..after; fetch enough depth.
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Scan new commit messages
+        run: |
+          # github.event.before is the SHA before the push; .after is the new tip.
+          # On a brand-new branch push, before is all-zeros — skip cleanly (no
+          # baseline to compare against; first push of a branch is by definition
+          # all-new, the issue-body scan will catch any bodies separately).
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.event.after }}"
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "First push of branch — no baseline; skipping commit-message scan."
+            exit 0
+          fi
+          # Force-push / rebase robustness: when a branch is force-pushed (e.g.
+          # Dependabot rebasing a PR via @dependabot rebase), github.event.before
+          # is the OLD pre-rebase tip whose commit-graph was rewritten and may
+          # not be reachable from the new tip. `git log BEFORE..HEAD` then exits
+          # 128 (object not found). Detect + skip cleanly — the rebased commits
+          # are by-construction the same content as before, so a fresh scan from
+          # all-zeros isn't necessary; if anything was scannable in the original
+          # push it was already scanned before the rebase.
+          if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "BEFORE SHA $BEFORE not reachable in fetched history (likely force-push or rebase) — skipping commit-message scan."
+            exit 0
+          fi
+          # Per-repo flag seam. Some mirrors need caller-declared flags this
+          # canonical cannot carry for everyone: --require-public is exit-2 on
+          # any repo WITHOUT a .public-repo marker, so hardcoding it here would
+          # red every private mirror, while --allow-degraded-blocklist is only
+          # correct where the clone genuinely cannot hold the hashes manifest.
+          # A repo declares its own in .github/secret-scan-flags, one flag per
+          # line, `#` comments allowed. The declaration is deliberately a
+          # SEPARATE tracked file from .public-repo: deriving --require-public
+          # from `[ -f .public-repo ]` would make deleting the marker silently
+          # drop the very assertion that exists to catch that deletion.
+          EXTRA_FLAGS=""
+          if [ -f .github/secret-scan-flags ]; then
+            EXTRA_FLAGS=$(sed -e 's/#.*//' .github/secret-scan-flags | tr '\n' ' ')
+            echo "Repo-declared secret-scan flags: $EXTRA_FLAGS"
+          fi
+          # Pass --enforce-on-private so the scan runs even on private repos
+          # (the canonical script defaults to no-op on private; commit-message
+          # scanning is a defence-in-depth use case worth running everywhere).
+          # shellcheck disable=SC2086  # EXTRA_FLAGS is a flag list, must split
+          python3 scripts/check-public-repo-secrets.py \
+            --scan-commit-messages \
+            --since "$BEFORE" \
+            --enforce-on-private $EXTRA_FLAGS
+
+# GOTCHA, learned the hard way (hoiboy-uk#56): do NOT quote a flagged literal in
+# the commit message that removes it. This scan reads commit MESSAGES, so a
+# message explaining "changed <address> to an example.com one" re-introduces the
+# exact string the commit deletes, and the scan fails on the fix itself. Describe
+# the change without reproducing the value.
+#
+# If it has already happened: commit messages are immutable and force-push is
+# forbidden here, so the commit cannot be edited. Two remedies exist, and the
+# earlier wording here claimed only the second, which was wrong. (1) Add a
+# `<full-sha>::<CATEGORY>` entry to .secret-allowlist — scan_text_content passes
+# the commit SHA as the source label, so the same category-scoped suppression
+# that works for a file path works for a commit, scoped to that ONE commit and
+# that ONE category. (2) Correct forward and let the next push's range start
+# after the offending commit. Prefer (1): it is explicit and auditable, whereas
+# (2) leaves the range re-scannable by any later run that spans the commit.
