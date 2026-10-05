@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  STATICCHECK_VERSION: v0.8.1
+  GOSEC_VERSION: v2.29.0
+  GOVULNCHECK_VERSION: v1.8.0
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # The commit-message scan reads `git log <since>..HEAD`; a shallow
+          # clone would miss that history.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Install pinned analysers
+        run: |
+          go install "honnef.co/go/tools/cmd/staticcheck@${STATICCHECK_VERSION}"
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          go install "github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: staticcheck
+        run: staticcheck ./...
+
+      - name: govulncheck
+        run: govulncheck ./...
+
+      - name: gosec
+        run: gosec ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+      - name: Secret detection (blocking)
+        run: |
+          EXTRA_FLAGS=""
+          if [ -f .github/secret-scan-flags ]; then
+            EXTRA_FLAGS=$(sed -e 's/#.*//' .github/secret-scan-flags | tr '\n' ' ')
+          fi
+          # shellcheck disable=SC2086
+          python3 scripts/check-public-repo-secrets.py . $EXTRA_FLAGS
+
+      - name: Commit-message secret scan — push events (blocking)
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE: ${{ github.event.before }}
+        run: |
+          python3 scripts/check-public-repo-secrets.py \
+            --scan-commit-messages \
+            --since "$SINCE"
+
+      - name: Commit-message secret scan — PR events (blocking)
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SINCE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 scripts/check-public-repo-secrets.py \
+            --scan-commit-messages \
+            --since "$SINCE"
