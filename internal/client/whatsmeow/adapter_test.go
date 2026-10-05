@@ -651,3 +651,63 @@ func TestHandlerNeverBlocks(t *testing.T) {
 		}
 	}
 }
+
+func TestGroupQueriesMapFields(t *testing.T) {
+	ctx := context.Background()
+	announce := types.GroupLinkTarget{JID: groupJID, GroupName: types.GroupName{Name: "Announcements"},
+		GroupIsDefaultSub: types.GroupIsDefaultSub{IsDefaultSubGroup: true}}
+	asked := time.Date(2026, 10, 6, 7, 0, 0, 0, time.UTC)
+	f := &fakeWA{
+		subGroups:    []*types.GroupLinkTarget{&announce, {JID: group2JID, GroupName: types.GroupName{Name: "General"}}},
+		requests:     []types.GroupParticipantRequest{{JID: spammer, RequestedAt: asked}},
+		participants: []types.GroupParticipant{{JID: spammer}},
+		devices: []types.JID{
+			{User: botPhone.User, Server: types.DefaultUserServer}, // the phone itself
+			botPhone, // this device
+			{User: botPhone.User, Server: types.DefaultUserServer, Device: 3}, // another linked device
+		},
+	}
+	a := newTestAdapter(t, f, nil)
+	subs, err := a.SubGroups(ctx, "99999000000333@g.us")
+	if err != nil || len(subs) != 2 || !subs[0].IsAnnouncement || subs[0].Name != "Announcements" || subs[1].JID != client.JID(group2JID.String()) {
+		t.Fatalf("sub-groups %+v %v", subs, err)
+	}
+	reqs, err := a.JoinRequests(ctx, client.JID(groupJID.String()))
+	if err != nil || len(reqs) != 1 || reqs[0].JID != client.JID(spammer.String()) || !reqs[0].RequestedAt.Equal(asked) {
+		t.Fatalf("join requests %+v %v", reqs, err)
+	}
+	res, err := a.RejectJoinRequests(ctx, client.JID(groupJID.String()), []client.JID{client.JID(spammer.String())})
+	if err != nil || f.requestAction != wm.ParticipantChangeReject || len(res) != 1 || res[0].Status != client.MemberDone {
+		t.Fatalf("reject: action %q results %+v %v", f.requestAction, res, err)
+	}
+	devs, err := a.LinkedDevices(ctx)
+	if err != nil || len(devs) != 1 || devs[0] != client.JID((types.JID{User: botPhone.User, Server: types.DefaultUserServer, Device: 3}).String()) {
+		t.Fatalf("linked devices %v %v, want only the other device", devs, err)
+	}
+	if _, err := a.Remove(ctx, "not a jid", nil); err == nil {
+		t.Fatal("a malformed group ID was accepted")
+	}
+}
+
+func TestResolvePhoneToLID(t *testing.T) {
+	ctx := context.Background()
+	// Known locally: no network call.
+	f := &fakeWA{offline: true, lids: map[string]types.JID{"447700900123": spammer}}
+	if lid, err := newTestAdapter(t, f, nil).ResolvePhoneToLID(ctx, client.JID(spammerPN.String())); err != nil || lid != client.JID(spammer.String()) {
+		t.Fatalf("local: %s %v", lid, err)
+	}
+	// Unknown locally: one lookup on WhatsApp.
+	g := &fakeWA{onWhatsApp: []types.IsOnWhatsAppResponse{{JID: member2, IsIn: true}}}
+	if lid, err := newTestAdapter(t, g, nil).ResolvePhoneToLID(ctx, "447700900456@s.whatsapp.net"); err != nil || lid != client.JID(member2.String()) {
+		t.Fatalf("lookup: %s %v", lid, err)
+	}
+	// Not on WhatsApp, or no LID known: an error (the caller raises a priority report).
+	h := &fakeWA{onWhatsApp: []types.IsOnWhatsAppResponse{{IsIn: false}}}
+	if _, err := newTestAdapter(t, h, nil).ResolvePhoneToLID(ctx, "447700900789@s.whatsapp.net"); err == nil {
+		t.Fatal("a number not on WhatsApp resolved")
+	}
+	k := &fakeWA{onWhatsApp: []types.IsOnWhatsAppResponse{{JID: spammerPN, IsIn: true}}}
+	if _, err := newTestAdapter(t, k, nil).ResolvePhoneToLID(ctx, client.JID(spammerPN.String())); !errors.Is(err, ErrNoLID) {
+		t.Fatalf("no LID known: %v", err)
+	}
+}
