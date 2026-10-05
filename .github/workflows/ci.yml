@@ -74,7 +74,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SINCE: ${{ github.event.before }}
         run: |
-          python3 scripts/check-public-repo-secrets.py \
+          EXTRA_FLAGS=$(sed -e 's/#.*//' .github/secret-scan-flags | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          python3 scripts/check-public-repo-secrets.py $EXTRA_FLAGS \
             --scan-commit-messages \
             --since "$SINCE"
 
@@ -84,6 +86,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SINCE: ${{ github.event.pull_request.base.sha }}
         run: |
-          python3 scripts/check-public-repo-secrets.py \
+          EXTRA_FLAGS=$(sed -e 's/#.*//' .github/secret-scan-flags | tr '\n' ' ')
+          # shellcheck disable=SC2086
+          python3 scripts/check-public-repo-secrets.py $EXTRA_FLAGS \
             --scan-commit-messages \
             --since "$SINCE"
