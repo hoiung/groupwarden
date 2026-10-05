@@ -1,0 +1,33 @@
+groupwarden
+Copyright (c) 2026 Senh Hoi Ung
+
+The groupwarden source code is licensed under the MIT License (see LICENSE).
+
+Built binaries and container images are GPL-3.0
+------------------------------------------------
+groupwarden links the following libraries. Their licences apply to any binary
+or container image built from this repository:
+
+  - go.mau.fi/whatsmeow (Mozilla Public License 2.0)
+    https://github.com/tulir/whatsmeow
+  - go.mau.fi/libsignal (GNU General Public License v3.0), used by whatsmeow
+    https://github.com/tulir/libsignal
+
+Because libsignal is GPL-3.0, any distributed groupwarden binary or image is
+distributed under the GPL-3.0. The MIT licence covers the groupwarden source
+files themselves.
+
+Bundled data
+------------
+  - internal/rules/data/shorteners.txt — URL shortener domain list from
+    "url-shorteners" by Peter Dave Hello,
+    https://github.com/PeterDaveHello/url-shorteners
+    Licensed under Creative Commons Attribution-ShareAlike 4.0 International
+    (CC BY-SA 4.0), https://creativecommons.org/licenses/by-sa/4.0/
+    The file is kept as published, with its original header.
+
+Trademarks
+----------
+WhatsApp is a trademark of WhatsApp LLC / Meta Platforms, Inc. groupwarden is
+not affiliated with, endorsed by, or sponsored by WhatsApp or Meta. The name
+"WhatsApp" is used only to describe what this tool works with.
