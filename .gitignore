@@ -1,0 +1,32 @@
+# Runtime state — never committed (README "Repository layout")
+data/
+backups/
+evidence/
+secrets/
+*.db
+*.db-wal
+*.db-shm
+*.age
+*.key
+
+# Credentials
+.env
+.env.*
+!.env.example
+
+# Build output
+/groupwarden
+/bin/
+/dist/
+*.test
+*.out
+coverage.txt
+
+# Claude Code worktrees
+.claude/worktrees/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
