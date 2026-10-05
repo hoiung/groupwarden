@@ -1,0 +1,74 @@
+name: Issue/PR body secret scan
+
+# Closes the 2026-04-22 leak class.
+# Scans issue bodies, issue comments, PR bodies, and PR review comments for .secret-blocklist matches.
+#
+# Alert-mechanism design rule:
+#   - NEVER auto-comment on the public issue when a match is detected — that amplifies
+#     the leaked content via a second public surface. Fail the workflow run loudly
+#     instead (red X in the run list, notifies the operator via configured GH notifications).
+#   - The script itself suppresses matched content from stdout; only line numbers
+#     + categories are printed to the Actions log.
+#
+# Canonical template: dotfiles/github/workflows/issue-body-scan.yml (#442 GAP 2.1a).
+# Propagated to each public mirror's .github/workflows/issue-body-scan.yml via
+# drift-manifest.json vendored_files entry. DO NOT hand-edit mirror copies.
+
+on:
+  issues:
+    types: [opened, edited]
+  issue_comment:
+    types: [created, edited]
+  pull_request:
+    types: [opened, edited]
+
+concurrency:
+  # On issues/issue_comment events github.ref is the default-branch ref for every
+  # event, so grouping by ref alone collapses every issue into one slot and
+  # cancel-in-progress:true silently drops concurrent legitimate scans. Scope the
+  # group by event_name + issue/PR number so each issue / PR gets its own queue.
+  # GitHub uses a single numeric sequence for issues and PRs, so event_name is
+  # also needed to keep issue #N and PR #N in separate slots. (#442 Stage 5.)
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan issue/PR body for secrets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Scan issue/PR body + comments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NUMBER="${{ github.event.issue.number || github.event.pull_request.number }}"
+          if [ -z "$NUMBER" ]; then
+            echo "No issue/PR number in event context; skipping scan."
+            exit 0
+          fi
+          # Per-repo flag seam — same contract as commit-message-scan.yml, where
+          # the full rationale lives: --require-public is exit-2 on any repo
+          # without a .public-repo marker and --allow-degraded-blocklist is only
+          # correct where the clone cannot hold the hashes manifest, so neither
+          # can be hardcoded for all mirrors. A repo declares its own in
+          # .github/secret-scan-flags, one flag per line, `#` comments allowed.
+          EXTRA_FLAGS=""
+          if [ -f .github/secret-scan-flags ]; then
+            EXTRA_FLAGS=$(sed -e 's/#.*//' .github/secret-scan-flags | tr '\n' ' ')
+            echo "Repo-declared secret-scan flags: $EXTRA_FLAGS"
+          fi
+          # shellcheck disable=SC2086  # EXTRA_FLAGS is a flag list, must split
+          python3 scripts/check-public-repo-secrets.py \
+            --scan-issue-body \
+            --issue-number "$NUMBER" \
+            --repo "${{ github.repository }}" $EXTRA_FLAGS
