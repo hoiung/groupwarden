@@ -47,9 +47,6 @@ CREATE TABLE counters (
 `,
 }
 
-// SchemaVersion is the version this binary migrates to.
-func SchemaVersion() int { return len(migrations) }
-
 func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
 		return s.check(fmt.Errorf("create schema_version: %w", err))
