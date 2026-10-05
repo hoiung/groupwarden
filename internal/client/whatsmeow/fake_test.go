@@ -60,6 +60,11 @@ type fakeWA struct {
 	commentErr, secretEditErr error
 	downloaded                wm.DownloadableMessage
 	devices                   []types.JID
+	subGroups                 []*types.GroupLinkTarget
+	requests                  []types.GroupParticipantRequest
+	requestAction             wm.ParticipantRequestChange
+	onWhatsApp                []types.IsOnWhatsAppResponse
+	lids                      map[string]types.JID // phone user -> LID in the local store
 }
 
 func (f *fakeWA) record(name string, network bool) {
@@ -100,14 +105,15 @@ func (f *fakeWA) GetGroupInfo(context.Context, types.JID) (*types.GroupInfo, err
 }
 func (f *fakeWA) GetSubGroups(context.Context, types.JID) ([]*types.GroupLinkTarget, error) {
 	f.record("GetSubGroups", true)
-	return nil, nil
+	return f.subGroups, nil
 }
 func (f *fakeWA) GetGroupRequestParticipants(context.Context, types.JID) ([]types.GroupParticipantRequest, error) {
 	f.record("GetGroupRequestParticipants", true)
-	return nil, nil
+	return f.requests, nil
 }
-func (f *fakeWA) UpdateGroupRequestParticipants(context.Context, types.JID, []types.JID, wm.ParticipantRequestChange) ([]types.GroupParticipant, error) {
+func (f *fakeWA) UpdateGroupRequestParticipants(_ context.Context, _ types.JID, _ []types.JID, action wm.ParticipantRequestChange) ([]types.GroupParticipant, error) {
 	f.record("UpdateGroupRequestParticipants", true)
+	f.requestAction = action
 	return f.participants, nil
 }
 func (f *fakeWA) JoinGroupWithLink(context.Context, string) (types.JID, error) {
@@ -137,12 +143,15 @@ func (f *fakeWA) GetUserDevices(context.Context, []types.JID) ([]types.JID, erro
 }
 func (f *fakeWA) IsOnWhatsApp(context.Context, []string) ([]types.IsOnWhatsAppResponse, error) {
 	f.record("IsOnWhatsApp", true)
-	return nil, errNetwork
+	if f.onWhatsApp == nil {
+		return nil, errNetwork
+	}
+	return f.onWhatsApp, nil
 }
 func (f *fakeWA) ownIDs() (types.JID, types.JID) { return botPhone, botLID }
-func (f *fakeWA) lidForPhone(context.Context, types.JID) (types.JID, error) {
+func (f *fakeWA) lidForPhone(_ context.Context, phone types.JID) (types.JID, error) {
 	f.record("lidForPhone", false)
-	return types.JID{}, nil
+	return f.lids[phone.User], nil
 }
 func (f *fakeWA) sendGroupIQ(_ context.Context, to types.JID, content waBinary.Node) (*waBinary.Node, error) {
 	f.record("sendGroupIQ", true)
