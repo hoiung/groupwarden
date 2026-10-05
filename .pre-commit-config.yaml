@@ -1,0 +1,48 @@
+repos:
+  - repo: local
+    hooks:
+      - id: no-temp-folder
+        name: Prevent temp/ and tmp/ folder commits
+        entry: bash -c 'TEMP_FILES=$(git diff --cached --name-only -z | tr "\0" "\n" | grep -E "^temp/|/temp/|^tmp/|/tmp/"); if [ -n "$TEMP_FILES" ]; then echo "ERROR - temp/tmp folders not allowed in repos."; echo "Blocked files -"; echo "$TEMP_FILES"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: check-public-repo-secrets
+        name: Check for secrets in public repo
+        entry: python3 scripts/check-public-repo-secrets.py . --staged-only
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: gofmt
+        name: gofmt (no unformatted Go files)
+        entry: bash -c 'out=$(gofmt -l "$@"); if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi' --
+        language: system
+        types: [go]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=1000, "--"]
+      - id: check-case-conflict
+        args: ["--"]
+      - id: check-merge-conflict
+        args: ["--"]
+      - id: check-json
+        args: ["--"]
+      - id: check-yaml
+        args: ["--"]
+      - id: end-of-file-fixer
+        args: ["--"]
+      - id: mixed-line-ending
+        args: [--fix=lf, "--"]
+      - id: trailing-whitespace
+        args: ["--"]
+
+default_language_version:
+  python: python3
+
+default_stages: [pre-commit, pre-push]
+fail_fast: false
