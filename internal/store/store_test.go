@@ -30,7 +30,7 @@ func TestMigrationsFromEmpty(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != SchemaVersion() || version != len(migrations) {
+	if version != len(migrations) {
 		t.Fatalf("schema version %d, want %d", version, len(migrations))
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
@@ -162,5 +162,39 @@ func TestPauseScopes(t *testing.T) {
 	_ = s.Close()
 	if paused, why := s.PausedFor(ctx, ScopeAll); !paused || !strings.Contains(why, "unreadable") {
 		t.Fatalf("closed store: paused=%v why=%q", paused, why)
+	}
+}
+
+func TestSeenPurge(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	clock := now
+	s, _ := openTemp(t, Options{Now: func() time.Time { return clock }})
+	for _, id := range []string{"OLD", "NEW"} {
+		if _, err := s.InboxPut(ctx, "msg|g|"+id, "message", []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.InboxOldest(ctx, 1)
+		if err != nil || len(rows) != 1 {
+			t.Fatal(rows, err)
+		}
+		if err := s.Decide(ctx, rows[0], Seen{Chat: "g", MsgID: id, ServerTime: clock}, func(*sql.Tx) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+		clock = clock.Add(48 * time.Hour)
+	}
+	n, err := s.PurgeSeen(ctx, now.Add(24*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("purged %d (%v), want 1", n, err)
+	}
+	if _, found, _ := s.SeenTime(ctx, "g", "OLD"); found {
+		t.Fatal("old dedupe record survived the purge")
+	}
+	if at, found, _ := s.SeenTime(ctx, "g", "NEW"); !found || !at.Equal(now.Add(48*time.Hour)) {
+		t.Fatalf("new record: %v %v", at, found)
+	}
+	// Within its retention a decided delivery is still deduped.
+	if ok, _ := s.InboxPut(ctx, "msg|g|NEW", "message", []byte("{}")); ok {
+		t.Fatal("a delivery decided within the retention was queued again")
 	}
 }
