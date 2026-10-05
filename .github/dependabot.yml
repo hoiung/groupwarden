@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "github-actions"
+  # Go module dependencies. whatsmeow is pinned to one pseudo-version and is
+  # upgraded by hand per docs/runbook.md, so Dependabot leaves it alone.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "go"
+    ignore:
+      - dependency-name: "go.mau.fi/whatsmeow"
