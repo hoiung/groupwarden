@@ -5,7 +5,6 @@ package client
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 )
@@ -26,9 +25,6 @@ func (j JID) Server() string {
 	_, s, _ := strings.Cut(string(j), "@")
 	return s
 }
-
-// IsLID reports whether j is a WhatsApp LID (the ID the ban list keys on).
-func (j JID) IsLID() bool { return j.Server() == "lid" }
 
 // MentionMarker replaces every @-mention of a listed member in a field's
 // matching view, so a mention is never read as a phone number or a handle.
@@ -265,9 +261,6 @@ type Self struct {
 	Phone JID // the bot number's JID with this device
 	LID   JID
 }
-
-// ErrNotConnected is returned when an action needs a live connection.
-var ErrNotConnected = errors.New("not connected to WhatsApp")
 
 // Adapter is everything groupwarden asks of WhatsApp.
 type Adapter interface {
