@@ -197,10 +197,15 @@ func jid(j types.JID) client.JID {
 	return client.JID(j.ToNonAD().String())
 }
 
+// parse reads a WhatsApp ID. The library accepts a string with no "@" as a
+// bare server name, so an ID without both a user and a server is refused here.
 func parse(j client.JID) (types.JID, error) {
 	p, err := types.ParseJID(string(j))
 	if err != nil {
 		return types.JID{}, fmt.Errorf("bad WhatsApp ID %q: %w", j, err)
+	}
+	if p.User == "" || p.Server == "" {
+		return types.JID{}, fmt.Errorf("bad WhatsApp ID %q: needs user@server", j)
 	}
 	return p, nil
 }
