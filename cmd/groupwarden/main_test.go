@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/store"
 	"github.com/hoiung/groupwarden/internal/store/sessiontest"
+	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
 
 type testEnv struct {
@@ -241,12 +243,13 @@ func TestHealthcheckExitCodes(t *testing.T) {
 		t.Fatalf("no database: exit %d\n%s", code, te.out)
 	}
 	now := time.Now()
-	healthy := map[string]string{store.StatusHeartbeat: "", store.StatusConnected: "1", store.StatusDeaf: "0", store.StatusConfigHash: "abc123def456"}
+	healthy := map[string]string{store.StatusHeartbeat: "", store.StatusConnected: "1", store.StatusDeaf: "0", store.StatusConfigHash: "abc123def456",
+		store.StatusTelegramOK: "1"}
 	st := setStatus(t, te, healthy, now)
 	if code := te.cmd("healthcheck"); code != 0 {
 		t.Fatalf("healthy: exit %d\n%s", code, te.out)
 	}
-	for _, want := range []string{"running: yes", "connected: yes", "deaf: no", "config: vabc123def456", "paused: no"} {
+	for _, want := range []string{"running: yes", "connected: yes", "deaf: no", "config: vabc123def456", "telegram: ok", "paused: no"} {
 		if !strings.Contains(te.out.String(), want) {
 			t.Fatalf("healthy output lacks %q:\n%s", want, te.out)
 		}
@@ -258,22 +261,28 @@ func TestHealthcheckExitCodes(t *testing.T) {
 	if code := te.cmd("healthcheck"); code != 0 || !strings.Contains(te.out.String(), "paused: removals and bans") {
 		t.Fatalf("paused: exit %d\n%s", code, te.out)
 	}
-	unhealthy := []map[string]string{
-		{store.StatusConnected: "0"},
-		{store.StatusDeaf: "1"},
-		{store.StatusConfigHash: ""},
+	// Each change makes the bot unhealthy and prints why.
+	unhealthy := []struct {
+		change map[string]string
+		line   string
+	}{
+		{map[string]string{store.StatusConnected: "0"}, "connected: no"},
+		{map[string]string{store.StatusDeaf: "1"}, "deaf: yes"},
+		{map[string]string{store.StatusConfigHash: ""}, "config: not loaded"},
+		{map[string]string{store.StatusTelegramOK: "0"}, "telegram: REFUSED (marked unhealthy at "},
+		{map[string]string{store.StatusTelegramOK: ""}, "telegram: not reached yet"},
 	}
-	for _, change := range unhealthy {
+	for _, c := range unhealthy {
 		kv := map[string]string{}
 		for k, v := range healthy {
 			kv[k] = v
 		}
-		for k, v := range change {
+		for k, v := range c.change {
 			kv[k] = v
 		}
 		setStatus(t, te, kv, now)
-		if code := te.cmd("healthcheck"); code != 1 {
-			t.Fatalf("%v: exit %d, want 1\n%s", change, code, te.out)
+		if code := te.cmd("healthcheck"); code != 1 || !strings.Contains(te.out.String(), c.line) {
+			t.Fatalf("%v: exit %d, want 1 and %q\n%s", c.change, code, c.line, te.out)
 		}
 	}
 	// A stale heartbeat (run died) is unhealthy even if the last state was good.
@@ -390,17 +399,29 @@ func TestHealthcheckRunsBesideRun(t *testing.T) {
 	fake := &clienttest.Fake{Groups: []client.Group{{JID: "99999000000111@g.us", Name: "General"}}}
 	te := newTestEnv(t, fake)
 	te.provision(t)
+	// run needs the admin chat: point it at a fake Bot API. Healthcheck passes
+	// only once the "started" report reached the chat.
+	tg := telegramtest.New(t, nil)
+	te.writeFile(t, "secrets.env", config.KeyTelegramBot+"="+tg.Token+"\n"+
+		config.KeyTelegramChatID+"="+strconv.FormatInt(telegramtest.ChatID, 10)+"\n", 0o600)
 	runEnv := *te.env
 	runEnv.stdout, runEnv.stderr = &syncBuffer{}, &syncBuffer{}
+	runEnv.telegramURL = tg.URL
 	done := make(chan int, 1)
 	go func() { done <- runEnv.run([]string{"run", "--config", te.cfgPath}) }()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for te.cmd("healthcheck") != 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("healthcheck never passed beside run:\n%s", te.out)
+			t.Fatalf("healthcheck never passed beside run:\n%s\nrun stderr:\n%s", te.out, runEnv.stderr)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(te.out.String(), "telegram: ok") {
+		t.Fatalf("healthy beside run without the admin chat:\n%s", te.out)
+	}
+	if posted := tg.Posted(); len(posted) == 0 || !strings.Contains(posted[0].Params["text"], "started") {
+		t.Fatalf("first admin-chat post %v, want the started report", posted)
 	}
 	if code := te.cmd("check", "--secrets"); code != 0 {
 		t.Fatalf("check beside run: exit %d\n%s", code, te.out)
