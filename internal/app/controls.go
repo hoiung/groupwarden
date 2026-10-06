@@ -202,7 +202,11 @@ func (a *App) statusText(ctx context.Context) (string, error) {
 	if r := st[store.StatusSyncResult].Value; r != "" {
 		fmt.Fprintf(&b, " (%s)", r)
 	}
-	fmt.Fprintf(&b, "\nBackup: last run %s\n", ago(now, msStatus(st, store.StatusBackupLastRun)))
+	fmt.Fprintf(&b, "\nBackup: last run %s", ago(now, msStatus(st, store.StatusBackupLastRun)))
+	if r := st[store.StatusBackupResult].Value; r != "" {
+		fmt.Fprintf(&b, " (%s)", r)
+	}
+	b.WriteString("\n")
 	bans, err := a.Store.Bans(ctx)
 	if err != nil {
 		return "", err
