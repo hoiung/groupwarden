@@ -11,6 +11,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"github.com/hoiung/groupwarden/internal/ledger"
+	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -275,8 +276,10 @@ func (c *Chat) isAdmin(ctx context.Context, userID int64) bool {
 	return m.Type == models.ChatMemberTypeOwner || m.Type == models.ChatMemberTypeAdministrator
 }
 
-// answer answers a button press (Telegram shows the text to the presser).
+// answer answers a button press (Telegram shows the text to the presser),
+// identifiers masked as in reply.
 func (c *Chat) answer(ctx context.Context, queryID, text string) {
+	text = mask.IDs(text)
 	if r := []rune(text); len(r) > answerMax {
 		text = string(r[:answerMax-1]) + "…"
 	}
@@ -286,9 +289,11 @@ func (c *Chat) answer(ctx context.Context, queryID, text string) {
 	}
 }
 
-// reply posts text in the admin chat as a reply to message replyTo.
+// reply posts text in the admin chat as a reply to message replyTo. The text is
+// masked here, once for every reply: a reply can carry an error or a config
+// rejection that names a member or a community by its ID.
 func (c *Chat) reply(ctx context.Context, replyTo int, reportID int64, text string) {
-	parts, _ := split(text, "")
+	parts, _ := split(mask.IDs(text), "")
 	for _, part := range parts {
 		msg, err := c.sendText(ctx, true, part, quote{}, replyTo, nil)
 		if err != nil {
