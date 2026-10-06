@@ -67,6 +67,8 @@ func (m *Moderator) Decide(ctx context.Context, tx *sql.Tx, item Item) error {
 		if ev.Reason == client.ReasonMissingParentSecret {
 			return store.IncrCounter(ctx, tx, day(m.Store.Now()), CounterMissingParent)
 		}
+		m.Log.Warn("could not decrypt a message", "chat", mask.IDs(string(ev.Chat)), "reason", ev.Reason,
+			"detail", mask.IDs(ev.Detail))
 		// Stored with the decision (the store has one connection: nothing
 		// may write outside this transaction until it ends).
 		_, err := store.InsertReport(ctx, tx, store.Report{Kind: string(alert.DecryptError), Priority: true,
