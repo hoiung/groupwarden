@@ -54,8 +54,8 @@ func (s *alertSink) set(a alert.Alerter) {
 // withWhatsApp takes the single-instance lock, opens the store and the
 // adapter, runs fn and releases everything. A second WhatsApp command fails
 // at once: two connections on one session knock each other off.
-func (e *env) withWhatsApp(ctx context.Context, cfg *config.Config, log *slog.Logger, fn func(context.Context, *whatsApp) error) int {
-	lock, err := app.AcquireLock(cfg.DataDir)
+func (e *env) withWhatsApp(ctx context.Context, command string, cfg *config.Config, log *slog.Logger, fn func(context.Context, *whatsApp) error) int {
+	lock, err := app.AcquireLock(cfg.DataDir, command)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
 		return exitFail
@@ -235,7 +235,7 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 		defer stop()
 		reload = ch
 	}
-	return e.withWhatsApp(ctx, cur.Config, log, func(ctx context.Context, w *whatsApp) error {
+	return e.withWhatsApp(ctx, "run", cur.Config, log, func(ctx context.Context, w *whatsApp) error {
 		log.Info("starting", "version", app.Version(), "config", "v"+cur.Hash)
 		session, err := store.OpenSession(ctx, cur.Config.WhatsmeowDB(), nil)
 		if err != nil {
