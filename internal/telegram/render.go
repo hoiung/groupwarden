@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 
 	"github.com/hoiung/groupwarden/internal/client"
@@ -18,13 +19,23 @@ const maxUnits = 4096
 // removedNote replaces a member's message text once it is removed.
 const removedNote = "(message text removed)"
 
+// nameMax bounds the attachment's file name in a report's header (the name
+// is in full under "Message:", as the sender wrote it).
+const nameMax = 200
+
 // rendered is a report as it goes to the chat: the report message, then any
-// follow-ups the message text did not fit in. stripped[i] is what message i
-// becomes once the member's text is removed ("" when it never carried any).
+// follow-ups the message text did not fit in. quotes[i] is where the member's
+// text sits in message i; stripped[i] is what message i becomes once that
+// text is removed ("" when it never carried any).
 type rendered struct {
 	parts    []string
+	quotes   []quote
 	stripped []string
 }
+
+// quote is the span of a message that is the member's text, in UTF-16 units
+// (zero length: none).
+type quote struct{ offset, length int }
 
 // actionLine says what the bot did, by report kind.
 var actionLine = map[string]string{
@@ -41,9 +52,29 @@ var actionLine = map[string]string{
 // and every field the sender wrote, in full.
 func render(r store.Report, ev *store.Evidence, groupName string) rendered {
 	if ev == nil {
-		parts := split(r.Text, "")
-		return rendered{parts: parts, stripped: make([]string, len(parts))}
+		parts, _ := split(r.Text, "")
+		return rendered{parts: parts, quotes: make([]quote, len(parts)), stripped: make([]string, len(parts))}
 	}
+	head := header(r, ev, groupName, true)
+	parts, starts := split(head+"\n"+messageText(ev), head)
+	member := units(head + "\n") // where the member's text starts
+	out := rendered{parts: parts, quotes: make([]quote, len(parts)), stripped: make([]string, len(parts))}
+	for i, p := range parts {
+		if lo, hi := max(starts[i], member), starts[i]+units(p); hi > lo {
+			out.quotes[i] = quote{offset: lo - starts[i], length: hi - lo}
+		}
+		out.stripped[i] = removedNote
+	}
+	out.stripped[0] = clip(header(r, ev, groupName, false)+" "+removedNote, maxUnits)
+	return out
+}
+
+// header is a report's text before the member's message: the report line,
+// the group, the sender, the rule, the action, the config version and any
+// attachment. Without full it leaves out what the sender wrote (their display
+// name, the attachment's file name): that is what stays once their text is
+// removed, in the chat and in the database.
+func header(r store.Report, ev *store.Evidence, groupName string, full bool) string {
 	var h strings.Builder
 	h.WriteString(r.Text)
 	h.WriteString("\n\nGroup: ")
@@ -51,7 +82,7 @@ func render(r store.Report, ev *store.Evidence, groupName string) rendered {
 		h.WriteString(groupName + " ")
 	}
 	h.WriteString("(" + mask.IDs(ev.Chat) + ")")
-	h.WriteString("\nSender: " + sender(ev))
+	h.WriteString("\nSender: " + sender(ev, full))
 	if ev.Rule != "" {
 		h.WriteString("\nRule: " + ev.Rule)
 	}
@@ -61,22 +92,16 @@ func render(r store.Report, ev *store.Evidence, groupName string) rendered {
 	if ev.ConfigHash != "" {
 		h.WriteString("\nConfig: v" + ev.ConfigHash)
 	}
-	if note := attachmentNote(ev); note != "" {
+	if note := attachmentNote(ev, full); note != "" {
 		h.WriteString("\nAttachment: " + note)
 	}
-	header := h.String() + "\nMessage:"
-	text := messageText(ev)
-	parts := split(header+"\n"+text, header)
-	out := rendered{parts: parts, stripped: make([]string, len(parts))}
-	out.stripped[0] = header + " " + removedNote
-	for i := 1; i < len(parts); i++ {
-		out.stripped[i] = removedNote
-	}
-	return out
+	h.WriteString("\nMessage:")
+	return h.String()
 }
 
-// sender names who posted: display name, then the masked number or LID.
-func sender(ev *store.Evidence) string {
+// sender names who posted: display name (unless named is false), then the
+// masked number or LID.
+func sender(ev *store.Evidence, named bool) string {
 	id := ev.Sender
 	for _, j := range []string{ev.Sender, ev.SenderAlt} {
 		if client.JID(j).Server() == "s.whatsapp.net" {
@@ -85,7 +110,10 @@ func sender(ev *store.Evidence) string {
 		}
 	}
 	name := strings.TrimSpace(ev.PushName)
-	if name == "" {
+	switch {
+	case !named:
+		name = "(display name removed)"
+	case name == "":
 		name = "(no display name)"
 	}
 	return name + " (" + mask.IDs(id) + ")"
@@ -113,12 +141,16 @@ func messageText(ev *store.Evidence) string {
 	return b.String()
 }
 
-// attachmentNote describes the deleted post's attachment, if it had one.
-func attachmentNote(ev *store.Evidence) string {
+// attachmentNote describes the deleted post's attachment, if it had one, with
+// its file name (clipped) when named.
+func attachmentNote(ev *store.Evidence, named bool) string {
 	if ev.MediaKind == "" {
 		return ""
 	}
-	desc := strings.TrimSpace(ev.MediaKind + " " + ev.MediaName)
+	desc := ev.MediaKind
+	if name := strings.TrimSpace(ev.MediaName); named && name != "" {
+		desc += " " + clip(name, nameMax)
+	}
 	size := fmt.Sprintf("%.1f MB", float64(ev.MediaSize)/(1<<20))
 	switch ev.MediaState {
 	case store.MediaSaved:
@@ -126,28 +158,25 @@ func attachmentNote(ev *store.Evidence) string {
 	case store.MediaTooLarge:
 		return desc + " (" + size + "), too large to keep"
 	case store.MediaFailed:
-		return desc + " (" + size + "), download failed: " + ev.MediaError
+		return desc + " (" + size + "), not available: " + ev.MediaError
 	}
 	return desc + " (" + size + "), being saved"
 }
 
 // split cuts s into messages within Telegram's limit, never inside a
-// character. The first part always holds keep (the report's header) whole
-// when it fits.
-func split(s, keep string) []string {
-	if units(s) <= maxUnits {
-		return []string{s}
-	}
-	var parts []string
+// character, and returns each with where it starts in s (UTF-16 units). The
+// first part always holds keep (the report's header) whole when it fits. A
+// part is trimmed of the white space at its ends, as Telegram trims it, and a
+// part that is white space alone is dropped: Telegram refuses it as empty.
+func split(s, keep string) (parts []string, starts []int) {
 	rest := []rune(s)
+	pos := 0 // units of s before rest
+	keepRunes := len([]rune(keep))
 	first := true
 	for len(rest) > 0 {
 		n, used := 0, 0
 		for n < len(rest) {
-			u := utf16.RuneLen(rest[n])
-			if u < 0 {
-				u = 1
-			}
+			u := runeUnits(rest[n])
 			if used+u > maxUnits {
 				break
 			}
@@ -164,25 +193,58 @@ func split(s, keep string) []string {
 				}
 			}
 		}
-		if first && cut < len([]rune(keep)) && n >= len([]rune(keep)) {
+		if first && cut < keepRunes && n >= keepRunes {
 			cut = n
 		}
-		parts = append(parts, string(rest[:cut]))
+		chunk := rest[:cut]
+		lead, end := 0, len(chunk)
+		for lead < end && unicode.IsSpace(chunk[lead]) {
+			lead++
+		}
+		for end > lead && unicode.IsSpace(chunk[end-1]) {
+			end--
+		}
+		if end > lead {
+			parts = append(parts, string(chunk[lead:end]))
+			starts = append(starts, pos+units(string(chunk[:lead])))
+		}
+		pos += units(string(chunk))
 		rest = rest[cut:]
 		first = false
 	}
-	return parts
+	return parts, starts
+}
+
+// clip shortens s to at most n UTF-16 units, ending in "…" when cut.
+func clip(s string, n int) string {
+	if units(s) <= n {
+		return s
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		if used+runeUnits(r) > n-1 {
+			break
+		}
+		b.WriteRune(r)
+		used += runeUnits(r)
+	}
+	return b.String() + "…"
 }
 
 // units is s's length as Telegram counts it.
 func units(s string) int {
 	n := 0
 	for _, r := range s {
-		u := utf16.RuneLen(r)
-		if u < 0 {
-			u = 1
-		}
-		n += u
+		n += runeUnits(r)
 	}
 	return n
+}
+
+// runeUnits is r's length in UTF-16 code units (an invalid rune counts 1).
+func runeUnits(r rune) int {
+	if u := utf16.RuneLen(r); u > 0 {
+		return u
+	}
+	return 1
 }
