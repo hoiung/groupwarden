@@ -52,6 +52,30 @@ func OpenSession(ctx context.Context, path string, now func() time.Time) (*Sessi
 // Close closes the session store.
 func (s *Session) Close() error { return s.db.Close() }
 
+// The purge's statements, run in this order in one write transaction. That
+// transaction holds whatsmeow.db's write lock, during which the library cannot
+// decrypt incoming messages, so no statement may look a table up once per row
+// without an index (TestSecretPurgePlans).
+const (
+	// stampSecrets records when each message secret was first seen (the
+	// library keeps no time with it).
+	stampSecrets = `INSERT INTO groupwarden_secret_seen (chat_jid, sender_jid, message_id, first_seen)
+SELECT chat_jid, sender_jid, message_id, ?1 FROM whatsmeow_message_secrets WHERE true
+ON CONFLICT DO NOTHING`
+	// purgeSecrets deletes the secrets first seen before their cutoff.
+	purgeSecrets = `DELETE FROM whatsmeow_message_secrets WHERE EXISTS (
+	SELECT 1 FROM groupwarden_secret_seen g
+	WHERE g.chat_jid = whatsmeow_message_secrets.chat_jid AND g.sender_jid = whatsmeow_message_secrets.sender_jid
+		AND g.message_id = whatsmeow_message_secrets.message_id
+		AND g.first_seen < CASE WHEN g.chat_jid IN (SELECT value FROM json_each(?1)) THEN ?2 ELSE ?3 END)`
+	// purgeStamps ages the first-seen stamps out by the same rule, which also
+	// drops the stamp of a secret the library deleted itself. (Matching them to
+	// the library's table instead scans it once per stamp, since its key starts
+	// with our_jid: that held the write lock for minutes.)
+	purgeStamps = `DELETE FROM groupwarden_secret_seen
+WHERE first_seen < CASE WHEN chat_jid IN (SELECT value FROM json_each(?1)) THEN ?2 ELSE ?3 END`
+)
+
 // PurgeSecrets deletes message secrets first seen before cutoff, except those
 // of messages in announcementChats, which are kept until announcementCutoff so
 // replies to older announcements still decrypt. It returns how many it deleted.
@@ -61,25 +85,17 @@ func (s *Session) PurgeSecrets(ctx context.Context, cutoff, announcementCutoff t
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO groupwarden_secret_seen (chat_jid, sender_jid, message_id, first_seen)
-SELECT chat_jid, sender_jid, message_id, ? FROM whatsmeow_message_secrets WHERE true
-ON CONFLICT DO NOTHING`, s.now().UnixMilli()); err != nil {
+	if _, err := tx.ExecContext(ctx, stampSecrets, s.now().UnixMilli()); err != nil {
 		return 0, fmt.Errorf("stamp message secrets: %w", err)
 	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM whatsmeow_message_secrets WHERE EXISTS (
-	SELECT 1 FROM groupwarden_secret_seen g
-	WHERE g.chat_jid = whatsmeow_message_secrets.chat_jid AND g.sender_jid = whatsmeow_message_secrets.sender_jid
-		AND g.message_id = whatsmeow_message_secrets.message_id
-		AND g.first_seen < CASE WHEN g.chat_jid IN (SELECT value FROM json_each(?)) THEN ? ELSE ? END)`,
-		jsonList(announcementChats), announcementCutoff.UnixMilli(), cutoff.UnixMilli())
+	ages := []any{jsonList(announcementChats), announcementCutoff.UnixMilli(), cutoff.UnixMilli()}
+	res, err := tx.ExecContext(ctx, purgeSecrets, ages...)
 	if err != nil {
 		return 0, fmt.Errorf("purge message secrets: %w", err)
 	}
 	n, _ := res.RowsAffected()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM groupwarden_secret_seen WHERE NOT EXISTS (
-	SELECT 1 FROM whatsmeow_message_secrets m WHERE m.chat_jid = groupwarden_secret_seen.chat_jid
-		AND m.sender_jid = groupwarden_secret_seen.sender_jid AND m.message_id = groupwarden_secret_seen.message_id)`); err != nil {
-		return 0, err
+	if _, err := tx.ExecContext(ctx, purgeStamps, ages...); err != nil {
+		return 0, fmt.Errorf("purge message secret stamps: %w", err)
 	}
 	return n, tx.Commit()
 }
