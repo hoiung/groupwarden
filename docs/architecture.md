@@ -24,7 +24,12 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                re-check at fire time ► WhatsApp call ► requested / failed /
                already_gone (a delete is never confirmed, so never "succeeded")
 
-           internal/reconcile sweep (at connect and every reconcile interval):
+           internal/reconcile sweep (at connect, every reconcile interval, and
+           when the bot joins a group; the group list is read from WhatsApp first):
+               coverage per group (absent / not admin / covered) ► compared with
+               what the admins were told ► changes reported; absent linked groups
+               ► joined by the bot itself, else /join asked for; a refused
+               admin-only call ► group marked not covered at once
                banned members present ► removed; their join requests ► rejected
 
            internal/telegram: the stored reports and alerts ► the private admin
@@ -37,17 +42,17 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test`, `ledger summary`, `ban add\|remove\|list`, `member show\|forget`, `fatal-exit-code` |
 | `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation |
 | `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders; the admin chat's controls |
-| `internal/pipeline` | Inbox worker, the group directory (communities, members, admins), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
+| `internal/pipeline` | Inbox worker (it decides nothing until the group directory has loaded once), the group directory (communities, members, admins), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
 | `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction; crash recovery; retention purge |
 | `internal/telegram` | The admin chat: report and alert delivery from the store (rate limit, priority, digests, attachments, text removed after the evidence window), buttons and commands from admins of that chat only, the command list pinned there and set as its "/" menu |
 | `internal/alert` | Alert kinds and which of them are priority |
 | `internal/action` | Fires the outbox: rate limit, circuit breaker, fire-time re-check; saves evidence attachments |
-| `internal/reconcile` | The periodic sweep, backing off on WhatsApp's rate limit |
+| `internal/reconcile` | The periodic sweep, backing off on WhatsApp's rate limit: group coverage and its reports (new groups, lost groups, fewer than 2 human admins), joining absent linked groups, banned members present, join requests |
 | `internal/config` | YAML 1.2 parsing, schema validation, defaults, the reloadable `Holder` |
 | `internal/rules` | Rule compilation and checks, built-in conditions, the decision |
 | `internal/normalise` | The matching views of a text and the word/phrase matcher |
 | `internal/corpus` | Labelled spam and legit samples, and the corpus test |
-| `internal/store` | SQLite: migrations, inbox, ledger, outbox, ban list, evidence, reports, pauses; maintenance of the WhatsApp session store (message-secret purge, `member forget`) |
+| `internal/store` | SQLite: migrations, inbox, ledger, outbox, ban list, evidence, reports, pauses, group coverage; maintenance of the WhatsApp session store (message-secret purge, `member forget`) |
 | `internal/mask` | Masks phone numbers, LIDs and group IDs in logs |
 | `schema` | The config schema (embedded in the binary) |
 
