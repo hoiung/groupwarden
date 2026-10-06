@@ -80,14 +80,23 @@ func (c *fakeClock) step(d, by time.Duration) {
 }
 
 type harness struct {
-	t     *testing.T
-	app   *App
-	fake  *clienttest.Fake
-	clock *fakeClock
-	rec   *alert.Recorder
-	st    *store.Store
-	done  chan error
+	t       *testing.T
+	app     *App
+	fake    *clienttest.Fake
+	clock   *fakeClock
+	rec     *alert.Recorder
+	st      *store.Store
+	done    chan error
+	cancel  context.CancelFunc // stops Run cleanly
+	cfgPath string             // the config file a reload reads
+	reload  chan struct{}      // what SIGHUP sends
 }
+
+// testSet makes the harness's test group a configured standalone set, so its
+// events count as moderated (deafness only counts moderated groups).
+const testSet = "communities:\n  test-set:\n    groups: [\"99999000000111@g.us\"]\n"
+
+const testGroup client.JID = "99999000000111@g.us"
 
 func start(t *testing.T, fake *clienttest.Fake, s Settings) *harness {
 	t.Helper()
@@ -109,19 +118,20 @@ func start(t *testing.T, fake *clienttest.Fake, s Settings) *harness {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := &alert.Recorder{}
 	inbox := pipeline.NewInbox(st)
-	// The test group is a configured standalone set, so its events count as
-	// moderated (deafness only counts moderated groups).
-	holder := configtest.Static("communities:\n  test-set:\n    groups: [\"99999000000111@g.us\"]\n")
+	holder, cfgPath := configtest.Holder(t, testSet)
 	dir := &pipeline.Directory{}
+	reload := make(chan struct{}, 1)
 	a := &App{
 		Adapter: fake, Store: st, Inbox: inbox, Alerter: rec, Log: log, Clock: clock, Settings: s,
-		Config: holder, Directory: dir,
+		Config: holder, Directory: dir, Reload: reload,
 		Worker: &pipeline.Worker{Store: st, Inbox: inbox, Config: holder, Log: log,
-			Decider: &pipeline.Moderator{Store: st, Alerter: rec, Config: holder, Directory: dir, Log: log}},
+			Decider: &pipeline.Moderator{Store: st, Config: holder, Directory: dir, Log: log,
+				Enforcer: &pipeline.Enforcer{Store: st, Config: holder, Directory: dir, Log: log}}},
 	}
-	h := &harness{t: t, app: a, fake: fake, clock: clock, rec: rec, st: st, done: make(chan error, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	h := &harness{t: t, app: a, fake: fake, clock: clock, rec: rec, st: st, done: make(chan error, 1), cancel: cancel,
+		cfgPath: cfgPath, reload: reload}
 	go func() { h.done <- a.Run(ctx) }()
 	h.eventually("first connect", func() bool { return fake.Count("Connect") >= 1 })
 	if fake.ConnectErr == nil && fake.OnConnect == nil {
@@ -298,7 +308,7 @@ func TestDeafnessAlertOncePerEpisode(t *testing.T) {
 		t.Fatalf("%d deafness alerts in one episode", deaf())
 	}
 	// An event ends the episode; a new silence is a new episode.
-	if err := h.fake.Deliver(&client.Message{Chat: "99999000000111@g.us", Sender: "99999000000444@lid", ID: "E1", TargetID: "E1",
+	if err := h.fake.Deliver(&client.Message{Chat: testGroup, Sender: "99999000000444@lid", ID: "E1", TargetID: "E1",
 		Time: h.clock.Now()}); err != nil {
 		t.Fatal(err)
 	}
