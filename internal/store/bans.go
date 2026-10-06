@@ -155,8 +155,13 @@ func (s *Store) ResolveBan(ctx context.Context, phone, lid string) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE bans SET lid = ? WHERE phone = ? AND lid = ''`, lid, phone); err != nil {
 			return err
 		}
-		// Re-key; where the LID already has an entry for that scope, keep it.
+		// Re-key; where the LID already has an entry for that scope, keep it,
+		// with the phone number filled in so the ban still matches it.
 		if _, err := tx.ExecContext(ctx, `UPDATE OR IGNORE bans SET member = lid WHERE phone = ? AND member = phone`, phone); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE bans SET phone = ?1 WHERE member = ?2 AND phone = ''
+	AND scope IN (SELECT scope FROM bans WHERE phone = ?1 AND member = phone)`, phone, lid); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `DELETE FROM bans WHERE phone = ? AND member = phone`, phone)
@@ -165,10 +170,26 @@ func (s *Store) ResolveBan(ctx context.Context, phone, lid string) error {
 }
 
 // MarkBanLIDFailed records that the phone number of a ban could not be
-// resolved to a LID (the ban stays keyed on the phone number).
-func (s *Store) MarkBanLIDFailed(ctx context.Context, phone string) error {
-	return s.Write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE bans SET lid_failed = 1 WHERE phone = ? AND lid = ''`, phone)
+// resolved to a LID (the ban stays keyed on the phone number) and stores the
+// report r about it, in one transaction: once marked, the ban is never looked
+// up again, so a report written apart could be lost for good. The report is
+// written only when a ban was marked; reported says whether it was.
+func (s *Store) MarkBanLIDFailed(ctx context.Context, phone string, r Report) (reported bool, err error) {
+	err = s.Write(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE bans SET lid_failed = 1 WHERE phone = ? AND lid = ''`, phone)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		reported = n > 0
+		if !reported {
+			return nil
+		}
+		_, err = InsertReport(ctx, tx, r, nil, s.now())
 		return err
 	})
+	return reported && err == nil, err
 }
