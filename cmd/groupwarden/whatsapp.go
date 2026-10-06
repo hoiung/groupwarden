@@ -5,15 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/hoiung/groupwarden/internal/action"
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/app"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/config"
+	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/pipeline"
+	"github.com/hoiung/groupwarden/internal/reconcile"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -221,15 +225,46 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 	}
 	return e.withWhatsApp(ctx, cur.Config, log, func(ctx context.Context, w *whatsApp) error {
 		log.Info("starting", "config", "v"+cur.Hash)
-		dir := &pipeline.Directory{}
-		a := &app.App{
-			Adapter: w.adapter, Store: w.store, Inbox: w.inbox, Alerter: w.alerter, Log: log, Clock: app.SystemClock{},
-			Worker: &pipeline.Worker{Store: w.store, Inbox: w.inbox, Config: holder, Log: log,
-				Decider: &pipeline.Moderator{Store: w.store, Alerter: w.alerter, Config: holder, Directory: dir, Log: log}},
-			Settings: app.SettingsFrom(cur.Config), Config: holder, Directory: dir, Reload: reload, BootRejected: rejected,
+		session, err := store.OpenSession(ctx, cur.Config.WhatsmeowDB(), nil)
+		if err != nil {
+			return err
 		}
-		err := a.Run(ctx)
+		defer session.Close()
+		a := moderationApp(w, holder, session, log)
+		a.Settings, a.Reload, a.BootRejected = app.SettingsFrom(cur.Config), reload, rejected
+		err = a.Run(ctx)
 		log.Info("stopped", "err", err)
 		return err
 	})
+}
+
+// moderationApp wires the inbox worker, the decision, the ledger and every
+// moderation worker around one WhatsApp session.
+func moderationApp(w *whatsApp, holder *config.Holder, session *store.Session, log *slog.Logger) *app.App {
+	dir := &pipeline.Directory{}
+	reporter := ledger.NewReporter(w.store, w.alerter, log)
+	media := &action.MediaFetcher{Store: w.store, Adapter: w.adapter, Config: holder,
+		Dir: filepath.Join(holder.Current().Config.DataDir, "evidence"), Log: log}
+	exec := &action.Executor{Store: w.store, Adapter: w.adapter, Config: holder, Directory: dir, Alerter: w.alerter,
+		Reported: reporter.Wake, Log: log}
+	wake := func() {
+		exec.Wake()
+		reporter.Wake()
+		media.Wake()
+	}
+	enforcer := &pipeline.Enforcer{Store: w.store, Config: holder, Directory: dir, Adapter: w.adapter, Wake: wake, Log: log}
+	mod := &pipeline.Moderator{Store: w.store, Alerter: w.alerter, Config: holder, Directory: dir, Enforcer: enforcer, Log: log}
+	exec.Moderator = mod
+	return &app.App{
+		Adapter: w.adapter, Store: w.store, Inbox: w.inbox, Alerter: w.alerter, Log: log, Clock: app.SystemClock{},
+		Worker:    &pipeline.Worker{Store: w.store, Inbox: w.inbox, Config: holder, Log: log, Decider: mod},
+		Config:    holder,
+		Directory: dir,
+		Executor:  exec,
+		Reporter:  reporter,
+		Media:     media,
+		Purger: &ledger.Purger{Store: w.store, Config: holder, Session: session, AnnouncementChats: dir.AnnouncementGroups,
+			Log: log, Now: time.Now},
+		Sweep: &reconcile.Sweep{Enforcer: enforcer, Directory: dir, Config: holder, Log: log, Sleep: action.Sleep},
+	}
 }
