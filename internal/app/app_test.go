@@ -107,6 +107,12 @@ const testGroup client.JID = "99999000000111@g.us"
 
 func start(t *testing.T, fake *clienttest.Fake, s Settings) *harness {
 	t.Helper()
+	return startWith(t, fake, s, nil)
+}
+
+// startWith is start with prep run on the App before Run (nil: nothing).
+func startWith(t *testing.T, fake *clienttest.Fake, s Settings, prep func(*App)) *harness {
+	t.Helper()
 	clock := &fakeClock{now: time.Date(2026, 10, 6, 8, 0, 0, 0, time.UTC)}
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "g.db"), store.Options{Now: clock.Now})
 	if err != nil {
@@ -139,6 +145,9 @@ func start(t *testing.T, fake *clienttest.Fake, s Settings) *harness {
 	t.Cleanup(cancel)
 	h := &harness{t: t, app: a, fake: fake, clock: clock, rec: rec, st: st, done: make(chan error, 1), cancel: cancel,
 		cfgPath: cfgPath, reload: reload}
+	if prep != nil {
+		prep(a)
+	}
 	go func() { h.done <- a.Run(ctx) }()
 	h.eventually("first connect", func() bool { return fake.Count("Connect") >= 1 })
 	if fake.ConnectErr == nil && fake.OnConnect == nil {
