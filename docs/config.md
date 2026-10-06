@@ -17,7 +17,7 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 
 | Key | Read by |
 |---|---|
-| `data_dir` | `cmd/groupwarden/whatsapp.go` `runBot` (single-instance lock, which names the holding process and command); `cmd/groupwarden/main.go` (WhatsApp session store); `internal/config/config.go` `StoreDB`, `WhatsmeowDB`; `internal/config/reload.go` (last good copy); `cmd/groupwarden/storecmds.go` `check --secrets`; `internal/configsync` `Run` (finds the running bot through the lock; must lie outside the config repo); `cmd/groupwarden/synccmd.go` `syncConfig` (records the sync result) |
+| `data_dir` | `cmd/groupwarden/whatsapp.go` `runBot` (single-instance lock, which names the holding process and command); `cmd/groupwarden/main.go` (WhatsApp session store); `internal/config/config.go` `StoreDB`, `WhatsmeowDB`; `internal/config/reload.go` (last good copy); `cmd/groupwarden/storecmds.go` `check --secrets`; `internal/configsync` `Run` (finds the running bot through the lock; must lie outside the config repo); `cmd/groupwarden/synccmd.go` `syncConfig` (records the sync result); `cmd/groupwarden/backupcmd.go` `backup` (the backup's scratch copy), `restore` (takes the lock, writes `groupwarden.db`) |
 | `secrets_file` | `cmd/groupwarden/storecmds.go` `check --secrets` (`config.ReadSecretsFile`); `cmd/groupwarden/whatsapp.go` `adminChatOptions` (`run` refuses to start without the admin chat's bot token and chat ID); `internal/configsync` `checkRelease` (must lie outside the config repo) |
 | `deploy_key_file` | `cmd/groupwarden/storecmds.go` `check --secrets`; `internal/configsync` `sshEnv` (the sync's `git pull`), `checkRelease` (must lie outside the config repo) |
 | `corpus_dir` | `internal/config/reload.go` `checkCorpus`. A relative path is read from the config file's directory, so `corpus_dir: corpus` in the private config repo moves with each synced copy |
@@ -25,15 +25,15 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 | `deafness_alert_hours` | `internal/app/app.go` `SettingsFrom` → `monitor.go` |
 | `disconnect_alert_minutes` | `internal/app/app.go` `SettingsFrom` → `monitor.go` |
 | `config_sync_minutes` | `internal/app/app.go` `timers` → `checkOverdue` (a priority alert when the sync has not run for twice this); `cmd/groupwarden/synccmd.go` `schedule` (`groupwarden schedule sync` prints the sync timer's `OnCalendar` value for the install script), `syncConfig` (the failure alert says when it tries again) |
-| `heartbeat_url` | not read yet: the heartbeat (AC 7.3) |
+| `heartbeat_url` | `internal/app/heartbeat.go` `pinger`: read at every ping, so a reload turns it on or off; pinged every 5 minutes only while the `healthcheck` rule passes (`health.go` `ReadHealth`), so an outside monitor notices a node that is off or asleep. Errors never quote the URL |
 | `mode` | `internal/rules/compile.go` (the global scope's mode) |
 | `retention.evidence_days`, `retention.action_log_months`, `retention.announcement_secret_days` | `internal/config/config.go` `checkRetention`, `RetentionFor`, `LongestRetention`; `internal/ledger/purge.go` `Purge` (evidence copies and files, action log, reports, message secrets); `internal/telegram/deliver.go` `stripDue` (the admin chat's reports lose the message text after `evidence_days`) |
 | `rate.per_minute`, `rate.burst` | `internal/action/executor.go` `takeToken` (the outbox token bucket) |
 | `breaker.max_actions`, `breaker.window_minutes` | `internal/action/executor.go` `breaker` |
 | `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check, the group-list refresh and the sweep: coverage and its reports, joining absent linked groups, banned members present, join requests, phone-only bans) |
-| `backup.target_dir` | `cmd/groupwarden/storecmds.go` `check --secrets` (must be on a different disk); the backup (AC 7.3) |
-| `backup.age_recipient` | `cmd/groupwarden/storecmds.go` `check --secrets` (parsed by `age`); the backup (AC 7.3) |
-| `backup.keep` | not read yet: the backup (AC 7.3) |
+| `backup.target_dir` | `cmd/groupwarden/storecmds.go` `check --secrets` (must be on a different disk); `cmd/groupwarden/backupcmd.go` `backup` → `internal/backup` `Run`; `groupwarden backup-dir` (the install script lets the backup unit write there) |
+| `backup.age_recipient` | `cmd/groupwarden/storecmds.go` `check --secrets` (parsed by `age`); `internal/backup` `Run` (each backup is encrypted to it) |
+| `backup.keep` | `internal/backup` `Run` → `prune` (keeps the newest this many backups; other files in the directory are never touched) |
 | `evidence.max_attachment_mb` | `internal/pipeline/moderator.go` `evidence` (an attachment over it is recorded by type, name and size only); `internal/action/media.go` `fetchOne` |
 | `report.attachment_show_hours` | `internal/telegram/deliver.go` `takeDownDue` (an attachment posted to the admin chat is deleted after it), `takeDown` (the placeholder's text); `internal/telegram/updates.go` `show` (the reply says when the repost comes down) |
 | `bans.scope` | `internal/rules/compile.go`, `decide.go` (`Decision.BanIn`) |
@@ -45,8 +45,6 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 | `rules.list` (`name`, `action`, `confirmed`, `on`, `when`) | `internal/rules/compile.go` `compileRules`, `decide.go` |
 | `communities.<id>` (`name`, `groups`, `mode`, `disable_rules`, `word_lists`) | `internal/rules/compile.go` `compileCommunities`; `internal/pipeline/directory.go` |
 | `communities.<id>.retention` | `internal/config/config.go` `RetentionFor` |
-
-A key marked "not read yet" is read by the phase named beside it; every key must have a reader before the Issue closes.
 
 ## Writing words and rules
 
