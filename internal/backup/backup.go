@@ -211,11 +211,15 @@ func syncDir(dir string) error {
 }
 
 // Restore decrypts the backup src with the age identities in identityFile
-// into dst (which must not exist), and checks it opens as a groupwarden.db
+// into dst (which must not exist, nor its -wal and -shm files: SQLite does not
+// check that a -wal belongs to the database beside it, so an old one would be
+// replayed into the restored file), and checks it opens as a groupwarden.db
 // that carries the restore pause.
 func Restore(ctx context.Context, src, identityFile, dst string) error {
-	if _, err := os.Lstat(dst); err == nil {
-		return fmt.Errorf("%s exists: move it (and any -wal and -shm file beside it) aside first", dst)
+	for _, p := range []string{dst, dst + "-wal", dst + "-shm"} {
+		if _, err := os.Lstat(p); err == nil {
+			return fmt.Errorf("%s exists: move %s and any -wal and -shm file beside it aside first", p, dst)
+		}
 	}
 	kf, err := os.Open(identityFile) // #nosec G304 -- the operator names the key file
 	if err != nil {
