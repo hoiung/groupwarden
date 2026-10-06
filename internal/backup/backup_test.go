@@ -140,6 +140,22 @@ func TestBackupEncryptedAndRestorable(t *testing.T) {
 	if err := Restore(ctx, res.File, k.keyFile, restored); err == nil || !strings.Contains(err.Error(), "aside first") {
 		t.Fatalf("restore over an existing database: %v", err)
 	}
+	// The database moved aside but an old -wal or -shm left beside it (an
+	// unclean stop): SQLite would replay that WAL into the restored file.
+	for _, leftover := range []string{"-wal", "-shm"} {
+		dir := t.TempDir()
+		dst := filepath.Join(dir, "groupwarden.db")
+		if err := os.WriteFile(dst+leftover, []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := Restore(ctx, res.File, k.keyFile, dst)
+		if err == nil || !strings.Contains(err.Error(), "groupwarden.db"+leftover+" exists") {
+			t.Fatalf("restore beside a leftover %s: %v", leftover, err)
+		}
+		if got := names(t, dir); len(got) != 1 {
+			t.Fatalf("refused restore beside a leftover %s left %v", leftover, got)
+		}
+	}
 	other, _ := age.GenerateX25519Identity()
 	wrongKey := filepath.Join(t.TempDir(), "other.txt")
 	if err := os.WriteFile(wrongKey, []byte(other.String()), 0o600); err != nil {
