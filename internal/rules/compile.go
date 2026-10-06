@@ -417,3 +417,16 @@ func (rs *Ruleset) CommunityOf(group, parent string) string {
 
 // Communities lists every configured community, sorted.
 func (rs *Ruleset) Communities() []string { return sortedKeys(rs.scopes) }
+
+// ModeFor returns a configured community's mode; ok is false when the
+// community is not configured (any more).
+func (rs *Ruleset) ModeFor(community string) (mode Mode, ok bool) {
+	sc, ok := rs.scopes[community]
+	if !ok {
+		return "", false
+	}
+	return sc.mode, true
+}
+
+// BanScope says whether a ban covers every community or only its own.
+func (rs *Ruleset) BanScope() BanScope { return rs.banScope }
