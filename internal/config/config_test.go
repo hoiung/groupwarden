@@ -171,7 +171,7 @@ func TestEveryDefaultInSchema(t *testing.T) {
 		"rate.per_minute": 10, "rate.burst": 5, "breaker.max_actions": 30, "breaker.window_minutes": 10,
 		"reconcile.interval_minutes": 60, "config_sync_minutes": 5, "backup.keep": 14,
 		"evidence.max_attachment_mb": 50, "report.attachment_show_hours": 24, "rules.min_word_length": 3,
-		"bans.scope": "all_communities", "heartbeat_url": "",
+		"bans.scope": "all_communities", "heartbeat_url": "", "daily_check_time": "12:00",
 	}
 	for key, val := range want {
 		node := doc
@@ -205,7 +205,7 @@ func TestEveryDefaultInSchema(t *testing.T) {
 		"reconcile.interval_minutes": c.Reconcile.IntervalMinutes, "config_sync_minutes": c.ConfigSyncMinutes,
 		"backup.keep": c.Backup.Keep, "evidence.max_attachment_mb": c.Evidence.MaxAttachmentMB,
 		"report.attachment_show_hours": c.Report.AttachmentShowHours, "rules.min_word_length": c.Rules.MinWordLength,
-		"bans.scope": string(c.Bans.Scope), "heartbeat_url": c.HeartbeatURL,
+		"bans.scope": string(c.Bans.Scope), "heartbeat_url": c.HeartbeatURL, "daily_check_time": c.DailyCheckTime,
 		"act_on_replay_max_age": short(time.Duration(c.ActOnReplayMaxAge)),
 	}
 	for key, val := range want {
@@ -250,8 +250,14 @@ func TestValueAboveBoundRefused(t *testing.T) {
 	if msg := refused(t, "heartbeat_url: not-a-url\n", `line 5: heartbeat_url is not in the expected form`); strings.Contains(msg, "not-a-url") {
 		t.Errorf("the refused value was repeated: %s", msg)
 	}
-	// At the bound is accepted.
+	for _, v := range []string{`"24:00"`, `"12:60"`, `"9:30"`, `"12:00 "`, `noon`} {
+		refused(t, "daily_check_time: "+v+"\n", `line 5: daily_check_time is not in the expected form`)
+	}
+	// At the bound is accepted; an unquoted time stays text.
 	parse(t, "deafness_alert_hours: 168\nreport:\n  attachment_show_hours: 47\nevidence:\n  max_attachment_mb: 50\n")
+	if got := parse(t, "daily_check_time: 23:59\n").Config.DailyCheckTime; got != "23:59" {
+		t.Errorf("daily_check_time 23:59 loaded as %q", got)
+	}
 }
 
 // ---- AC 2.2 semantic validation ---------------------------------------------
