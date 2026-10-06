@@ -25,14 +25,14 @@ A reload (SIGHUP) runs the same steps on the new file and swaps the whole result
 | `config_sync_minutes` | not read yet: the install script's timer renderer (AC 6.4) |
 | `heartbeat_url` | not read yet: the heartbeat (AC 7.3) |
 | `mode` | `internal/rules/compile.go` (the global scope's mode) |
-| `retention.evidence_days`, `retention.action_log_months`, `retention.announcement_secret_days` | `internal/config/config.go` `checkRetention`, `RetentionFor`, `LongestRetention`; the purges (AC 3.2) |
-| `rate.per_minute`, `rate.burst` | not read yet: the outbox token bucket (AC 3.5) |
-| `breaker.max_actions`, `breaker.window_minutes` | not read yet: the circuit breaker (AC 3.5) |
-| `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check); the sweep (AC 5.2) |
+| `retention.evidence_days`, `retention.action_log_months`, `retention.announcement_secret_days` | `internal/config/config.go` `checkRetention`, `RetentionFor`, `LongestRetention`; `internal/ledger/purge.go` `Purge` (evidence copies and files, action log, reports, message secrets) |
+| `rate.per_minute`, `rate.burst` | `internal/action/executor.go` `takeToken` (the outbox token bucket) |
+| `breaker.max_actions`, `breaker.window_minutes` | `internal/action/executor.go` `breaker` |
+| `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check and the sweep: banned members present, join requests, phone-only bans) |
 | `backup.target_dir` | `cmd/groupwarden/storecmds.go` `check --secrets` (must be on a different disk); the backup (AC 7.3) |
 | `backup.age_recipient` | `cmd/groupwarden/storecmds.go` `check --secrets` (parsed by `age`); the backup (AC 7.3) |
 | `backup.keep` | not read yet: the backup (AC 7.3) |
-| `evidence.max_attachment_mb` | not read yet: evidence copies (AC 3.2) |
+| `evidence.max_attachment_mb` | `internal/pipeline/moderator.go` `evidence` (an attachment over it is recorded by type, name and size only); `internal/action/media.go` `fetchOne` |
 | `report.attachment_show_hours` | not read yet: Telegram reports (AC 4.1) |
 | `bans.scope` | `internal/rules/compile.go`, `decide.go` (`Decision.BanIn`) |
 | `word_lists` | `internal/rules/compile.go` `addWords` |
