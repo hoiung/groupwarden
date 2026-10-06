@@ -108,6 +108,9 @@ type App struct {
 	// overdue: for each outside timer alerted as overdue, the last run the
 	// alert was about (one alert per episode).
 	overdue map[string]time.Time
+	// marks: the once-markers this run set (status key → value; see mark).
+	marksMu sync.Mutex
+	marks   map[string]string
 
 	mu        sync.Mutex
 	queue     []client.Lifecycle
@@ -452,7 +455,7 @@ func (a *App) checkCompanions(ctx context.Context) {
 		return
 	}
 	seen := map[string]bool{}
-	for _, d := range strings.Split(status[store.StatusCompanionsSeen].Value, ",") {
+	for _, d := range strings.Split(a.marked(status, store.StatusCompanionsSeen), ",") {
 		if d != "" {
 			seen[d] = true
 		}
@@ -465,9 +468,7 @@ func (a *App) checkCompanions(ctx context.Context) {
 		}
 	}
 	sort.Strings(current)
-	if err := a.Store.SetStatus(ctx, map[string]string{store.StatusCompanionsSeen: strings.Join(current, ",")}); err != nil {
-		a.Log.Error("write status", "err", err)
-	}
+	a.mark(ctx, store.StatusCompanionsSeen, strings.Join(current, ","))
 	if len(fresh) == 0 {
 		return
 	}
@@ -586,26 +587,51 @@ func (a *App) checkPhone(ctx context.Context, now time.Time) {
 	}
 	age := now.Sub(done)
 	days := int(age / (24 * time.Hour))
+	// Each is marked sent only once the admin chat took it: the next tick
+	// tries again otherwise.
 	switch {
-	case age >= phoneEscalateAfter && st[store.StatusPhoneEscalated].Value != key:
+	case age >= phoneEscalateAfter && a.marked(st, store.StatusPhoneEscalated) != key:
 		a.Log.Error("bot phone not confirmed opened", "days", days)
-		a.alert(ctx, alert.Alert{Kind: alert.PhoneEscalation, Priority: true, Buttons: []string{ledger.ButtonDone},
+		if a.tryAlert(ctx, alert.Alert{Kind: alert.PhoneEscalation, Priority: true, Buttons: []string{ledger.ButtonDone},
 			Text: fmt.Sprintf("Day %d without [Done]: open WhatsApp on the bot phone NOW. WhatsApp unlinks the bot's "+
 				"linked device after 14 days without the phone, and groupwarden stops until it is paired again. "+
-				"Press [Done] once you have.", days)})
-		a.setStatus(ctx, store.StatusPhoneEscalated, key)
-	case age >= phoneRemindAfter && age < phoneEscalateAfter && st[store.StatusPhoneReminded].Value != key:
-		a.alert(ctx, alert.Alert{Kind: alert.PhoneReminder, Buttons: []string{ledger.ButtonDone},
+				"Press [Done] once you have.", days)}) == nil {
+			a.mark(ctx, store.StatusPhoneEscalated, key)
+		}
+	case age >= phoneRemindAfter && age < phoneEscalateAfter && a.marked(st, store.StatusPhoneReminded) != key:
+		if a.tryAlert(ctx, alert.Alert{Kind: alert.PhoneReminder, Buttons: []string{ledger.ButtonDone},
 			Text: "Weekly check: open WhatsApp on the bot phone (WhatsApp unlinks the bot's linked device after 14 " +
-				"days without the phone). Press [Done] once you have."})
-		a.setStatus(ctx, store.StatusPhoneReminded, key)
+				"days without the phone). Press [Done] once you have."}) == nil {
+			a.mark(ctx, store.StatusPhoneReminded, key)
+		}
 	}
 }
 
-func (a *App) setStatus(ctx context.Context, key, value string) {
-	if err := a.Store.SetStatus(ctx, map[string]string{key: value}); err != nil {
-		a.Log.Error("write status", "key", key, "err", err)
+// mark sets a once-marker (the daily check's day, the phone reminder's
+// episode, the linked devices reported): for this run in memory, and in the
+// store for the next start. The memory copy is what stops a repeat when the
+// store write fails: a database that cannot be written must not turn a
+// once-a-day post into one every tick.
+func (a *App) mark(ctx context.Context, key, value string) {
+	a.marksMu.Lock()
+	if a.marks == nil {
+		a.marks = map[string]string{}
 	}
+	a.marks[key] = value
+	a.marksMu.Unlock()
+	if err := a.Store.SetStatus(ctx, map[string]string{key: value}); err != nil {
+		a.Log.Error("write status (kept in memory for this run)", "key", key, "err", err)
+	}
+}
+
+// marked is a once-marker's value: what this run marked, else the store's.
+func (a *App) marked(st map[string]store.StatusValue, key string) string {
+	a.marksMu.Lock()
+	defer a.marksMu.Unlock()
+	if v, ok := a.marks[key]; ok {
+		return v
+	}
+	return st[key].Value
 }
 
 // refreshDirectory relearns every group's community and admins. While the
