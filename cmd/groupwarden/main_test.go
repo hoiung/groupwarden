@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -419,5 +420,51 @@ func TestFatalExitCodePrinted(t *testing.T) {
 	te := newTestEnv(t, &clienttest.Fake{})
 	if code := te.run([]string{"fatal-exit-code"}); code != 0 || strings.TrimSpace(te.out.String()) != "78" {
 		t.Fatalf("exit %d output %q", code, te.out)
+	}
+}
+
+// TestCorpusTestExitCodes runs `corpus test` on the shipped example config and
+// corpus, then on a corpus where a legit post would be deleted.
+func TestCorpusTestExitCodes(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	example := filepath.Join("..", "..", "examples", "config.yaml")
+	run := func(dir string) int {
+		te.out.Reset()
+		te.errb.Reset()
+		return te.run([]string{"corpus", "test", "--config", example, "--corpus", dir})
+	}
+	if code := run(filepath.Join("..", "..", "tests", "corpus")); code != 0 {
+		t.Fatalf("shipped corpus: exit %d\n%s%s", code, te.out, te.errb)
+	}
+	out := te.out.String()
+	total := regexp.MustCompile(`(?m)^TOTAL spam=[1-9][0-9]* legit=[1-9][0-9]* legit_hits=0 spam_missed=0$`)
+	classes := regexp.MustCompile(`(?m)^CLASS legit/(in-stock|fintech-job|blockchain-meetup|mention-reply|quoted-reply|newcomer-phone|lure-phrase-only) [1-9][0-9]* hits=0$`)
+	if !total.MatchString(out) || len(classes.FindAllString(out, -1)) != 7 {
+		t.Fatalf("shipped corpus output:\n%s", out)
+	}
+
+	bad := t.TempDir()
+	for rel, body := range map[string]string{
+		"spam/1.yaml":          "text: \"bitcoin signals t.me/example_signals\"\n",
+		"legit/meetup/1.yaml":  "text: \"crypto meetup tonight https://example-meetup.test/1\"\n",
+		"legit/general/2.yaml": "text: \"see you on Sunday\"\n",
+	} {
+		p := filepath.Join(bad, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := run(bad); code != exitFail {
+		t.Fatalf("legit hit: exit %d\n%s", code, te.out)
+	}
+	if !strings.Contains(te.out.String(), "FALSE-HIT legit/meetup ") || !strings.Contains(te.out.String(), "legit_hits=1 spam_missed=0") ||
+		!strings.Contains(te.errb.String(), "1 legit sample(s) would be deleted") {
+		t.Fatalf("legit hit output:\n%s%s", te.out, te.errb)
+	}
+	if code := te.run([]string{"corpus", "test", "--config", example}); code != exitUsage {
+		t.Fatalf("no --corpus: exit %d", code)
 	}
 }
