@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -294,6 +296,36 @@ func TestExtraCompanionPauses(t *testing.T) {
 	settle()
 	if n := len(h.rec.OfKind(alert.ExtraCompanion)); n != 1 {
 		t.Fatalf("%d companion alerts, want 1", n)
+	}
+}
+
+// readOnly makes every later write to st fail, as on a full or read-only
+// disk (the store has one connection; reads still work).
+func readOnly(t *testing.T, st *store.Store) {
+	t.Helper()
+	if err := st.Write(context.Background(), func(tx *sql.Tx) error {
+		_, err := tx.Exec(`PRAGMA query_only = 1`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestExtraCompanionReportedOnceWhileTheStoreCannotWrite: a new linked device
+// is reported once even when the store cannot keep the devices seen: the
+// checks after it do not report it again.
+func TestExtraCompanionReportedOnceWhileTheStoreCannotWrite(t *testing.T) {
+	h := start(t, &clienttest.Fake{}, Settings{CompanionCheckEvery: time.Hour})
+	h.eventually("startup device list", func() bool { return h.fake.Count("LinkedDevices") >= 1 })
+	readOnly(t, h.st)
+	h.fake.SetDevices([]client.JID{client.JID("99999000000777" + ":12@lid")})
+	for checks := 2; checks <= 4; checks++ {
+		h.clock.Advance(time.Hour)
+		h.eventually(fmt.Sprintf("device check %d", checks), func() bool { return h.fake.Count("LinkedDevices") >= checks })
+	}
+	settle()
+	if n := len(h.rec.OfKind(alert.ExtraCompanion)); n != 1 {
+		t.Fatalf("%d companion alerts over 3 checks with the store unwritable, want 1", n)
 	}
 }
 
