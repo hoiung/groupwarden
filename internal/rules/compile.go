@@ -418,6 +418,19 @@ func (rs *Ruleset) CommunityOf(group, parent string) string {
 // Communities lists every configured community, sorted.
 func (rs *Ruleset) Communities() []string { return sortedKeys(rs.scopes) }
 
+// SetGroups lists the groups of a configured standalone set, sorted; nil for
+// a WhatsApp Community, whose groups are discovered from WhatsApp.
+func (rs *Ruleset) SetGroups(community string) []string {
+	var out []string
+	for g, set := range rs.groupSet {
+		if set == community {
+			out = append(out, g)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // ModeFor returns a configured community's mode; ok is false when the
 // community is not configured (any more).
 func (rs *Ruleset) ModeFor(community string) (mode Mode, ok bool) {
