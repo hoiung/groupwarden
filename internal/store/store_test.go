@@ -46,7 +46,8 @@ func TestMigrationsFromEmpty(t *testing.T) {
 		tables = append(tables, n)
 	}
 	_ = rows.Close()
-	want := []string{"counters", "inbox", "pause", "schema_version", "seen", "status"}
+	want := []string{"bans", "counters", "evidence", "inbox", "ledger", "outbox", "pause", "report_edits", "report_ledger",
+		"reports", "schema_version", "seen", "status"}
 	sort.Strings(want)
 	if strings.Join(tables, ",") != strings.Join(want, ",") {
 		t.Fatalf("tables = %v, want %v", tables, want)
