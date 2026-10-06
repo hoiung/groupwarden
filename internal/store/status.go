@@ -31,6 +31,8 @@ const (
 	StatusPhoneDone      = "phone_done"
 	StatusPhoneReminded  = "phone_reminded"
 	StatusPhoneEscalated = "phone_escalated"
+	// The last local day (2006-01-02) the daily check was posted.
+	StatusDailyCheckDay = "daily_check_day"
 	// Timers outside the bot (config sync, backup): unix ms of the last run
 	// and its result line.
 	StatusSyncLastRun   = "sync_last_run"
