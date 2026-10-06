@@ -26,7 +26,20 @@ type Fake struct {
 	ConnectErr error
 	// OnConnect, when set, replaces the default Connected lifecycle event.
 	OnConnect func(f *Fake)
+	// Requests are the pending join requests per group.
+	Requests map[client.JID][]client.JoinRequest
+	// LIDs maps a phone JID to its LID for ResolvePhoneToLID.
+	LIDs map[client.JID]client.JID
+	// Results sets a member's outcome in Remove and RejectJoinRequests
+	// (default done).
+	Results map[client.JID]client.MemberStatus
+	// OnCall, when set, runs at the start of every recorded call, before the
+	// fake answers (tests check what was stored by then).
+	OnCall func(call string)
+	// Download answers DownloadMedia (default: an error).
+	Download func(ctx context.Context, msg *client.Message) ([]byte, string, string, error)
 
+	errs  map[string][]error
 	calls []string
 }
 
@@ -35,7 +48,47 @@ var _ client.Adapter = (*Fake)(nil)
 func (f *Fake) record(call string) {
 	f.mu.Lock()
 	f.calls = append(f.calls, call)
+	hook := f.OnCall
 	f.mu.Unlock()
+	if hook != nil {
+		hook(call)
+	}
+}
+
+// FailNext makes the next calls of method ("Revoke", "Remove", ...) return
+// errs, one per call, in order.
+func (f *Fake) FailNext(method string, errs ...error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.errs == nil {
+		f.errs = map[string][]error{}
+	}
+	f.errs[method] = append(f.errs[method], errs...)
+}
+
+func (f *Fake) nextErr(method string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	q := f.errs[method]
+	if len(q) == 0 {
+		return nil
+	}
+	f.errs[method] = q[1:]
+	return q[0]
+}
+
+func (f *Fake) results(members []client.JID) []client.MemberResult {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]client.MemberResult, len(members))
+	for i, m := range members {
+		st := client.MemberDone
+		if s, ok := f.Results[m]; ok {
+			st = s
+		}
+		out[i] = client.MemberResult{Member: m, Status: st}
+	}
+	return out
 }
 
 // Calls returns every recorded call ("Connect", "InviteInfo CODE", ...).
@@ -133,30 +186,41 @@ func (f *Fake) SubGroups(_ context.Context, community client.JID) ([]client.Grou
 
 func (f *Fake) JoinRequests(_ context.Context, g client.JID) ([]client.JoinRequest, error) {
 	f.record("JoinRequests " + string(g))
-	return nil, nil
+	if err := f.nextErr("JoinRequests"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]client.JoinRequest(nil), f.Requests[g]...), nil
 }
 
 func (f *Fake) Revoke(_ context.Context, chat, sender client.JID, id string) error {
 	f.record("Revoke " + string(chat) + " " + string(sender) + " " + id)
-	return nil
+	return f.nextErr("Revoke")
 }
 
 func (f *Fake) Remove(_ context.Context, g client.JID, members []client.JID) ([]client.MemberResult, error) {
-	f.record("Remove " + string(g))
-	out := make([]client.MemberResult, len(members))
-	for i, m := range members {
-		out[i] = client.MemberResult{Member: m, Status: client.MemberDone}
+	f.record("Remove " + string(g) + " " + joinJIDs(members))
+	if err := f.nextErr("Remove"); err != nil {
+		return nil, err
 	}
-	return out, nil
+	return f.results(members), nil
 }
 
 func (f *Fake) RejectJoinRequests(_ context.Context, g client.JID, members []client.JID) ([]client.MemberResult, error) {
-	f.record("RejectJoinRequests " + string(g))
-	out := make([]client.MemberResult, len(members))
-	for i, m := range members {
-		out[i] = client.MemberResult{Member: m, Status: client.MemberDone}
+	f.record("RejectJoinRequests " + string(g) + " " + joinJIDs(members))
+	if err := f.nextErr("RejectJoinRequests"); err != nil {
+		return nil, err
 	}
-	return out, nil
+	return f.results(members), nil
+}
+
+func joinJIDs(js []client.JID) string {
+	parts := make([]string, len(js))
+	for i, j := range js {
+		parts[i] = string(j)
+	}
+	return strings.Join(parts, ",")
 }
 
 func (f *Fake) JoinWithLink(_ context.Context, code string) (client.JID, bool, error) {
@@ -178,8 +242,11 @@ func (f *Fake) InviteInfo(_ context.Context, code string) (client.Group, client.
 	return g, g.Parent, nil
 }
 
-func (f *Fake) DownloadMedia(context.Context, *client.Message) ([]byte, string, string, error) {
-	f.record("DownloadMedia")
+func (f *Fake) DownloadMedia(ctx context.Context, msg *client.Message) ([]byte, string, string, error) {
+	f.record("DownloadMedia " + msg.ID)
+	if f.Download != nil {
+		return f.Download(ctx, msg)
+	}
 	return nil, "", "", errors.New("no media in the fake")
 }
 
@@ -199,5 +266,13 @@ func (f *Fake) SetDevices(d []client.JID) {
 
 func (f *Fake) ResolvePhoneToLID(_ context.Context, phone client.JID) (client.JID, error) {
 	f.record("ResolvePhoneToLID " + string(phone))
+	if err := f.nextErr("ResolvePhoneToLID"); err != nil {
+		return "", err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if lid, ok := f.LIDs[phone]; ok {
+		return lid, nil
+	}
 	return "", errors.New("unknown number")
 }
