@@ -6,6 +6,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -78,6 +79,24 @@ func (m Member) IDs() []string {
 		}
 	}
 	return out
+}
+
+// InviteCode takes the code out of a group invite link
+// ("https://chat.whatsapp.com/<code>") or a bare code.
+func InviteCode(link string) (string, error) {
+	s := strings.TrimSpace(link)
+	s, _, _ = strings.Cut(s, "?")
+	s = strings.TrimSuffix(s, "/")
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		if !strings.Contains(s[:i], "chat.whatsapp.com") {
+			return "", fmt.Errorf("%q is not a WhatsApp group invite link", link)
+		}
+		s = s[i+1:]
+	}
+	if s == "" || strings.ContainsAny(s, " .:@") {
+		return "", fmt.Errorf("%q is not a WhatsApp group invite link", link)
+	}
+	return s, nil
 }
 
 // ErrRateLimited is returned (wrapped) when WhatsApp refuses a call for going
