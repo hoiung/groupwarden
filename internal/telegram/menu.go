@@ -201,7 +201,7 @@ func (c *Chat) pinList(ctx context.Context, chatID int64) error {
 		}
 	}
 	if msgID == 0 {
-		msg, err := c.sendText(ctx, false, text, 0, nil)
+		msg, err := c.sendText(ctx, false, text, quote{}, 0, nil)
 		if err != nil {
 			return fmt.Errorf("post the command list: %w", err)
 		}
