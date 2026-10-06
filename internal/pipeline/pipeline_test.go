@@ -233,3 +233,49 @@ func TestReplayOlderThanWindowReportOnly(t *testing.T) {
 		}
 	}
 }
+
+// TestWorkerWaitsForGroupList: the worker decides nothing until the group
+// directory has loaded once (a message matched against an empty directory
+// would count as unmoderated and be dropped); the rows wait in the inbox and
+// are decided as soon as it loads.
+func TestWorkerWaitsForGroupList(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s := open(t, filepath.Join(t.TempDir(), "g.db"), t0)
+	rec := &recorder{}
+	w := worker(s, rec)
+	d := &Directory{}
+	w.Ready = d.Loaded()
+	if err := w.Inbox.Persist(msg("ID1", "hello", t0)); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- w.Run(ctx) }()
+	time.Sleep(100 * time.Millisecond)
+	if n, _ := s.InboxLen(ctx); n != 1 || len(rec.got()) != 0 || d.IsLoaded() {
+		t.Fatalf("decided before the group list loaded: inbox %d, decided %d", n, len(rec.got()))
+	}
+	d.Update(nil)
+	deadline := time.Now().Add(10 * time.Second)
+	for len(rec.got()) != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("not decided after the group list loaded")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !d.IsLoaded() {
+		t.Fatal("IsLoaded false after Update")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// A worker stopped while it waits returns at once.
+	w2 := worker(s, rec)
+	w2.Ready = (&Directory{}).Loaded()
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	cancel2()
+	if err := w2.Run(ctx2); err != nil {
+		t.Fatal(err)
+	}
+}
