@@ -51,6 +51,11 @@ type Worker struct {
 	// applies at once).
 	Config *config.Holder
 	Log    *slog.Logger
+	// Ready, when set, holds the first drain until it is closed (the group
+	// directory's Loaded): a message decided before the bot knows its groups
+	// would be taken for one from an unmoderated group and dropped. The rows
+	// wait in the inbox meanwhile.
+	Ready <-chan struct{}
 
 	lastPurge time.Time
 }
@@ -58,6 +63,19 @@ type Worker struct {
 // Run drains whatever is already queued (events left by a crash or restart),
 // then keeps draining as the handler persists more, until ctx ends.
 func (w *Worker) Run(ctx context.Context) error {
+	if w.Ready != nil {
+		select {
+		case <-w.Ready:
+		default:
+			w.Log.Info("inbox worker waiting for the group list before deciding anything")
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-w.Ready:
+			}
+			w.Log.Info("group list loaded; inbox worker starting")
+		}
+	}
 	for {
 		if err := w.Drain(ctx); err != nil {
 			if ctx.Err() != nil {
