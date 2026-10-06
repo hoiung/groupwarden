@@ -15,6 +15,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	// The zone database inside the binary: TZ (daily_check_time's zone) works
+	// in an image without /usr/share/zoneinfo.
+	_ "time/tzdata"
 
 	"github.com/hoiung/groupwarden/internal/app"
 	"github.com/hoiung/groupwarden/internal/client"
