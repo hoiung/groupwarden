@@ -107,7 +107,8 @@ func (x *Executor) Run(ctx context.Context) {
 			continue
 		}
 		wait := idlePoll
-		if at, ok, err := x.Store.NextWake(ctx); err == nil && ok {
+		allowDelete, allowRemove := x.allowed(ctx)
+		if at, ok, err := x.Store.NextWake(ctx, allowDelete, allowRemove); err == nil && ok {
 			if d := at.Sub(x.Now()); d < wait {
 				wait = max(d, 10*time.Millisecond)
 			}
@@ -126,9 +127,8 @@ func (x *Executor) Run(ctx context.Context) {
 // full pause, removals and rejections for either kind.
 func (x *Executor) Step(ctx context.Context) (bool, error) {
 	x.init()
-	pausedAll, _ := x.Store.PausedFor(ctx, store.ScopeAll)
-	pausedRemove, _ := x.Store.PausedFor(ctx, store.ScopeRemoveBan)
-	row, ok, err := x.Store.NextDue(ctx, x.Now(), !pausedAll, !pausedRemove)
+	allowDelete, allowRemove := x.allowed(ctx)
+	row, ok, err := x.Store.NextDue(ctx, x.Now(), allowDelete, allowRemove)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -160,6 +160,8 @@ func (x *Executor) Step(ctx context.Context) (bool, error) {
 		if err := x.Store.ToShadow(ctx, row.ID, v.reason); err != nil {
 			return false, err
 		}
+		x.Log.Info("action moved to shadow", "action", string(row.Action), "chat", mask.IDs(row.Chat),
+			"reason", mask.IDs(v.reason))
 		x.report(ctx, store.Report{Kind: ledger.KindWouldRemove, Community: row.Community, Subject: row.Target,
 			Text: fmt.Sprintf("Would %s in %s, which is in shadow mode: not done.", what(row.Action), row.Community)}, row.ID)
 		return true, nil
@@ -168,9 +170,18 @@ func (x *Executor) Step(ctx context.Context) (bool, error) {
 			x.report(ctx, *v.report, row.ID)
 		}
 		x.Log.Info("action not sent", "action", string(row.Action), "chat", mask.IDs(row.Chat), "reason", mask.IDs(v.reason))
-		return true, x.Store.Finish(ctx, row.ID, store.Failed, v.reason, 0, time.Time{})
+		_, err := x.Store.Finish(ctx, row.ID, store.Failed, v.reason, 0, time.Time{})
+		return true, err
 	}
 	return true, x.send(ctx, row)
+}
+
+// allowed is which outbox scopes may fire now: deletes stop only for a full
+// pause, removals and rejections for either kind.
+func (x *Executor) allowed(ctx context.Context) (allowDelete, allowRemove bool) {
+	pausedAll, _ := x.Store.PausedFor(ctx, store.ScopeAll)
+	pausedRemove, _ := x.Store.PausedFor(ctx, store.ScopeRemoveBan)
+	return !pausedAll, !pausedRemove
 }
 
 // takeToken waits for the token bucket (rate.per_minute, rate.burst).
@@ -270,8 +281,10 @@ type verdict struct {
 // recheck runs immediately before the send (after the token bucket and the
 // breaker): the target scope must be in enforce mode, no pause may cover the
 // action, the current config must still decide it, the target must still be
-// banned, the message must still be young enough, and the target must not be
-// a current admin.
+// banned, a delete's message must still be young enough, and the target must
+// not be a current admin. A ban a pause held is applied here by the target's
+// first removal whose message still counts, and failed when the message no
+// longer does.
 func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, error) {
 	if paused, why := x.Store.PausedFor(ctx, store.ScopeOf(row.Action)); paused {
 		return verdict{outcome: hold, reason: why}, nil
@@ -296,22 +309,42 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 		if err != nil {
 			return verdict{outcome: fail, reason: err.Error()}, nil
 		}
-		d, _, hash := x.Moderator.Evaluate(msg)
-		if d.Action != rules.DeleteRemoveBan {
-			return verdict{outcome: fail, reason: "the current config (v" + hash + ") no longer acts on this message"}, nil
+		d, community, hash := x.Moderator.Evaluate(msg)
+		reason := ""
+		switch {
+		case d.Action != rules.DeleteRemoveBan:
+			reason = "the current config (v" + hash + ") no longer acts on this message"
+		case row.Action != store.ActRevoke && !slices.Contains(d.BanIn, row.Community):
+			reason = "the current ban scope no longer covers " + row.Community
 		}
-		if row.Action != store.ActRevoke && !slices.Contains(d.BanIn, row.Community) {
-			return verdict{outcome: fail, reason: "the current ban scope no longer covers " + row.Community}, nil
+		if reason != "" {
+			if err := x.Store.FailHeldBans(ctx, row.Target, row.TriggerID, reason); err != nil {
+				return verdict{}, err
+			}
+			return verdict{outcome: fail, reason: reason}, nil
+		}
+		if row.Action != store.ActRevoke {
+			n, err := x.Store.ApplyHeldBans(ctx, row.Target, pipeline.BanScopes(cur.Rules, community))
+			if err != nil {
+				return verdict{}, err
+			}
+			if n > 0 {
+				x.Log.Info("held ban applied", "target", mask.IDs(row.Target), "bans", n, "config", "v"+hash)
+			}
 		}
 	}
 	member := x.Directory.Complete(client.MemberOf(client.JID(row.Target), client.JID(row.Address)))
-	if _, banned, err := x.Store.FindBan(ctx, member.IDs(), row.Community); err != nil {
+	banned, err := x.banned(ctx, row, member)
+	if err != nil {
 		return verdict{}, err
-	} else if !banned {
+	}
+	if !banned {
 		return verdict{outcome: fail, reason: "the member was unbanned"}, nil
 	}
+	// Only a delete has a deadline: WhatsApp's admin delete window. A removal
+	// is due however long a pause held it.
 	maxAge := time.Duration(cur.Config.ActOnReplayMaxAge)
-	if !row.MsgTime.IsZero() && x.Now().Sub(row.MsgTime) > maxAge {
+	if row.Action == store.ActRevoke && !row.MsgTime.IsZero() && x.Now().Sub(row.MsgTime) > maxAge {
 		return verdict{outcome: fail, reason: "the message is older than act_on_replay_max_age (" + maxAge.String() + ")"}, nil
 	}
 	if x.Directory.IsAdmin(member.LID, member.Phone, cur.Rules) {
@@ -321,6 +354,17 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 				what(row.Action), row.Community)}}, nil
 	}
 	return verdict{outcome: proceed}, nil
+}
+
+// banned reports whether the row's target is still banned: on the ban list
+// for the row's community, or (for a delete, which a remove-and-ban pause
+// does not hold) with a ban a pause holds.
+func (x *Executor) banned(ctx context.Context, row store.LedgerRow, member client.Member) (bool, error) {
+	_, banned, err := x.Store.FindBan(ctx, member.IDs(), row.Community)
+	if err != nil || banned || row.Action != store.ActRevoke {
+		return banned, err
+	}
+	return x.Store.HeldBan(ctx, row.Target)
 }
 
 // send makes the WhatsApp call and records its result.
@@ -351,7 +395,8 @@ func (x *Executor) send(ctx context.Context, row store.LedgerRow) error {
 			status, code = memberStatus(results)
 		}
 	default:
-		return x.Store.Finish(ctx, row.ID, store.Failed, "not a WhatsApp action", 0, time.Time{})
+		_, err := x.Store.Finish(ctx, row.ID, store.Failed, "not a WhatsApp action", 0, time.Time{})
+		return err
 	}
 	if err != nil {
 		return x.failed(ctx, row, err)
@@ -362,7 +407,22 @@ func (x *Executor) send(ctx context.Context, row store.LedgerRow) error {
 	}
 	x.Log.Info("action sent", "action", string(row.Action), "chat", mask.IDs(row.Chat), "target", mask.IDs(row.Target),
 		"status", string(status), "code", code, "config", "v"+row.ConfigHash)
-	return x.Store.Finish(ctx, row.ID, status, reason, code, now)
+	settled, err := x.Store.Finish(ctx, row.ID, status, reason, code, now)
+	if err != nil || settled || status != store.Requested || row.Action == store.ActRevoke {
+		return err
+	}
+	// [Undo] overturned the row while its call was in flight: the member was
+	// removed (or refused) anyway, and the Undo reply did not list this group.
+	next := "re-invite them there by hand"
+	if row.Action == store.ActReject {
+		next = "they can ask to join again"
+	}
+	x.Log.Warn("action went out while [Undo] ran", "action", string(row.Action), "chat", mask.IDs(row.Chat),
+		"target", mask.IDs(row.Target))
+	x.report(ctx, store.Report{Kind: ledger.KindUndoRace, Priority: true, Community: row.Community, Subject: row.Target,
+		Text: fmt.Sprintf("While an admin pressed [Undo], the bot's call to %s in %s had already gone out: %s.",
+			what(row.Action), x.Directory.Label(chat), next)}, row.ID)
+	return nil
 }
 
 func memberStatus(results []client.MemberResult) (store.Status, int) {
@@ -391,7 +451,7 @@ func (x *Executor) failed(ctx context.Context, row store.LedgerRow, err error) e
 		return x.Store.Retry(ctx, row.ID, now.Add(rateLimitBackoff), msg)
 	case errors.Is(err, client.ErrNotAdmin):
 		x.Log.Warn("the bot is not an admin there", "action", string(row.Action), "chat", mask.IDs(row.Chat))
-		if err := x.Store.Finish(ctx, row.ID, store.Failed, "the bot is not an admin in this group: "+msg, 0, now); err != nil {
+		if _, err := x.Store.Finish(ctx, row.ID, store.Failed, "the bot is not an admin in this group: "+msg, 0, now); err != nil {
 			return err
 		}
 		if x.NotAdmin != nil {
@@ -400,7 +460,8 @@ func (x *Executor) failed(ctx context.Context, row store.LedgerRow, err error) e
 		return nil
 	case row.Attempts+1 >= maxAttempts:
 		x.Log.Error("action failed", "action", string(row.Action), "chat", mask.IDs(row.Chat), "err", msg)
-		return x.Store.Finish(ctx, row.ID, store.Failed, msg, 0, now)
+		_, err := x.Store.Finish(ctx, row.ID, store.Failed, msg, 0, now)
+		return err
 	}
 	d := min(retryBase<<row.Attempts, retryMax)
 	x.Log.Warn("action failed; retrying", "action", string(row.Action), "in", d, "err", msg)
