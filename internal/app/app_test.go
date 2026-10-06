@@ -350,3 +350,59 @@ func TestProlongedDisconnectAlert(t *testing.T) {
 	h.clock.step(16*time.Minute, 30*time.Second)
 	h.eventually("second episode", func() bool { return disc() == 2 })
 }
+
+// TestNothingDecidedBeforeGroupsLoad: when WhatsApp's group list fails at
+// connect, no message is decided (it waits in the inbox), the admins get one
+// priority alert, and the list is tried again every 30 seconds; once it
+// loads, the waiting message is decided.
+func TestNothingDecidedBeforeGroupsLoad(t *testing.T) {
+	ctx := context.Background()
+	fake := &clienttest.Fake{}
+	fake.FailNext("JoinedGroups", errors.New("connection reset"), errors.New("connection reset"))
+	h := start(t, fake, Settings{})
+	h.eventually("the alert", func() bool { return len(h.rec.OfKind(alert.CoverageLost)) == 1 })
+	if a := h.rec.OfKind(alert.CoverageLost)[0]; !a.Priority || !strings.Contains(a.Text, "could not list its WhatsApp groups") {
+		t.Fatalf("alert %+v", a)
+	}
+	if err := fake.Deliver(&client.Message{Chat: testGroup, Sender: "99999000000444@lid", ID: "M1", TargetID: "M1",
+		Time: h.clock.Now(), Fields: []client.Field{{Name: "body", Text: "hello", Match: "hello"}}}); err != nil {
+		t.Fatal(err)
+	}
+	inbox := func() int {
+		n, err := h.st.InboxLen(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	settle()
+	if n := inbox(); n != 1 {
+		t.Fatalf("inbox %d: decided before the group list loaded", n)
+	}
+	h.clock.Advance(monitorEvery) // the list fails again: no second alert
+	h.eventually("the second try", func() bool { return fake.Count("JoinedGroups") == 2 })
+	settle()
+	if n := inbox(); n != 1 || len(h.rec.OfKind(alert.CoverageLost)) != 1 {
+		t.Fatalf("inbox %d, alerts %+v after the second failure", n, h.rec.OfKind(alert.CoverageLost))
+	}
+	h.clock.Advance(monitorEvery) // the list loads
+	h.eventually("the message decided", func() bool { return inbox() == 0 })
+	if n := len(h.rec.OfKind(alert.CoverageLost)); n != 1 {
+		t.Fatalf("%d alerts, want 1", n)
+	}
+}
+
+// TestJoinedGroupRefreshesGroups: when the bot joins a group (by itself,
+// through /join, or added by an admin) WhatsApp's group list is read again
+// at once, so the group and its community are known before the next
+// reconcile interval.
+func TestJoinedGroupRefreshesGroups(t *testing.T) {
+	h := start(t, &clienttest.Fake{}, Settings{})
+	h.eventually("the list at connect", func() bool { return h.fake.Count("JoinedGroups") == 1 })
+	h.fake.SetGroups([]client.Group{{JID: testGroup, Name: "test"}})
+	if err := h.fake.Deliver(&client.JoinedGroup{Group: testGroup, Time: h.clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h.eventually("the list read again", func() bool { return h.fake.Count("JoinedGroups") == 2 })
+	h.eventually("the group known", func() bool { return h.app.Directory.Known(testGroup) })
+}
