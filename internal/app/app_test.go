@@ -122,7 +122,7 @@ func start(t *testing.T, fake *clienttest.Fake, s Settings) *harness {
 	dir := &pipeline.Directory{}
 	reload := make(chan struct{}, 1)
 	a := &App{
-		Adapter: fake, Store: st, Inbox: inbox, Alerter: rec, Log: log, Clock: clock, Settings: s,
+		Adapter: fake, Store: st, Inbox: inbox, Alerter: rec, Log: log, Clock: clock, Zone: time.UTC, Settings: s,
 		Config: holder, Directory: dir, Reload: reload,
 		Worker: &pipeline.Worker{Store: st, Inbox: inbox, Config: holder, Log: log,
 			Decider: &pipeline.Moderator{Store: st, Config: holder, Directory: dir, Log: log,
