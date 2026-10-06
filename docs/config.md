@@ -28,7 +28,7 @@ A reload (SIGHUP) runs the same steps on the new file and swaps the whole result
 | `retention.evidence_days`, `retention.action_log_months`, `retention.announcement_secret_days` | `internal/config/config.go` `checkRetention`, `RetentionFor`, `LongestRetention`; `internal/ledger/purge.go` `Purge` (evidence copies and files, action log, reports, message secrets); `internal/telegram/deliver.go` `stripDue` (the admin chat's reports lose the message text after `evidence_days`) |
 | `rate.per_minute`, `rate.burst` | `internal/action/executor.go` `takeToken` (the outbox token bucket) |
 | `breaker.max_actions`, `breaker.window_minutes` | `internal/action/executor.go` `breaker` |
-| `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check and the sweep: banned members present, join requests, phone-only bans) |
+| `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check, the group-list refresh and the sweep: coverage and its reports, joining absent linked groups, banned members present, join requests, phone-only bans) |
 | `backup.target_dir` | `cmd/groupwarden/storecmds.go` `check --secrets` (must be on a different disk); the backup (AC 7.3) |
 | `backup.age_recipient` | `cmd/groupwarden/storecmds.go` `check --secrets` (parsed by `age`); the backup (AC 7.3) |
 | `backup.keep` | not read yet: the backup (AC 7.3) |
