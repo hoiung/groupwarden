@@ -1,5 +1,5 @@
-// Package alert carries messages for the human admins. Phase 1 alerts go to
-// the structured log; the Telegram admin chat implements the same interface.
+// Package alert carries messages for the human admins. `run` delivers them
+// to the Telegram admin chat; one-off commands log them.
 package alert
 
 import (
@@ -28,18 +28,43 @@ const (
 	ConfigRejected Kind = "config_rejected"
 	// Breaker: the circuit breaker paused removals and bans (priority).
 	Breaker Kind = "breaker"
-	// Report: a stored report about a decision or action (ReportID set).
-	Report Kind = "report"
+	// Started and Stopping bracket a run (version, config hash).
+	Started  Kind = "started"
+	Stopping Kind = "stopping"
+	// BotDemoted / BotRemoved: the bot lost admin in, or was removed from, a
+	// moderated group.
+	BotDemoted Kind = "bot_demoted"
+	BotRemoved Kind = "bot_removed"
+	// CoverageLost: a moderated group the bot no longer covers.
+	CoverageLost Kind = "coverage_lost"
+	// SyncFailed: the config sync could not fetch or apply the config.
+	SyncFailed Kind = "sync_failed"
+	// Overdue: the config sync or backup timer has not run for twice its
+	// interval.
+	Overdue Kind = "overdue"
+	// PhoneReminder asks an admin to open WhatsApp on the bot phone (weekly,
+	// with [Done]); PhoneEscalation repeats it on day 10 without [Done].
+	PhoneReminder   Kind = "phone_reminder"
+	PhoneEscalation Kind = "phone_escalation"
 )
+
+// Priority reports whether an alert of kind k always jumps the admin chat's
+// queue, whatever its sender set: the priority set of AC 4.1.
+func (k Kind) Priority() bool {
+	switch k {
+	case FatalDisconnect, TemporaryBan, Paused, Breaker, Deafness, ProlongedDisconnect, BotDemoted, BotRemoved,
+		CoverageLost, ExtraCompanion, ConfigRejected, SyncFailed, Overdue, DecryptError, StorageFailure, PhoneEscalation:
+		return true
+	}
+	return false
+}
 
 // Alert is one message for the admins. Priority alerts jump any queue.
 type Alert struct {
 	Kind     Kind
 	Priority bool
 	Text     string
-	// ReportID is the stored report this alert delivers (Report kind only).
-	ReportID int64
-	// Buttons the admins can press, by name ("Undo", "Resume", ...).
+	// Buttons the admins can press, by name ("Resume", "Done", ...).
 	Buttons []string
 }
 
@@ -54,11 +79,11 @@ type Log struct{ Logger *slog.Logger }
 // Alert logs a at warn level, or error level when it is a priority alert.
 func (l Log) Alert(ctx context.Context, a Alert) error {
 	level := slog.LevelWarn
-	if a.Priority {
+	if a.Priority || a.Kind.Priority() {
 		level = slog.LevelError
 	}
-	l.Logger.Log(ctx, level, "alert", "kind", string(a.Kind), "priority", a.Priority, "text", mask.IDs(a.Text),
-		"report", a.ReportID, "buttons", a.Buttons)
+	l.Logger.Log(ctx, level, "alert", "kind", string(a.Kind), "priority", a.Priority || a.Kind.Priority(),
+		"text", mask.IDs(a.Text), "buttons", a.Buttons)
 	return nil
 }
 
