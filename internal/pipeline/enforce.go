@@ -377,7 +377,12 @@ func (e *Enforcer) ResolveBans(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	looked := map[string]bool{} // one lookup per phone: each settles every ban on it
 	for _, b := range bans {
+		if looked[b.Phone] {
+			continue
+		}
+		looked[b.Phone] = true
 		lid, err := e.Adapter.ResolvePhoneToLID(ctx, client.JID(b.Phone))
 		if err == nil && lid.Server() == "lid" {
 			if err := e.Store.ResolveBan(ctx, b.Phone, string(lid.Bare())); err != nil {
@@ -392,15 +397,15 @@ func (e *Enforcer) ResolveBans(ctx context.Context) error {
 			return err
 		}
 		e.Log.Warn("ban phone number not resolved to a LID", "phone", mask.IDs(b.Phone), "err", mask.IDs(err.Error()))
-		if err := e.Store.MarkBanLIDFailed(ctx, b.Phone); err != nil {
+		reported, err := e.Store.MarkBanLIDFailed(ctx, b.Phone, store.Report{Kind: ledger.KindLIDUnresolved, Priority: true,
+			Subject: b.Member, Text: "A banned phone number could not be matched to its WhatsApp ID (LID). The ban is kept " +
+				"on the phone number; someone who joins under their LID only will not match it."})
+		if err != nil {
 			return err
 		}
-		if _, err := e.Store.AddReport(ctx, store.Report{Kind: ledger.KindLIDUnresolved, Priority: true, Subject: b.Member,
-			Text: "A banned phone number could not be matched to its WhatsApp ID (LID). The ban is kept on the phone number; " +
-				"someone who joins under their LID only will not match it."}, nil); err != nil {
-			return err
+		if reported {
+			e.wake()
 		}
-		e.wake()
 	}
 	return nil
 }
