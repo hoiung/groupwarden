@@ -1,0 +1,41 @@
+[Unit]
+Description=groupwarden nightly backup (groupwarden.db, age-encrypted, to backup.target_dir)
+Documentation=https://github.com/hoiung/groupwarden/blob/main/docs/deploy.md
+
+[Service]
+Type=oneshot
+User=groupwarden
+Group=groupwarden
+# Only groupwarden.db is copied, never the WhatsApp session store. The target
+# directory (another disk) is made writable by a drop-in deploy/install.sh
+# writes from `groupwarden backup-dir`
+# (groupwarden-backup.service.d/target.conf: ReadWritePaths=<it>).
+ExecStart=/usr/local/bin/groupwarden backup --config /var/lib/groupwarden/config/config.yaml
+TimeoutStartSec=30min
+StateDirectory=groupwarden
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
