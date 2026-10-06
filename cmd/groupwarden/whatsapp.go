@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
-	"strings"
+	"sync"
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/action"
@@ -19,6 +19,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/reconcile"
 	"github.com/hoiung/groupwarden/internal/store"
+	"github.com/hoiung/groupwarden/internal/telegram"
 )
 
 // whatsApp is an open WhatsApp session: the data-dir lock, the store and the adapter.
@@ -26,8 +27,28 @@ type whatsApp struct {
 	adapter client.Adapter
 	store   *store.Store
 	inbox   *pipeline.Inbox
-	alerter alert.Alerter
+	alerter *alertSink
 	log     *slog.Logger
+}
+
+// alertSink sends alerts to the log until `run` points it at the admin chat
+// (the store, opened first, reports a write failure through it).
+type alertSink struct {
+	mu sync.Mutex
+	to alert.Alerter
+}
+
+func (s *alertSink) Alert(ctx context.Context, a alert.Alert) error {
+	s.mu.Lock()
+	to := s.to
+	s.mu.Unlock()
+	return to.Alert(ctx, a)
+}
+
+func (s *alertSink) set(a alert.Alerter) {
+	s.mu.Lock()
+	s.to = a
+	s.mu.Unlock()
 }
 
 // withWhatsApp takes the single-instance lock, opens the store and the
@@ -40,7 +61,7 @@ func (e *env) withWhatsApp(ctx context.Context, cfg *config.Config, log *slog.Lo
 		return exitFail
 	}
 	defer lock.Release()
-	alerter := alert.Log{Logger: log}
+	alerter := &alertSink{to: alert.Log{Logger: log}}
 	st, err := store.Open(ctx, cfg.StoreDB(), store.Options{OnWriteFailure: func(err error) {
 		_ = alerter.Alert(context.WithoutCancel(ctx), alert.Alert{Kind: alert.StorageFailure, Priority: true,
 			Text: "groupwarden.db cannot be written (" + err.Error() + "): every action is PAUSED until an admin resumes"})
@@ -166,27 +187,10 @@ func announcement(g client.Group) string {
 	return ""
 }
 
-// inviteCode takes the code out of an invite link (or a bare code).
-func inviteCode(link string) (string, error) {
-	s := strings.TrimSpace(link)
-	s, _, _ = strings.Cut(s, "?")
-	s = strings.TrimSuffix(s, "/")
-	if i := strings.LastIndex(s, "/"); i >= 0 {
-		if !strings.Contains(s[:i], "chat.whatsapp.com") {
-			return "", fmt.Errorf("%q is not a WhatsApp group invite link", link)
-		}
-		s = s[i+1:]
-	}
-	if s == "" || strings.ContainsAny(s, " .:@") {
-		return "", fmt.Errorf("%q is not a WhatsApp group invite link", link)
-	}
-	return s, nil
-}
-
 // resolveLink prints the group and community an invite link points to. It
 // only looks the link up; it never joins.
 func (e *env) resolveLink(ctx context.Context, w *whatsApp, link string) error {
-	code, err := inviteCode(link)
+	code, err := client.InviteCode(link)
 	if err != nil {
 		return err
 	}
@@ -209,7 +213,9 @@ func (e *env) resolveLink(ctx context.Context, w *whatsApp, link string) error {
 
 // runBot is `groupwarden run`. A config file that fails its checks still
 // boots when data_dir holds the last good copy (and the admins are told it
-// was REJECTED); with no good copy the bot refuses to start.
+// was REJECTED); with no good copy the bot refuses to start. The admin chat
+// is required: without its token and chat ID nobody would hear a report or
+// be able to press [Undo].
 func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 	holder, rejected, err := config.Boot(path)
 	if err != nil {
@@ -217,6 +223,12 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 		return exitFail
 	}
 	cur := holder.Current()
+	opts, err := adminChatOptions(cur.Config)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "refusing to start: the Telegram admin chat: %v\n", err)
+		return exitFail
+	}
+	opts.ServerURL = e.telegramURL
 	var reload <-chan struct{}
 	if e.hangups != nil {
 		ch, stop := e.hangups()
@@ -224,13 +236,16 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 		reload = ch
 	}
 	return e.withWhatsApp(ctx, cur.Config, log, func(ctx context.Context, w *whatsApp) error {
-		log.Info("starting", "config", "v"+cur.Hash)
+		log.Info("starting", "version", app.Version(), "config", "v"+cur.Hash)
 		session, err := store.OpenSession(ctx, cur.Config.WhatsmeowDB(), nil)
 		if err != nil {
 			return err
 		}
 		defer session.Close()
-		a := moderationApp(w, holder, session, log)
+		a, err := moderationApp(w, holder, session, opts, log)
+		if err != nil {
+			return err
+		}
 		a.Settings, a.Reload, a.BootRejected = app.SettingsFrom(cur.Config), reload, rejected
 		err = a.Run(ctx)
 		log.Info("stopped", "err", err)
@@ -238,33 +253,59 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 	})
 }
 
-// moderationApp wires the inbox worker, the decision, the ledger and every
-// moderation worker around one WhatsApp session.
-func moderationApp(w *whatsApp, holder *config.Holder, session *store.Session, log *slog.Logger) *app.App {
+// adminChatOptions reads the admin chat's bot token and chat ID from the
+// secrets file.
+func adminChatOptions(cfg *config.Config) (telegram.Options, error) {
+	secrets, err := config.ReadSecretsFile(cfg.SecretsFile)
+	if err != nil {
+		return telegram.Options{}, err
+	}
+	token := secrets[config.KeyTelegramBot]
+	if err := config.CheckTelegramToken(token); err != nil {
+		return telegram.Options{}, err
+	}
+	id, err := config.ParseChatID(secrets[config.KeyTelegramChatID])
+	if err != nil {
+		return telegram.Options{}, err
+	}
+	return telegram.Options{Token: token, ChatID: id}, nil // secret-allow (the variable read from the secrets file)
+}
+
+// moderationApp wires the inbox worker, the decision, the ledger, the admin
+// chat and every moderation worker around one WhatsApp session.
+func moderationApp(w *whatsApp, holder *config.Holder, session *store.Session, opts telegram.Options,
+	log *slog.Logger) (*app.App, error) {
 	dir := &pipeline.Directory{}
-	reporter := ledger.NewReporter(w.store, w.alerter, log)
+	chat, err := telegram.New(opts, &telegram.Chat{Store: w.store, Config: holder, Groups: dir, Log: log})
+	if err != nil {
+		return nil, err
+	}
+	w.alerter.set(chat)
 	media := &action.MediaFetcher{Store: w.store, Adapter: w.adapter, Config: holder,
 		Dir: filepath.Join(holder.Current().Config.DataDir, "evidence"), Log: log}
 	exec := &action.Executor{Store: w.store, Adapter: w.adapter, Config: holder, Directory: dir, Alerter: w.alerter,
-		Reported: reporter.Wake, Log: log}
+		Reported: chat.Wake, Log: log}
 	wake := func() {
 		exec.Wake()
-		reporter.Wake()
+		chat.Wake()
 		media.Wake()
 	}
 	enforcer := &pipeline.Enforcer{Store: w.store, Config: holder, Directory: dir, Adapter: w.adapter, Wake: wake, Log: log}
-	mod := &pipeline.Moderator{Store: w.store, Alerter: w.alerter, Config: holder, Directory: dir, Enforcer: enforcer, Log: log}
+	mod := &pipeline.Moderator{Store: w.store, Config: holder, Directory: dir, Enforcer: enforcer, Log: log}
 	exec.Moderator = mod
-	return &app.App{
+	a := &app.App{
 		Adapter: w.adapter, Store: w.store, Inbox: w.inbox, Alerter: w.alerter, Log: log, Clock: app.SystemClock{},
 		Worker:    &pipeline.Worker{Store: w.store, Inbox: w.inbox, Config: holder, Log: log, Decider: mod},
 		Config:    holder,
 		Directory: dir,
 		Executor:  exec,
-		Reporter:  reporter,
 		Media:     media,
 		Purger: &ledger.Purger{Store: w.store, Config: holder, Session: session, AnnouncementChats: dir.AnnouncementGroups,
 			Log: log, Now: time.Now},
-		Sweep: &reconcile.Sweep{Enforcer: enforcer, Directory: dir, Config: holder, Log: log, Sleep: action.Sleep},
+		Sweep:     &reconcile.Sweep{Enforcer: enforcer, Directory: dir, Config: holder, Log: log, Sleep: action.Sleep},
+		AdminChat: chat,
+		Admin:     &pipeline.Admin{Store: w.store, Config: holder, Directory: dir, Enforcer: enforcer, Log: log},
 	}
+	chat.Controls = a.Controls()
+	return a, nil
 }
