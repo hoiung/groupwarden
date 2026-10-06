@@ -1,0 +1,7 @@
+type: poll
+note: "poll question + options"
+text: |
+  Which coin pumps next week? Vote then join t.me/example_pumps
+  BTC
+  ETH
+  Something else
