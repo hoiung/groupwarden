@@ -1,0 +1,124 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+#
+# Example groupwarden config. Copy it, change the paths and IDs, then run
+#   groupwarden check --config <your copy> --secrets
+#   groupwarden corpus test --config <your copy> --corpus <your corpus>
+# Every key, its default and its limits are in schema/config.schema.json;
+# docs/config.md says what reads each one.
+#
+# Words and phrases are always in quotes. Matching is whole-word and ignores
+# case, accents, look-alike letters and invisible characters. A * may stand at
+# the start or end of a word: "airdrop*" also matches "airdrops".
+
+data_dir: /var/lib/groupwarden
+secrets_file: /etc/groupwarden/secrets.env
+backup:
+  target_dir: /srv/backup/groupwarden
+  # age_recipient: "age1..."   # public key the nightly backups are encrypted to
+
+# corpus_dir: /etc/groupwarden/corpus   # every load must catch all spam and no legit sample
+
+# shadow: report what would happen. enforce: act. A rule only acts when its
+# community is in enforce mode AND the rule says confirmed: true.
+mode: shadow
+
+word_lists:
+  crypto:
+    - "crypto"
+    - "cryptocurrency"
+    - "bitcoin"
+    - "btc"
+    - "ethereum"
+    - "eth"
+    - "usdt"
+    - "tether"
+    - "binance"
+    - "*coin"
+    - "altcoin*"
+    - "memecoin*"
+    - "airdrop*"
+  stocks:
+    - "stocks"
+    - "stock tips"
+    - "stock market"
+    - "stock pick*"
+    - "penny stock*"
+    - "forex"
+    - "fx signals"
+    - "trading signals"
+    - "signal group"
+    - "day trading"
+    - "options trading"
+  # Promises a pitch makes.
+  lures:
+    - "guaranteed returns"
+    - "guaranteed profit*"
+    - "passive income"
+    - "financial freedom"
+    - "double your money"
+    - "daily profit*"
+    - "invest with me"
+    - "earn from home"
+    - "risk free"
+  # Asking people to make contact privately.
+  contact:
+    - "inbox me"
+    - "dm me"
+    - "message me"
+    - "whatsapp me"
+    - "text me"
+    - "telegram me"
+    - "contact me"
+
+# These lists also match digit and symbol swaps ("cryp7o", "$tocks").
+leet_word_lists: ["crypto", "stocks"]
+
+# Blanked out before any keyword is looked at.
+never_match:
+  - "in stock"
+  - "out of stock"
+  - "stock photo*"
+  - "chicken stock"
+  - "laughing stock"
+  - "stock up"
+  - "stocking"
+
+# Links to these sites (and their subdomains) do not count as links, so a job
+# advert or a meetup page is never read as a pitch.
+allowed_domains: ["linkedin.com", "meetup.com", "eventbrite.com", "eventbrite.co.uk"]
+
+rules:
+  list:
+    # A crypto or stock word together with a link or a way to make contact.
+    - name: crypto-or-stocks-pitch
+      action: delete_remove_ban
+      confirmed: false
+      when:
+        all:
+          - words: [crypto, stocks]
+          - has: [any_link, invite_link, shortener, phone_number, contact_card, handle]
+    # A crypto or stock word together with a promise or a request to make
+    # contact ("inbox me"), with no link needed.
+    - name: crypto-lure
+      action: delete_remove_ban
+      confirmed: false
+      when:
+        all:
+          - words: [crypto, stocks]
+          - words: [lures, contact]
+    # A display name alone is never enough to act on; this only reports it.
+    - name: crypto-display-name
+      action: log
+      on: push_name
+      when:
+        words: crypto
+
+communities:
+  # A WhatsApp Community, by the ID `groupwarden groups` or
+  # `groupwarden resolve-link` prints.
+  "99999000000999@g.us":
+    name: example community
+  # A set of standalone groups that are not in a Community.
+  standalone:
+    name: example standalone groups
+    groups: ["99999000000888@g.us"]
