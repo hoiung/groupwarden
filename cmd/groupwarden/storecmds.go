@@ -178,6 +178,17 @@ func (e *env) healthcheck(ctx context.Context, cfg *config.Config) int {
 		healthy = false
 		fmt.Fprintln(e.stdout, "config: not loaded")
 	}
+	switch tg := status[store.StatusTelegramOK]; tg.Value {
+	case "1":
+		fmt.Fprintln(e.stdout, "telegram: ok")
+	case "0":
+		healthy = false
+		fmt.Fprintf(e.stdout, "telegram: REFUSED (marked unhealthy at %s: bot token revoked or bot removed from the admin chat)\n",
+			tg.UpdatedAt.UTC().Format(time.RFC3339))
+	default:
+		healthy = false
+		fmt.Fprintln(e.stdout, "telegram: not reached yet")
+	}
 	if ms, err := strconv.ParseInt(status[store.StatusLastEvent].Value, 10, 64); err == nil {
 		fmt.Fprintf(e.stdout, "last event: %s ago\n", now.Sub(time.UnixMilli(ms)).Round(time.Second))
 	} else {
