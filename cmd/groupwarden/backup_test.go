@@ -14,6 +14,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/app"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
+	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -94,6 +95,17 @@ func TestBackupAndRestoreCommands(t *testing.T) {
 	if err := os.RemoveAll(target); err != nil {
 		t.Fatal(err)
 	}
+	// The alert and the status recording it are written together: while the
+	// status cannot be written, a failed backup raises no alert, so the next
+	// run's alert is the only one.
+	lift := modtest.FailWritesInFile(t, st, "status", "")
+	if code := te.cmd("backup"); code != exitFail {
+		t.Fatalf("backup while the status cannot be written: %d %q", code, te.out.String())
+	}
+	if n := alerts(); n != 0 {
+		t.Fatalf("%d backup failure alerts while their status could not be written, want 0", n)
+	}
+	lift()
 	backupFails(1)
 	backupFails(1)
 	if err := os.MkdirAll(target, 0o700); err != nil {
