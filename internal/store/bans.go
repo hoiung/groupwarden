@@ -111,7 +111,12 @@ func (s *Store) Bans(ctx context.Context) ([]Ban, error) {
 
 // BansFor lists the bans of anyone known by one of ids.
 func (s *Store) BansFor(ctx context.Context, ids []string) ([]Ban, error) {
-	return s.bans(ctx, `SELECT `+banCols+` FROM bans WHERE member IN (SELECT value FROM json_each(?1))
+	return BansForIn(ctx, s.db, ids)
+}
+
+// BansForIn is BansFor read through q (a transaction).
+func BansForIn(ctx context.Context, q queryer, ids []string) ([]Ban, error) {
+	return bans(ctx, q, `SELECT `+banCols+` FROM bans WHERE member IN (SELECT value FROM json_each(?1))
 	OR (lid != '' AND lid IN (SELECT value FROM json_each(?1))) OR (phone != '' AND phone IN (SELECT value FROM json_each(?1)))
 ORDER BY created_at`, jsonList(nonEmpty(ids)))
 }
@@ -123,7 +128,11 @@ func (s *Store) UnresolvedBans(ctx context.Context) ([]Ban, error) {
 }
 
 func (s *Store) bans(ctx context.Context, query string, args ...any) ([]Ban, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	return bans(ctx, s.db, query, args...)
+}
+
+func bans(ctx context.Context, q queryer, query string, args ...any) ([]Ban, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read ban list: %w", err)
 	}
