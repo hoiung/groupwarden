@@ -165,3 +165,20 @@ func TestBanUnbanCommands(t *testing.T) {
 		t.Fatalf("rows %v", rows)
 	}
 }
+
+// TestBanCommandStoreReadFailure: when the store cannot say which report a
+// /ban replies to, the admin is told to try again (not that the message is not
+// a report) and the error is logged.
+func TestBanCommandStoreReadFailure(t *testing.T) {
+	h := newHarness(t, "")
+	r := watchOnly(t, h)
+	head := h.head(r.ID)
+	_ = h.k.Store.Close()
+	h.command(telegramtest.ChatID, adminUser, "/ban", head)
+	if got := h.lastReply(); got != "Could not read the report store; try again." {
+		t.Fatalf("reply %q", got)
+	}
+	if !strings.Contains(h.logs.String(), "read the report a /ban replies to") {
+		t.Fatalf("no log line for the failed read:\n%s", h.logs)
+	}
+}
