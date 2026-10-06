@@ -1,6 +1,7 @@
 package pipeline_test
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -293,5 +294,61 @@ func TestPhoneToLIDFailureReported(t *testing.T) {
 	}
 	if n := k.Fake.Count("ResolvePhoneToLID " + string(unknown.Phone)); n != 1 {
 		t.Fatalf("looked up %d times", n)
+	}
+}
+
+// TestMetaAIWatchOnlyMatchExempt: Meta AI matching a watch-only rule ("lure")
+// is reported as exempt, with no action rows and no [Ban] button, whether it
+// posts from the bot server or from an address the ban list could hold; the
+// spam behind it is still actioned.
+func TestMetaAIWatchOnlyMatchExempt(t *testing.T) {
+	k := modtest.New(t, "")
+	onBot := client.JID(strings.TrimSuffix(string(modtest.Other1), "@lid") + "@bot")
+	for i, sender := range []client.JID{onBot, modtest.Other2} {
+		m := k.Msg(fmt.Sprintf("AI%d", i), modtest.G1, sender, "crypto tips, inbox me")
+		m.FromMetaAI = true
+		k.Deliver(m)
+	}
+	reps := k.Reports(ledger.KindExempt)
+	if len(reps) != 2 || len(k.Reports(ledger.KindWouldHaveActed)) != 0 {
+		t.Fatalf("exempt reports %+v, would-have-acted %d", reps, len(k.Reports(ledger.KindWouldHaveActed)))
+	}
+	for _, r := range reps {
+		if len(r.Buttons) != 0 || !strings.Contains(r.Text, "Meta AI") {
+			t.Fatalf("report %+v", r)
+		}
+	}
+	if rows := k.Rows(modtest.Other2M); len(rows) != 0 {
+		t.Fatalf("Meta AI got action rows %+v", rows)
+	}
+	k.Deliver(k.Spam("S1", modtest.G1))
+	k.Fire()
+	if !k.Banned(modtest.SpammerM, "") {
+		t.Fatal("the spam behind Meta AI's post was not actioned")
+	}
+}
+
+// TestUnaddressableSenderReportedOnly: spam from a sender whose address is
+// neither a LID nor a phone number (a server the ban list cannot hold) is
+// reported as a priority report with no action rows, and the spam behind it
+// is still decided and actioned.
+func TestUnaddressableSenderReportedOnly(t *testing.T) {
+	k := modtest.New(t, "")
+	hosted := client.JID(strings.TrimSuffix(string(modtest.Spammer), "@lid") + "@hosted")
+	k.Deliver(k.Msg("HOST1", modtest.G1, hosted, modtest.SpamText))
+	reps := k.Reports(ledger.KindUnaddressable)
+	if len(reps) != 1 || !reps[0].Priority || reps[0].Subject != "" {
+		t.Fatalf("reports %+v, want one priority unaddressable report", reps)
+	}
+	if strings.Contains(reps[0].Text, strings.TrimSuffix(string(modtest.Spammer), "@lid")) {
+		t.Fatalf("report names the sender unmasked: %q", reps[0].Text)
+	}
+	k.Deliver(k.Spam("S1", modtest.G1))
+	k.Fire()
+	if !k.Banned(modtest.SpammerM, "") || removed(k, modtest.G1, modtest.Spammer) != 1 {
+		t.Fatalf("the spam behind it was not actioned: calls %v", k.Fake.Calls())
+	}
+	if n := k.Fake.Count("Revoke " + string(modtest.G1) + " " + string(hosted) + " HOST1"); n != 0 {
+		t.Fatalf("revoked the unaddressable post %d times", n)
 	}
 }
