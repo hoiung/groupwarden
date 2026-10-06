@@ -20,6 +20,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/store"
+	"github.com/hoiung/groupwarden/internal/store/sessiontest"
 )
 
 type testEnv struct {
@@ -65,8 +66,10 @@ func newTestEnv(t *testing.T, fake *clienttest.Fake) *testEnv {
 	t.Cleanup(te.cancel)
 	te.env = &env{
 		stdout: te.out, stderr: te.errb, getenv: func(string) string { return "" }, now: time.Now,
-		openAdapter: func(context.Context, *config.Config, *slog.Logger) (client.Adapter, error) {
+		openAdapter: func(_ context.Context, cfg *config.Config, _ *slog.Logger) (client.Adapter, error) {
 			te.opens.Add(1)
+			// The real adapter creates the session store when it opens.
+			sessiontest.Create(t, cfg.WhatsmeowDB())
 			return fake, nil
 		},
 		deviceOf: func(path string) (uint64, error) {
