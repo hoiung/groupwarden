@@ -1,8 +1,8 @@
 # Runtime state — never committed (README "Repository layout")
-data/
-backups/
-evidence/
-secrets/
+/data/
+/backups/
+/evidence/
+/secrets/
 *.db
 *.db-wal
 *.db-shm
@@ -24,6 +24,9 @@ coverage.txt
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# Bytecode the pre-commit hooks leave when they import the vendored scripts
+__pycache__/
 
 # IDE
 .vscode/
