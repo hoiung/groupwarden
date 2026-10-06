@@ -14,7 +14,9 @@ import (
 // working (the healthcheck rule's problems). The post coming from the running
 // bot is the alive signal, so no post by a quarter past means look at the
 // node. Only today is posted: a day the bot was down for is not back-filled.
-// The day posted is kept in the store, so a restart does not post twice.
+// The day posted is a once-marker (mark): in the store, so a restart does not
+// post twice, and in memory, so a store that cannot be written does not
+// re-post it every tick.
 func (a *App) checkDaily(ctx context.Context, now time.Time) {
 	at := a.Config.Current().Config.DailyCheckTime
 	due, err := time.Parse("15:04", at) // the schema allows only HH:MM
@@ -32,7 +34,7 @@ func (a *App) checkDaily(ctx context.Context, now time.Time) {
 		a.Log.Error("read status", "err", err)
 		return
 	}
-	if st[store.StatusDailyCheckDay].Value == day {
+	if a.marked(st, store.StatusDailyCheckDay) == day {
 		return
 	}
 	h := ReadHealth(st, now)
@@ -47,7 +49,7 @@ func (a *App) checkDaily(ctx context.Context, now time.Time) {
 	if err := a.tryAlert(ctx, alert.Alert{Kind: alert.DailyCheck, Text: text}); err != nil {
 		return
 	}
-	a.setStatus(ctx, store.StatusDailyCheckDay, day)
+	a.mark(ctx, store.StatusDailyCheckDay, day)
 	a.Log.Info("daily check posted", "day", day, "healthy", len(problems) == 0, "problems", len(problems))
 }
 
