@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -96,6 +98,11 @@ Store commands (work beside run):
   check [--secrets]            validate the config; --secrets lists each input as OK or MISSING
   healthcheck                  exit 0 only when run is connected, not deaf and has its config
   corpus test --corpus <dir>   test every rule, as if enforced, against labelled samples
+  ledger summary               count shadow and enforce actions per community
+  ban add|remove <lid|phone>   add to or lift from the ban list [--community <id>]
+  ban list                     print the ban list
+  member show <lid|phone>      print everything held about one person (JSON)
+  member forget <lid|phone>    delete it (an active ban is kept)
   fatal-exit-code              print the exit code that means "a human must act"
 
 Every command except fatal-exit-code takes --config <file> (default: $GROUPWARDEN_CONFIG).
@@ -112,12 +119,14 @@ func (e *env) run(args []string) int {
 		fmt.Fprintln(e.stdout, app.ExitFatal)
 		return exitOK
 	case "pair", "run", "groups", "resolve-link", "check", "healthcheck":
-	case "corpus":
-		if len(rest) == 0 || rest[0] != "test" {
-			fmt.Fprintln(e.stderr, "usage: groupwarden corpus test --config <file> --corpus <dir>")
+	case "corpus", "ledger", "ban", "member":
+		subs := map[string][]string{"corpus": {"test"}, "ledger": {"summary"}, "ban": {"add", "remove", "list"},
+			"member": {"show", "forget"}}[cmd]
+		if len(rest) == 0 || !slices.Contains(subs, rest[0]) {
+			fmt.Fprintf(e.stderr, "usage: groupwarden %s %s ...\n", cmd, strings.Join(subs, "|"))
 			return exitUsage
 		}
-		cmd, rest = "corpus test", rest[1:]
+		cmd, rest = cmd+" "+rest[0], rest[1:]
 	case "-h", "--help", "help":
 		fmt.Fprint(e.stdout, usage)
 		return exitOK
@@ -131,7 +140,9 @@ func (e *env) run(args []string) int {
 	phone := fs.String("phone", "", "pair with a code for this number (digits with country code)")
 	secrets := fs.Bool("secrets", false, "check every provisioning input")
 	corpusDir := fs.String("corpus", "", "corpus directory (spam/ and legit/<class>/)")
-	if err := fs.Parse(rest); err != nil {
+	community := fs.String("community", "", "the community a ban applies to (bans.scope per_community)")
+	args, err := parseInterspersed(fs, rest)
+	if err != nil {
 		return exitUsage
 	}
 	if *cfgPath == "" {
@@ -159,6 +170,12 @@ func (e *env) run(args []string) int {
 	switch cmd {
 	case "healthcheck":
 		return e.healthcheck(ctx, cfg)
+	case "ledger summary":
+		return e.ledgerSummary(ctx, cfg)
+	case "ban add", "ban remove", "ban list":
+		return e.ban(ctx, l, strings.TrimPrefix(cmd, "ban "), args, *community)
+	case "member show", "member forget":
+		return e.member(ctx, cfg, strings.TrimPrefix(cmd, "member "), args)
 	case "pair":
 		return e.withWhatsApp(ctx, cfg, log, func(ctx context.Context, w *whatsApp) error {
 			p, ok := w.adapter.(interface {
@@ -172,15 +189,33 @@ func (e *env) run(args []string) int {
 	case "groups":
 		return e.withWhatsApp(ctx, cfg, log, func(ctx context.Context, w *whatsApp) error { return e.groups(ctx, w) })
 	case "resolve-link":
-		if fs.NArg() != 1 {
+		if len(args) != 1 {
 			fmt.Fprintln(e.stderr, "usage: groupwarden resolve-link <invite link>")
 			return exitUsage
 		}
 		return e.withWhatsApp(ctx, cfg, log, func(ctx context.Context, w *whatsApp) error {
-			return e.resolveLink(ctx, w, fs.Arg(0))
+			return e.resolveLink(ctx, w, args[0])
 		})
 	}
 	return exitUsage
+}
+
+// parseInterspersed parses flags wherever they appear among the positional
+// arguments ("ban add <phone> --community <id>"); the standard parser stops
+// at the first positional one.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		args = fs.Args()
+		if len(args) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, args[0])
+		args = args[1:]
+	}
 }
 
 func deviceOf(path string) (uint64, error) {
