@@ -315,6 +315,7 @@ func (a *App) supervise(ctx context.Context) error {
 	}
 	a.mon.onDisconnected(a.Clock.Now())
 	if a.BootRejected != nil {
+		a.Log.Error("config rejected at boot; running the last good config", "err", a.BootRejected)
 		a.alert(ctx, alert.Alert{Kind: alert.ConfigRejected, Priority: true, Text: a.BootRejected.Error()})
 	}
 	connect()
