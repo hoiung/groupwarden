@@ -26,6 +26,10 @@ const (
 	ConfigLoaded Kind = "config_loaded"
 	// ConfigRejected: "REJECTED: <reason>, still running v<hash>" (priority).
 	ConfigRejected Kind = "config_rejected"
+	// Breaker: the circuit breaker paused removals and bans (priority).
+	Breaker Kind = "breaker"
+	// Report: a stored report about a decision or action (ReportID set).
+	Report Kind = "report"
 )
 
 // Alert is one message for the admins. Priority alerts jump any queue.
@@ -33,6 +37,10 @@ type Alert struct {
 	Kind     Kind
 	Priority bool
 	Text     string
+	// ReportID is the stored report this alert delivers (Report kind only).
+	ReportID int64
+	// Buttons the admins can press, by name ("Undo", "Resume", ...).
+	Buttons []string
 }
 
 // Alerter delivers alerts.
@@ -49,7 +57,8 @@ func (l Log) Alert(ctx context.Context, a Alert) error {
 	if a.Priority {
 		level = slog.LevelError
 	}
-	l.Logger.Log(ctx, level, "alert", "kind", string(a.Kind), "priority", a.Priority, "text", mask.IDs(a.Text))
+	l.Logger.Log(ctx, level, "alert", "kind", string(a.Kind), "priority", a.Priority, "text", mask.IDs(a.Text),
+		"report", a.ReportID, "buttons", a.Buttons)
 	return nil
 }
 
