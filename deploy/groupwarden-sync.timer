@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the groupwarden config sync every config_sync_minutes
+Documentation=https://github.com/hoiung/groupwarden/blob/main/docs/deploy.md
+
+[Timer]
+# deploy/install.sh replaces this line with the output of
+# `groupwarden schedule sync`, which reads config_sync_minutes (default 5).
+OnCalendar=*-*-* *:00/5:00
+# A run missed while the node was off happens as soon as it is back.
+Persistent=true
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
