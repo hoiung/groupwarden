@@ -154,6 +154,10 @@ func tokens(s string) []string {
 // numbers and other artefacts).
 func Base(s string) string { return base(s) }
 
+// Skeleton returns s with look-alike letters mapped to one form (the corpus
+// uses it to spot the same message pasted twice).
+func Skeleton(s string) string { return skeleton(s) }
+
 // kind tells which form of a pattern a view is compared with.
 type kind int
 
