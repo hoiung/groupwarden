@@ -16,19 +16,32 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                │ spaced letters, digit swaps, never-match phrases, whole words
                ▼
            decision: log, or delete + remove + ban everywhere
+               │ internal/ledger: ONE transaction writes the action rows (intended),
+               │ queues them in the outbox, adds the ban, keeps the evidence copy
+               │ and stores the admin report
+               ▼
+           internal/action executor: token bucket ► circuit breaker ►
+               re-check at fire time ► WhatsApp call ► requested / failed /
+               already_gone (a delete is never confirmed, so never "succeeded")
+
+           internal/reconcile sweep (at connect and every reconcile interval):
+               banned members present ► removed; their join requests ► rejected
 ```
 
 | Package | Job |
 |---|---|
-| `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test`, `fatal-exit-code` |
+| `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test`, `ledger summary`, `ban add\|remove\|list`, `member show\|forget`, `fatal-exit-code` |
 | `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation |
 | `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload |
-| `internal/pipeline` | Inbox worker, the group → community directory, the moderator |
+| `internal/pipeline` | Inbox worker, the group directory (communities, members, admins), the moderator, ban enforcement on joins |
+| `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction; report delivery; crash recovery; retention purge |
+| `internal/action` | Fires the outbox: rate limit, circuit breaker, fire-time re-check; saves evidence attachments |
+| `internal/reconcile` | The periodic sweep, backing off on WhatsApp's rate limit |
 | `internal/config` | YAML 1.2 parsing, schema validation, defaults, the reloadable `Holder` |
 | `internal/rules` | Rule compilation and checks, built-in conditions, the decision |
 | `internal/normalise` | The matching views of a text and the word/phrase matcher |
 | `internal/corpus` | Labelled spam and legit samples, and the corpus test |
-| `internal/store` | SQLite migrations and the inbox |
+| `internal/store` | SQLite: migrations, inbox, ledger, outbox, ban list, evidence, reports, pauses; maintenance of the WhatsApp session store (message-secret purge, `member forget`) |
 | `internal/mask` | Masks phone numbers, LIDs and group IDs in logs |
 | `schema` | The config schema (embedded in the binary) |
 
@@ -52,6 +65,7 @@ Maintained libraries are used instead of hand-written code wherever one fits. Ev
 | `filippo.io/age` | Checking the backup recipient key (and encrypting backups) | `v1.3.2` | 2026-08-29 | BSD-3-Clause |
 | `github.com/mdp/qrterminal/v3` | Pairing QR code in the terminal | `v3.2.1` | 2025-03-19 | MIT |
 | `google.golang.org/protobuf` | WhatsApp message types | `v1.36.12` | 2026-08-10 | BSD-3-Clause |
+| `golang.org/x/time/rate` | The token bucket on outbound WhatsApp actions | `v0.16.0` | 2026-08-19 | BSD-3-Clause |
 
 Go's standard `regexp` (RE2, linear time) is the only regular-expression engine; deployers cannot supply their own patterns.
 
