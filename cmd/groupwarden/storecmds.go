@@ -11,13 +11,10 @@ import (
 
 	"filippo.io/age"
 
+	"github.com/hoiung/groupwarden/internal/app"
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/store"
 )
-
-// heartbeatFresh is how recent run's status heartbeat must be (run writes it
-// every 30 seconds).
-const heartbeatFresh = 2 * time.Minute
 
 // check validates the config and, with --secrets, every machine-checkable
 // provisioning input, one `OK <item>` or `MISSING <item>: <why>` line each.
@@ -158,35 +155,26 @@ func (e *env) healthcheck(ctx context.Context, cfg *config.Config) int {
 		return exitFail
 	}
 	now := e.now()
-	healthy := true
-	beat, ok := status[store.StatusHeartbeat]
-	if ok && now.Sub(beat.UpdatedAt) <= heartbeatFresh {
-		fmt.Fprintf(e.stdout, "running: yes (heartbeat %s ago)\n", now.Sub(beat.UpdatedAt).Round(time.Second))
+	h := app.ReadHealth(status, now)
+	if h.Running {
+		fmt.Fprintf(e.stdout, "running: yes (heartbeat %s ago)\n", h.BeatAge.Round(time.Second))
 	} else {
-		healthy = false
 		fmt.Fprintln(e.stdout, "running: no (no recent heartbeat)")
 	}
-	connected := status[store.StatusConnected].Value == "1"
-	healthy = healthy && connected
-	fmt.Fprintf(e.stdout, "connected: %s\n", yesNo(connected))
-	deaf := status[store.StatusDeaf].Value == "1"
-	healthy = healthy && !deaf
-	fmt.Fprintf(e.stdout, "deaf: %s\n", yesNo(deaf))
-	if h := status[store.StatusConfigHash].Value; h != "" {
-		fmt.Fprintf(e.stdout, "config: v%s\n", h)
+	fmt.Fprintf(e.stdout, "connected: %s\n", yesNo(h.Connected))
+	fmt.Fprintf(e.stdout, "deaf: %s\n", yesNo(h.Deaf))
+	if h.ConfigHash != "" {
+		fmt.Fprintf(e.stdout, "config: v%s\n", h.ConfigHash)
 	} else {
-		healthy = false
 		fmt.Fprintln(e.stdout, "config: not loaded")
 	}
-	switch tg := status[store.StatusTelegramOK]; tg.Value {
+	switch h.Telegram {
 	case "1":
 		fmt.Fprintln(e.stdout, "telegram: ok")
 	case "0":
-		healthy = false
 		fmt.Fprintf(e.stdout, "telegram: REFUSED (marked unhealthy at %s: bot token revoked or bot removed from the admin chat)\n",
-			tg.UpdatedAt.UTC().Format(time.RFC3339))
+			h.TelegramSince.UTC().Format(time.RFC3339))
 	default:
-		healthy = false
 		fmt.Fprintln(e.stdout, "telegram: not reached yet")
 	}
 	if ms, err := strconv.ParseInt(status[store.StatusLastEvent].Value, 10, 64); err == nil {
@@ -214,7 +202,7 @@ func (e *env) healthcheck(ctx context.Context, cfg *config.Config) int {
 			fmt.Fprintf(e.stdout, "paused: %s since %s (%s): %s\n", what, p.Since.UTC().Format(time.RFC3339), p.Source, p.Reason)
 		}
 	}
-	if !healthy {
+	if !h.OK() {
 		return exitFail
 	}
 	return exitOK
