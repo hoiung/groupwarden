@@ -1,0 +1,11 @@
+# Only the source goes into the build context: no history, runtime state or
+# secrets (a linked worktree's .git also points outside the context).
+# Each pattern is anchored at the repo root: internal/rules/data/ is source
+# and must stay.
+/.git
+/.claude
+/data/
+/evidence/
+/backups/
+/secrets/
+/*.env
