@@ -170,18 +170,28 @@ groupwarden is a self-hosted anti-spam moderator for WhatsApp Communities. It ru
 ## Repository Structure
 ```
 groupwarden/
-├── cmd/groupwarden/        # CLI: pair, run, groups, resolve-link, check, healthcheck
+├── cmd/groupwarden/        # the CLI (`groupwarden help` lists every command)
 ├── internal/
 │   ├── client/             # Adapter interface + types; whatsmeow/ is the only whatsmeow importer
-│   ├── pipeline/           # durable inbox -> worker -> decision
-│   ├── store/              # groupwarden.db: migrations, inbox, pauses, status
-│   ├── app/                # supervisor: connect, backoff, lifecycle, health monitors
-│   ├── config/             # typed config + secrets file
-│   ├── alert/              # Alerter interface
-│   └── mask/               # masks phone numbers, LIDs and group IDs in logs
+│   ├── app/                # supervisor, Build (the bot's wiring), health rule, heartbeat, admin controls
+│   ├── pipeline/           # inbox worker, group directory, moderator, admin actions
+│   ├── rules/ normalise/   # rule compilation and matching
+│   ├── ledger/ action/     # decision transactions, outbox executor
+│   ├── reconcile/          # coverage sweep, auto-join, banned members present
+│   ├── telegram/ alert/    # the admin chat
+│   ├── config/ configsync/ # config parsing, reload, the config sync
+│   ├── store/ backup/      # groupwarden.db; nightly encrypted backup and restore
+│   └── corpus/ mask/       # labelled samples; masking IDs in logs
+├── deploy/                 # systemd units, install.sh (+ its tests), Dockerfile
+├── docs/                   # architecture, config, deploy, runbook, privacy templates, research
+├── schema/ examples/       # config JSON Schema; example config
+├── tests/corpus/           # public synthetic corpus
+├── .claude/skills/         # the spam-intake skill
 ├── scripts/                # vendored SST3 scripts (managed by propagation, never hand-edit)
 └── .github/workflows/      # ci.yml + vendored scan workflows
 ```
+
+Package detail: `docs/architecture.md`.
 
 ## Development Setup
 ```bash
