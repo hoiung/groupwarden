@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -15,9 +16,15 @@ const (
 	ActRevoke Action = "revoke" // delete a message for everyone
 	ActRemove Action = "remove" // remove a member from a group or community
 	ActReject Action = "reject" // reject a pending join request
-	ActBan    Action = "ban"    // add to the ban list (applied in the same transaction)
+	ActBan    Action = "ban"    // add to the ban list (applied in the same transaction, or held by a pause)
 	ActUnban  Action = "unban"  // lift a ban (applied in the same transaction)
 )
+
+// WhatsApp reports whether a is a WhatsApp call, fired from the outbox (a ban
+// or unban changes only the ban list).
+func (a Action) WhatsApp() bool {
+	return a == ActRevoke || a == ActRemove || a == ActReject
+}
 
 // Status is where a ledger row is. WhatsApp never confirms a delete, so a sent
 // action is "requested", never "succeeded".
@@ -125,7 +132,8 @@ func nullID(id int64) any {
 // InsertLedger writes r inside tx unless a row with the same key exists
 // (inserted false, id of the existing row). An enforce row of a WhatsApp
 // action is queued in the outbox in the same transaction, so a row is always
-// written before it can fire.
+// written before it can fire. An intended ban row is a ban a pause holds: it
+// is never queued (ApplyHeldBans settles it).
 func InsertLedger(ctx context.Context, tx *sql.Tx, r LedgerRow, now time.Time) (id int64, inserted bool, err error) {
 	if r.Status == "" {
 		r.Status = Intended
@@ -148,7 +156,7 @@ ON CONFLICT (key) DO NOTHING`, r.Key(), string(r.Action), r.Chat, r.Target, r.Tr
 	if err != nil {
 		return 0, false, err
 	}
-	if r.Mode == ModeEnforce && r.Status == Intended {
+	if r.Mode == ModeEnforce && r.Status == Intended && r.Action.WhatsApp() {
 		if err := enqueue(ctx, tx, id, r.Action, now); err != nil {
 			return 0, false, err
 		}
@@ -166,9 +174,7 @@ func ScopeOf(a Action) Scope {
 }
 
 func enqueue(ctx context.Context, q queryer, id int64, a Action, now time.Time) error {
-	switch a {
-	case ActRevoke, ActRemove, ActReject:
-	default:
+	if !a.WhatsApp() {
 		return fmt.Errorf("ledger: %s is not a WhatsApp action and cannot be queued", a)
 	}
 	_, err := q.ExecContext(ctx, `INSERT INTO outbox (ledger_id, scope, not_before) VALUES (?, ?, ?)
@@ -204,11 +210,13 @@ SELECT `+ledgerCols+` FROM ledger WHERE id = (
 	return r, true, nil
 }
 
-// NextWake is when the earliest queued action becomes due (ok false when the
-// outbox is empty).
-func (s *Store) NextWake(ctx context.Context) (time.Time, bool, error) {
+// NextWake is when the earliest queued action of the scopes the caller
+// allows becomes due (ok false when there is none): an action a pause holds
+// is not due, however old.
+func (s *Store) NextWake(ctx context.Context, allowDelete, allowRemove bool) (time.Time, bool, error) {
 	var at sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT MIN(not_before) FROM outbox`).Scan(&at); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT MIN(not_before) FROM outbox
+WHERE (scope = 'all' AND ?) OR (scope = 'remove_ban' AND ?)`, allowDelete, allowRemove).Scan(&at); err != nil {
 		return time.Time{}, false, fmt.Errorf("read outbox: %w", err)
 	}
 	return time.UnixMilli(at.Int64), at.Valid, nil
@@ -222,19 +230,36 @@ func (s *Store) OutboxLen(ctx context.Context) (int, error) {
 }
 
 // Finish records a row's final status and drops it from the outbox in one
-// transaction (an outbox row lives only while its action is pending).
-func (s *Store) Finish(ctx context.Context, id int64, st Status, reason string, code int, sent time.Time) error {
+// transaction (an outbox row lives only while its action is pending). Only a
+// row still at intended is settled: when [Undo] overturned it while its call
+// was in flight, the row keeps that status and settled is false, but a call
+// that went out (sent set) is still recorded on it, so the breaker counts it.
+func (s *Store) Finish(ctx context.Context, id int64, st Status, reason string, code int, sent time.Time) (settled bool, err error) {
 	if !st.Terminal() {
-		return fmt.Errorf("ledger: %s is not a final status", st)
+		return false, fmt.Errorf("ledger: %s is not a final status", st)
 	}
-	return s.Write(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE ledger SET status = ?, reason = ?, code = ?, sent_at = COALESCE(?, sent_at),
-	updated_at = ? WHERE id = ?`, string(st), reason, code, nullTime(sent), s.now().UnixMilli(), id); err != nil {
+	err = s.Write(ctx, func(tx *sql.Tx) error {
+		now := s.now().UnixMilli()
+		res, err := tx.ExecContext(ctx, `UPDATE ledger SET status = ?, reason = ?, code = ?, sent_at = COALESCE(?, sent_at),
+	updated_at = ? WHERE id = ? AND status = 'intended'`, string(st), reason, code, nullTime(sent), now, id)
+		if err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM outbox WHERE ledger_id = ?`, id)
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		settled = n == 1
+		if !settled && !sent.IsZero() {
+			if _, err := tx.ExecContext(ctx, `UPDATE ledger SET code = ?, sent_at = ?, updated_at = ? WHERE id = ?`,
+				code, sent.UnixMilli(), now, id); err != nil {
+				return err
+			}
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM outbox WHERE ledger_id = ?`, id)
 		return err
 	})
+	return settled, err
 }
 
 func nullTime(t time.Time) any {
@@ -319,16 +344,48 @@ func (s *Store) EnsureQueued(ctx context.Context, rows []LedgerRow) error {
 	})
 }
 
-// LatestFor returns the newest row for an action on a target in a chat whose
-// trigger starts with prefix (ok false when there is none).
-func LatestFor(ctx context.Context, tx *sql.Tx, a Action, chat, target, prefix string) (LedgerRow, bool, error) {
-	r, err := scanLedger(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger
-WHERE action = ? AND chat = ? AND target = ? AND substr(trigger_id, 1, ?) = ? ORDER BY id DESC LIMIT 1`,
-		string(a), chat, target, len(prefix), prefix))
+// LatestFor returns the newest row in mode for an action on a target in a
+// chat whose trigger starts with prefix (ok false when there is none).
+func LatestFor(ctx context.Context, tx *sql.Tx, a Action, chat, target, prefix, mode string) (LedgerRow, bool, error) {
+	return oneRow(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger
+WHERE action = ? AND chat = ? AND target = ? AND mode = ? AND substr(trigger_id, 1, ?) = ? ORDER BY id DESC LIMIT 1`,
+		string(a), chat, target, mode, len(prefix), prefix))
+}
+
+// OpenFor returns the open (intended) enforce row of an action on a target in
+// a chat, whatever triggered it (ok false when there is none).
+func OpenFor(ctx context.Context, tx *sql.Tx, a Action, chat, target string) (LedgerRow, bool, error) {
+	return oneRow(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger
+WHERE action = ? AND chat = ? AND target = ? AND mode = 'enforce' AND status = 'intended' ORDER BY id LIMIT 1`,
+		string(a), chat, target))
+}
+
+// RevokeOf returns the enforce delete of target's message msgID in chat that
+// is queued or already sent (ok false when there is none).
+func RevokeOf(ctx context.Context, tx *sql.Tx, chat, target, msgID string) (LedgerRow, bool, error) {
+	return oneRow(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger
+WHERE target = ? AND action = 'revoke' AND chat = ? AND msg_id = ? AND mode = 'enforce'
+	AND status IN ('intended', 'requested') ORDER BY id LIMIT 1`, target, chat, msgID))
+}
+
+// BanRowOf returns the ledger row of target's ban in scope when the ban is in
+// force (its ban list entry) or held by a pause (ok false when neither).
+func BanRowOf(ctx context.Context, tx *sql.Tx, target, scope string) (LedgerRow, bool, error) {
+	return oneRow(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE id = COALESCE(
+	(SELECT ledger_id FROM bans WHERE member = ?1 AND scope = ?2 AND ledger_id IS NOT NULL),
+	(SELECT id FROM ledger WHERE action = 'ban' AND status = 'intended' AND mode = 'enforce' AND target = ?1 AND chat = ?2
+		ORDER BY id LIMIT 1))`, target, scope))
+}
+
+func oneRow(row *sql.Row) (LedgerRow, bool, error) {
+	r, err := scanLedger(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, false, nil
 	}
-	return r, err == nil, err
+	if err != nil {
+		return r, false, fmt.Errorf("read ledger: %w", err)
+	}
+	return r, true, nil
 }
 
 // SentSince counts removals and rejections sent after since (the circuit
@@ -340,26 +397,117 @@ func (s *Store) SentSince(ctx context.Context, since time.Time) (int, error) {
 	return n, err
 }
 
-// StaleIntended lists enforce rows still at intended (after a crash, these are
-// re-checked and retried).
+// StaleIntended lists enforce WhatsApp actions still at intended (after a
+// crash, these are re-checked and retried; a held ban is not one of them).
 func (s *Store) StaleIntended(ctx context.Context) ([]LedgerRow, error) {
-	return s.ledgerRows(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE status = 'intended' AND mode = 'enforce' ORDER BY id`)
+	return s.ledgerRows(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE status = 'intended' AND mode = 'enforce'
+	AND action IN ('revoke', 'remove', 'reject') ORDER BY id`)
+}
+
+// ApplyHeldBans applies every ban a pause held for target in one of scopes
+// (a removal of target passed its fire-time re-check after [Resume]): each is
+// added to the ban list and its row marked requested. It returns how many.
+func (s *Store) ApplyHeldBans(ctx context.Context, target string, scopes []string) (int, error) {
+	n := 0
+	err := s.Write(ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT id, chat, address, reason FROM ledger WHERE action = 'ban'
+	AND status = 'intended' AND mode = 'enforce' AND target = ? AND chat IN (SELECT value FROM json_each(?)) ORDER BY id`,
+			target, jsonList(scopes))
+		if err != nil {
+			return fmt.Errorf("read held bans: %w", err)
+		}
+		var held []Ban
+		for rows.Next() {
+			var b Ban
+			if err := rows.Scan(&b.LedgerID, &b.Scope, &b.Phone, &b.Reason); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("read held bans: %w", err)
+			}
+			b.Member = target
+			if strings.HasSuffix(target, "@lid") {
+				b.LID = target
+			} else {
+				b.Phone = target
+			}
+			held = append(held, b)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		now := s.now()
+		for _, b := range held {
+			if err := AddBan(ctx, tx, b, now); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'requested', updated_at = ? WHERE id = ?`,
+				now.UnixMilli(), b.LedgerID); err != nil {
+				return err
+			}
+		}
+		n = len(held)
+		return nil
+	})
+	return n, err
+}
+
+// FailHeldBans fails every ban a pause held for target from trigger (its
+// message no longer counts as spam under the current config).
+func (s *Store) FailHeldBans(ctx context.Context, target, trigger, reason string) error {
+	return s.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'failed', reason = ?, updated_at = ?
+WHERE action = 'ban' AND status = 'intended' AND target = ? AND trigger_id = ?`, reason, s.now().UnixMilli(), target, trigger)
+		return err
+	})
+}
+
+// DropHeldBans overturns every ban a pause holds for any of targets (the
+// member was unbanned before the ban was applied), in tx.
+func DropHeldBans(ctx context.Context, tx *sql.Tx, targets []string, reason string, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'overturned', reason = ?, updated_at = ?
+WHERE action = 'ban' AND status = 'intended' AND target IN (SELECT value FROM json_each(?))`,
+		reason, now.UnixMilli(), jsonList(targets))
+	if err != nil {
+		return fmt.Errorf("drop held bans: %w", err)
+	}
+	return nil
+}
+
+// HeldBan reports whether a pause holds a ban for target.
+func (s *Store) HeldBan(ctx context.Context, target string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE action = 'ban' AND status = 'intended'
+	AND mode = 'enforce' AND target = ?`, target).Scan(&n)
+	return n > 0, err
 }
 
 // LedgerForTargets lists every row about any of the given member keys.
 func (s *Store) LedgerForTargets(ctx context.Context, targets []string) ([]LedgerRow, error) {
-	return s.ledgerRows(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE target IN (SELECT value FROM json_each(?)) ORDER BY id`,
+	return LedgerForTargetsIn(ctx, s.db, targets)
+}
+
+// LedgerForTargetsIn is LedgerForTargets read through q (a transaction).
+func LedgerForTargetsIn(ctx context.Context, q queryer, targets []string) ([]LedgerRow, error) {
+	return ledgerRows(ctx, q, `SELECT `+ledgerCols+` FROM ledger WHERE target IN (SELECT value FROM json_each(?)) ORDER BY id`,
 		jsonList(targets))
 }
 
 // LedgerForReport lists the rows a report is about.
 func (s *Store) LedgerForReport(ctx context.Context, reportID int64) ([]LedgerRow, error) {
-	return s.ledgerRows(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE id IN (
+	return LedgerForReportIn(ctx, s.db, reportID)
+}
+
+// LedgerForReportIn is LedgerForReport read through q (a transaction).
+func LedgerForReportIn(ctx context.Context, q queryer, reportID int64) ([]LedgerRow, error) {
+	return ledgerRows(ctx, q, `SELECT `+ledgerCols+` FROM ledger WHERE id IN (
 	SELECT ledger_id FROM report_ledger WHERE report_id = ?) ORDER BY id`, reportID)
 }
 
 func (s *Store) ledgerRows(ctx context.Context, query string, args ...any) ([]LedgerRow, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	return ledgerRows(ctx, s.db, query, args...)
+}
+
+func ledgerRows(ctx context.Context, q queryer, query string, args ...any) ([]LedgerRow, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read ledger: %w", err)
 	}
