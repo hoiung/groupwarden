@@ -53,7 +53,7 @@ func (c controls) Undo(ctx context.Context, reportID int64, by telegram.Actor) (
 	} else {
 		names := make([]string, len(res.RemovedFrom))
 		for i, g := range res.RemovedFrom {
-			names[i] = c.a.groupLabel(g)
+			names[i] = c.a.Directory.Label(g)
 		}
 		text += "Re-invite them by hand to: " + strings.Join(names, ", ") + "."
 	}
@@ -161,23 +161,6 @@ func (c controls) Join(ctx context.Context, link string, by telegram.Actor) (str
 
 func (c controls) Status(ctx context.Context) (string, error) { return c.a.statusText(ctx) }
 
-// groupLabel names a group for the admins: its name and masked ID.
-func (a *App) groupLabel(g client.JID) string {
-	if name := a.Directory.GroupName(string(g)); name != "" {
-		return name + " (" + mask.IDs(string(g)) + ")"
-	}
-	return mask.IDs(string(g))
-}
-
-// communityLabel names a configured community: its configured name, else
-// its masked ID.
-func (a *App) communityLabel(id string) string {
-	if cm, ok := a.Config.Current().Config.Communities[id]; ok && cm.Name != "" {
-		return cm.Name
-	}
-	return mask.IDs(id)
-}
-
 // statusText is /status: the connection, coverage, modes, pauses, config,
 // timers, bans and queued actions.
 func (a *App) statusText(ctx context.Context) (string, error) {
@@ -254,18 +237,14 @@ func (a *App) statusText(ctx context.Context) (string, error) {
 		for _, g := range cc.Groups {
 			n[g.State]++
 		}
-		fmt.Fprintf(&b, "%s (%s): %d covered, %d absent, %d not admin\n", a.communityLabel(c), mode,
-			n[reconcile.StateCovered], n[reconcile.StateAbsent], n[reconcile.StateNotAdmin])
+		fmt.Fprintf(&b, "%s (%s): %d covered, %d absent, %d not admin\n", pipeline.CommunityLabel(cur.Config, c), mode,
+			n[store.CoverageCovered], n[store.CoverageAbsent], n[store.CoverageNotAdmin])
 		if cc.Err != "" {
 			fmt.Fprintf(&b, "  could not list its groups: %s\n", cc.Err)
 		}
 		for _, g := range cc.Groups {
-			label := mask.IDs(string(g.JID))
-			if g.Name != "" {
-				label = g.Name + " (" + label + ")"
-			}
-			fmt.Fprintf(&b, "  %s: %s", label, strings.ReplaceAll(g.State, "_", " "))
-			if g.State != reconcile.StateAbsent {
+			fmt.Fprintf(&b, "  %s: %s", pipeline.Label(g.Name, g.JID), strings.ReplaceAll(g.State, "_", " "))
+			if g.State != store.CoverageAbsent {
 				fmt.Fprintf(&b, ", %d human admin(s)", g.HumanAdmins)
 			}
 			b.WriteString("\n")
