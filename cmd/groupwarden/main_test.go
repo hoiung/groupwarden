@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -67,7 +68,7 @@ func newTestEnv(t *testing.T, fake *clienttest.Fake) *testEnv {
 	te.ctx, te.cancel = context.WithCancel(context.Background())
 	t.Cleanup(te.cancel)
 	te.env = &env{
-		stdout: te.out, stderr: te.errb, getenv: func(string) string { return "" }, now: time.Now,
+		stdin: strings.NewReader(""), stdout: te.out, stderr: te.errb, getenv: func(string) string { return "" }, now: time.Now,
 		openAdapter: func(_ context.Context, cfg *config.Config, _ *slog.Logger) (client.Adapter, error) {
 			te.opens.Add(1)
 			// The real adapter creates the session store when it opens.
@@ -341,7 +342,7 @@ func TestGroupsListsIDs(t *testing.T) {
 	if fake.Count("Connect") != 1 || fake.Count("Disconnect") != 1 || fake.Count("Close") != 1 {
 		t.Fatalf("calls %v", fake.Calls())
 	}
-	lock, err := app.AcquireLock(filepath.Join(te.dir, "data"))
+	lock, err := app.AcquireLock(filepath.Join(te.dir, "data"), "groups")
 	if err != nil {
 		t.Fatalf("lock not released after groups: %v", err)
 	}
@@ -373,7 +374,7 @@ func TestResolveLinkDoesNotJoin(t *testing.T) {
 func TestSingleInstanceLock(t *testing.T) {
 	te := newTestEnv(t, &clienttest.Fake{})
 	te.provision(t)
-	lock, err := app.AcquireLock(filepath.Join(te.dir, "data"))
+	lock, err := app.AcquireLock(filepath.Join(te.dir, "data"), "groups")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +387,7 @@ func TestSingleInstanceLock(t *testing.T) {
 	if n := te.opens.Load(); n != 0 {
 		t.Fatalf("WhatsApp opened %d times while another instance held the lock", n)
 	}
-	if _, err := app.AcquireLock(filepath.Join(te.dir, "data")); err != app.ErrAlreadyRunning {
+	if _, err := app.AcquireLock(filepath.Join(te.dir, "data"), "groups"); err != app.ErrAlreadyRunning {
 		t.Fatalf("second lock in-process: %v", err)
 	}
 	lock.Release()
@@ -492,12 +493,39 @@ func TestCorpusTestExitCodes(t *testing.T) {
 	}
 
 	bad := t.TempDir()
-	for rel, body := range map[string]string{
+	writeCorpus(t, bad, map[string]string{
 		"spam/1.yaml":          "text: \"bitcoin signals t.me/example_signals\"\n",
+		"spam/2.yaml":          "text: \"bitcoin to the moon, huge gains coming\"\n",
 		"legit/meetup/1.yaml":  "text: \"crypto meetup tonight https://example-meetup.test/1\"\n",
 		"legit/general/2.yaml": "text: \"see you on Sunday\"\n",
+	})
+	if code := run(bad); code != exitFail {
+		t.Fatalf("legit hit and missed spam: exit %d\n%s", code, te.out)
+	}
+	out = te.out.String()
+	for _, want := range []string{
+		"FALSE-HIT legit/meetup " + filepath.Join(bad, "legit", "meetup", "1.yaml") + ": deleted by crypto-or-stocks-pitch\n",
+		"MISSED spam " + filepath.Join(bad, "spam", "2.yaml") + ": closest rule crypto-or-stocks-pitch, failed has: " +
+			"any_link or invite_link or shortener or phone_number or contact_card or handle\n",
+		"RULE crypto-or-stocks-pitch hits=2\n",
+		"TOTAL spam=2 legit=2 legit_hits=1 spam_missed=1\n",
 	} {
-		p := filepath.Join(bad, rel)
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(te.errb.String(), "1 legit sample(s) would be deleted; 1 spam sample(s) are not caught") {
+		t.Fatalf("stderr: %s", te.errb)
+	}
+	if code := te.run([]string{"corpus", "test", "--config", example}); code != exitUsage {
+		t.Fatalf("no --corpus: exit %d", code)
+	}
+}
+
+func writeCorpus(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for rel, body := range files {
+		p := filepath.Join(dir, rel)
 		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -505,14 +533,101 @@ func TestCorpusTestExitCodes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if code := run(bad); code != exitFail {
-		t.Fatalf("legit hit: exit %d\n%s", code, te.out)
+}
+
+// TestCorpusTestRefusesEmptyLegit: "no legit sample deleted" is never
+// measured over zero legit samples (nor "no spam missed" over zero spam).
+func TestCorpusTestRefusesEmptyLegit(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	example := filepath.Join("..", "..", "examples", "config.yaml")
+	for _, c := range []struct {
+		files      map[string]string
+		total, err string
+	}{
+		{map[string]string{"spam/1.yaml": "text: \"bitcoin signals t.me/example_signals\"\n"},
+			"TOTAL spam=1 legit=0 legit_hits=0 spam_missed=0\n", "the corpus has no legit samples"},
+		{map[string]string{"legit/general/1.yaml": "text: \"see you on Sunday\"\n"},
+			"TOTAL spam=0 legit=1 legit_hits=0 spam_missed=0\n", "the corpus has no spam samples"},
+	} {
+		dir := t.TempDir()
+		writeCorpus(t, dir, c.files)
+		te.out.Reset()
+		te.errb.Reset()
+		if code := te.run([]string{"corpus", "test", "--config", example, "--corpus", dir}); code != exitFail {
+			t.Fatalf("%v: exit %d", c.files, code)
+		}
+		if !strings.Contains(te.out.String(), c.total) || !strings.Contains(te.errb.String(), c.err) {
+			t.Fatalf("%v:\n%s%s", c.files, te.out, te.errb)
+		}
 	}
-	if !strings.Contains(te.out.String(), "FALSE-HIT legit/meetup ") || !strings.Contains(te.out.String(), "legit_hits=1 spam_missed=0") ||
-		!strings.Contains(te.errb.String(), "1 legit sample(s) would be deleted") {
-		t.Fatalf("legit hit output:\n%s%s", te.out, te.errb)
+}
+
+// TestCorpusAddSavesAndSeeds: `corpus add` saves a pasted message from
+// stdin, seeds a new private corpus with every public legit sample, refuses
+// the same message under the other label, and the result passes `corpus
+// test` against the shipped rules; --public writes a fully redacted sample.
+func TestCorpusAddSavesAndSeeds(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	example := filepath.Join("..", "..", "examples", "config.yaml")
+	public := 0
+	err := filepath.WalkDir(filepath.Join("..", "..", "tests", "corpus", "legit"), func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".yaml") {
+			public++
+		}
+		return err
+	})
+	if err != nil || public == 0 {
+		t.Fatalf("public legit samples: %d %v", public, err)
 	}
-	if code := te.run([]string{"corpus", "test", "--config", example}); code != exitUsage {
-		t.Fatalf("no --corpus: exit %d", code)
+	dir := filepath.Join(te.dir, "private-corpus")
+	mobile := fmt.Sprintf("+%d %d %d", 44, 7911, 123456)
+	add := func(stdin string, args ...string) int {
+		te.out.Reset()
+		te.errb.Reset()
+		te.env.stdin = strings.NewReader(stdin)
+		return te.run(append([]string{"corpus", "add"}, args...))
+	}
+	spam := "Bitcoin desk open 24/7, call " + mobile + "\n"
+	if code := add(spam, "--label", "spam", "--corpus", dir, "--note", "pasted"); code != exitOK {
+		t.Fatalf("add: exit %d\n%s%s", code, te.out, te.errb)
+	}
+	lines := strings.Split(strings.TrimSpace(te.out.String()), "\n")
+	if len(lines) != 2 || lines[0] != fmt.Sprintf("SEEDED %d legit samples from the public set into %s/legit", public, dir) ||
+		!strings.HasPrefix(lines[1], "ADDED "+filepath.Join(dir, "spam")+"/") {
+		t.Fatalf("add output:\n%s", te.out)
+	}
+	saved, err := os.ReadFile(strings.TrimPrefix(lines[1], "ADDED "))
+	if err != nil || strings.Contains(string(saved), "7911") || !strings.Contains(string(saved), "note: pasted") {
+		t.Fatalf("saved sample (%v):\n%s", err, saved)
+	}
+	if code := add(strings.ToUpper(spam), "--label", "spam", "--corpus", dir); code != exitOK ||
+		te.out.String() != "DUPLICATE "+strings.TrimPrefix(lines[1], "ADDED ")+"\n" {
+		t.Fatalf("again: exit %d %q", code, te.out)
+	}
+	if code := add(spam, "--label", "legit", "--corpus", dir); code != exitFail ||
+		!strings.Contains(te.errb.String(), "already labelled spam") {
+		t.Fatalf("other label: exit %d %q", code, te.errb)
+	}
+	te.out.Reset()
+	if code := te.run([]string{"corpus", "test", "--config", example, "--corpus", dir}); code != exitOK ||
+		!strings.Contains(te.out.String(), fmt.Sprintf("TOTAL spam=1 legit=%d legit_hits=0 spam_missed=0", public)) {
+		t.Fatalf("corpus test of the private corpus: exit %d\n%s%s", code, te.out, te.errb)
+	}
+	pub := filepath.Join(te.dir, "public-corpus")
+	if code := add(spam, "--label", "spam", "--corpus", pub, "--public"); code != exitOK ||
+		strings.Contains(te.out.String(), "SEEDED") {
+		t.Fatalf("--public: exit %d %q", code, te.out)
+	}
+	saved, err = os.ReadFile(strings.TrimSpace(strings.TrimPrefix(te.out.String(), "ADDED ")))
+	if err != nil || !strings.Contains(string(saved), "+44 7700 900123") {
+		t.Fatalf("public sample (%v):\n%s", err, saved)
+	}
+	for _, args := range [][]string{{"--corpus", dir}, {"--label", "spam"}} {
+		if code := add(spam, args...); code != exitUsage {
+			t.Errorf("%v: exit %d, want usage", args, code)
+		}
+	}
+	if code := add(spam, "--label", "junk", "--corpus", dir); code != exitFail {
+		t.Errorf("bad label: exit %d", code)
 	}
 }
