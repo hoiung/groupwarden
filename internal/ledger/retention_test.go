@@ -154,9 +154,7 @@ func TestActionLogPurge(t *testing.T) {
 	k := modtest.New(t, "")
 	k.Deliver(k.Spam("OLD", modtest.G1))
 	k.Fire()
-	if err := k.Reporter.Deliver(k.Ctx); err != nil {
-		t.Fatal(err)
-	}
+	k.MarkAllSent()
 	// A row still waiting in the outbox (removals paused) when the window passes.
 	if err := k.Store.SetPause(k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan, Reason: "t",
 		Since: k.Clock.Now()}); err != nil {
@@ -168,9 +166,7 @@ func TestActionLogPurge(t *testing.T) {
 	k.Deliver(k.Msg("NEW", modtest.G1, modtest.Other1, modtest.SpamText))
 	k.Fire()
 	k.Clock.Advance(190 * 24 * time.Hour) // OLD and QUEUED are 390 days old, NEW 190
-	if err := k.Reporter.Deliver(k.Ctx); err != nil {
-		t.Fatal(err)
-	}
+	k.MarkAllSent()
 	res, err := purger(k).Purge(k.Ctx)
 	if err != nil {
 		t.Fatal(err)
