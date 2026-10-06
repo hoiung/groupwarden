@@ -1,8 +1,13 @@
-// Package config loads and checks groupwarden's YAML configuration.
+// Package config loads, validates and reloads groupwarden's YAML config.
+//
+// A file is read as YAML 1.2 (duplicate keys, anchors and tags refused),
+// checked against schema/config.schema.json (the only home of defaults and
+// bounds), its words checked to be quoted, then compiled into a rules.Ruleset
+// whose semantic checks (the combination rule, references, wildcards) run
+// before anything is swapped in.
 package config
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,73 +15,160 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
-	"go.yaml.in/yaml/v3"
+	"github.com/hoiung/groupwarden/internal/rules"
 )
 
-// MaxReplayAge is the hard ceiling for act_on_replay_max_age: WhatsApp lets a
-// group admin delete a message for everyone for about 2 days, so anything
-// older can only be reported.
-const MaxReplayAge = 47 * time.Hour
-
-// Duration is a YAML duration written like "47h" or "90m".
+// Duration is a config duration written like "47h" or "90m".
 type Duration time.Duration
 
-// UnmarshalYAML parses a quoted or plain duration string.
-func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
-	if n.Kind != yaml.ScalarNode {
-		return fmt.Errorf("line %d: expected a duration like \"47h\"", n.Line)
+// UnmarshalJSON reads the schema-checked duration string.
+func (d *Duration) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
 	}
-	v, err := time.ParseDuration(n.Value)
+	v, err := time.ParseDuration(s)
 	if err != nil {
-		return fmt.Errorf("line %d: %q is not a duration like \"47h\"", n.Line, n.Value)
+		return err
 	}
 	*d = Duration(v)
 	return nil
 }
 
-// MarshalJSON writes the duration as a string, for the config hash.
+// MarshalJSON writes the duration as a string.
 func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(time.Duration(d).String()) }
+
+// Retention holds the purge windows.
+type Retention struct {
+	EvidenceDays           int `json:"evidence_days"`
+	ActionLogMonths        int `json:"action_log_months"`
+	AnnouncementSecretDays int `json:"announcement_secret_days"`
+}
+
+// RetentionOverride is a community's retention; nil fields inherit.
+type RetentionOverride struct {
+	EvidenceDays           *int `json:"evidence_days,omitempty"`
+	ActionLogMonths        *int `json:"action_log_months,omitempty"`
+	AnnouncementSecretDays *int `json:"announcement_secret_days,omitempty"`
+}
+
+// Rate is the outbound WhatsApp action token bucket.
+type Rate struct {
+	PerMinute int `json:"per_minute"`
+	Burst     int `json:"burst"`
+}
+
+// Breaker pauses removals and bans after too many in a window.
+type Breaker struct {
+	MaxActions    int `json:"max_actions"`
+	WindowMinutes int `json:"window_minutes"`
+}
 
 // Reconcile holds the periodic sweep settings.
 type Reconcile struct {
-	IntervalMinutes int `yaml:"interval_minutes" json:"interval_minutes"`
+	IntervalMinutes int `json:"interval_minutes"`
 }
 
 // Backup holds where encrypted backups go.
 type Backup struct {
-	TargetDir    string `yaml:"target_dir" json:"target_dir"`
-	AgeRecipient string `yaml:"age_recipient" json:"age_recipient"`
+	TargetDir    string `json:"target_dir"`
+	AgeRecipient string `json:"age_recipient"`
+	Keep         int    `json:"keep"`
 }
 
-// Config is the loaded configuration.
+// Evidence holds evidence-copy settings.
+type Evidence struct {
+	MaxAttachmentMB int `json:"max_attachment_mb"`
+}
+
+// Report holds admin-chat report settings.
+type Report struct {
+	AttachmentShowHours int `json:"attachment_show_hours"`
+}
+
+// Bans holds the ban list settings.
+type Bans struct {
+	Scope rules.BanScope `json:"scope"`
+}
+
+// RulesSection holds the rules and their word-length floor.
+type RulesSection struct {
+	MinWordLength int              `json:"min_word_length"`
+	List          []rules.RuleSpec `json:"list"`
+}
+
+// Community is one configured community's overrides.
+type Community struct {
+	Name         string              `json:"name,omitempty"`
+	Groups       []string            `json:"groups,omitempty"`
+	Mode         rules.Mode          `json:"mode,omitempty"`
+	DisableRules []string            `json:"disable_rules,omitempty"`
+	WordLists    map[string][]string `json:"word_lists,omitempty"`
+	Retention    *RetentionOverride  `json:"retention,omitempty"`
+}
+
+// Config is a loaded config with every default filled in.
 type Config struct {
-	DataDir                string    `yaml:"data_dir" json:"data_dir"`
-	SecretsFile            string    `yaml:"secrets_file" json:"secrets_file"`
-	DeployKeyFile          string    `yaml:"deploy_key_file" json:"deploy_key_file"`
-	ActOnReplayMaxAge      Duration  `yaml:"act_on_replay_max_age" json:"act_on_replay_max_age"`
-	DeafnessAlertHours     int       `yaml:"deafness_alert_hours" json:"deafness_alert_hours"`
-	DisconnectAlertMinutes int       `yaml:"disconnect_alert_minutes" json:"disconnect_alert_minutes"`
-	Reconcile              Reconcile `yaml:"reconcile" json:"reconcile"`
-	Backup                 Backup    `yaml:"backup" json:"backup"`
+	DataDir                string               `json:"data_dir"`
+	SecretsFile            string               `json:"secrets_file"`
+	DeployKeyFile          string               `json:"deploy_key_file"`
+	CorpusDir              string               `json:"corpus_dir"`
+	ActOnReplayMaxAge      Duration             `json:"act_on_replay_max_age"`
+	DeafnessAlertHours     int                  `json:"deafness_alert_hours"`
+	DisconnectAlertMinutes int                  `json:"disconnect_alert_minutes"`
+	ConfigSyncMinutes      int                  `json:"config_sync_minutes"`
+	HeartbeatURL           string               `json:"heartbeat_url"`
+	Mode                   rules.Mode           `json:"mode"`
+	Retention              Retention            `json:"retention"`
+	Rate                   Rate                 `json:"rate"`
+	Breaker                Breaker              `json:"breaker"`
+	Reconcile              Reconcile            `json:"reconcile"`
+	Backup                 Backup               `json:"backup"`
+	Evidence               Evidence             `json:"evidence"`
+	Report                 Report               `json:"report"`
+	Bans                   Bans                 `json:"bans"`
+	WordLists              map[string][]string  `json:"word_lists"`
+	LeetWordLists          []string             `json:"leet_word_lists"`
+	NeverMatch             []string             `json:"never_match"`
+	AllowedDomains         []string             `json:"allowed_domains"`
+	Rules                  RulesSection         `json:"rules"`
+	Communities            map[string]Community `json:"communities"`
 
 	// Dir is the directory the config file was read from (not a key).
-	Dir string `yaml:"-" json:"-"`
+	Dir string `json:"-"`
 }
 
-// defaults returns a Config holding every default; Load decodes over it.
-func defaults() Config {
-	return Config{
-		ActOnReplayMaxAge:      Duration(MaxReplayAge),
-		DeafnessAlertHours:     6,
-		DisconnectAlertMinutes: 15,
-		Reconcile:              Reconcile{IntervalMinutes: 60},
+// Loaded is a config that passed every check, with its compiled rules.
+type Loaded struct {
+	Config *Config
+	Rules  *rules.Ruleset
+	// Hash identifies the compiled config ("config v<Hash>"): the sha256 of
+	// the effective settings and the compiled ruleset, so comments, key
+	// order and defaults written out do not change it.
+	Hash string
+	// Raw is the file as read (kept on disk as the last good copy).
+	Raw []byte
+}
+
+// Load reads path, checks it fully (including the corpus when corpus_dir
+// is set) and compiles it.
+func Load(path string) (*Loaded, error) {
+	l, err := Read(path)
+	if err != nil {
+		return nil, err
 	}
+	if err := checkCorpus(l); err != nil {
+		return nil, err
+	}
+	return l, nil
 }
 
-// Load reads, decodes and checks the config file at path.
-func Load(path string) (*Config, error) {
+// Read reads, checks and compiles path without the corpus test (which
+// `corpus test` runs itself, to print every result).
+func Read(path string) (*Loaded, error) {
 	raw, err := os.ReadFile(path) // #nosec G304 -- the operator names the config file
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -87,64 +179,171 @@ func Load(path string) (*Config, error) {
 	return Parse(raw, filepath.Dir(path))
 }
 
-// Parse decodes and checks config bytes; dir resolves relative paths.
-func Parse(raw []byte, dir string) (*Config, error) {
-	cfg := defaults()
-	dec := yaml.NewDecoder(bytes.NewReader(raw))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+// Parse checks config bytes and compiles them; dir resolves relative paths.
+// It reads no other file.
+func Parse(raw []byte, dir string) (*Loaded, error) {
+	if _, _, err := configSchema(); err != nil {
+		return nil, err
+	}
+	t, err := parseYAML(raw)
+	if err != nil {
+		return nil, err
+	}
+	if t.root == nil {
+		return nil, Problems{{Msg: "the config file is empty"}}
+	}
+	_, doc, _ := configSchema()
+	applyDefaults(t.root, doc)
+	probs := append(validate(t), unquotedWords(t)...)
+	if len(probs) > 0 {
+		return nil, dedupe(probs).sorted()
+	}
+	cfg, err := decode(t.root)
+	if err != nil {
+		return nil, err
 	}
 	cfg.Dir = dir
-	for _, p := range []*string{&cfg.DataDir, &cfg.SecretsFile, &cfg.DeployKeyFile, &cfg.Backup.TargetDir} {
+	for _, p := range []*string{&cfg.DataDir, &cfg.SecretsFile, &cfg.DeployKeyFile, &cfg.CorpusDir, &cfg.Backup.TargetDir} {
 		if *p != "" && !filepath.IsAbs(*p) {
 			*p = filepath.Join(dir, *p)
 		}
 	}
-	if err := cfg.check(); err != nil {
+	if probs := cfg.checkRetention(t); len(probs) > 0 {
+		return nil, probs.sorted()
+	}
+	rs, err := rules.Compile(cfg.Spec())
+	if err != nil {
+		var es rules.Errors
+		if errors.As(err, &es) {
+			return nil, ruleProblems(t, es).sorted()
+		}
 		return nil, err
+	}
+	return &Loaded{Config: cfg, Rules: rs, Hash: hashOf(cfg, rs), Raw: raw}, nil
+}
+
+func decode(root any) (*Config, error) {
+	b, err := json.Marshal(root)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	var cfg Config
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
 	}
 	return &cfg, nil
 }
 
-func (c *Config) check() error {
-	var errs []error
-	if c.DataDir == "" {
-		errs = append(errs, errors.New("data_dir is required"))
+func dedupe(ps Problems) Problems {
+	seen := map[string]bool{}
+	var out Problems
+	for _, p := range ps {
+		if k := p.String(); !seen[k] {
+			seen[k] = true
+			out = append(out, p)
+		}
 	}
-	if c.SecretsFile == "" {
-		errs = append(errs, errors.New("secrets_file is required"))
-	}
-	if c.Backup.TargetDir == "" {
-		errs = append(errs, errors.New("backup.target_dir is required"))
-	}
-	age := time.Duration(c.ActOnReplayMaxAge)
-	if age <= 0 || age > MaxReplayAge {
-		errs = append(errs, fmt.Errorf("act_on_replay_max_age %s must be above 0 and at most %s (WhatsApp's admin delete window)", age, MaxReplayAge))
-	}
-	errs = append(errs,
-		bound("deafness_alert_hours", c.DeafnessAlertHours, 1, 168),
-		bound("disconnect_alert_minutes", c.DisconnectAlertMinutes, 1, 1440),
-		bound("reconcile.interval_minutes", c.Reconcile.IntervalMinutes, 5, 1440),
-	)
-	return errors.Join(errs...)
+	return out
 }
 
-func bound(key string, v, lo, hi int) error {
-	if v < lo || v > hi {
-		return fmt.Errorf("%s %d must be between %d and %d", key, v, lo, hi)
+// checkRetention enforces announcement_secret_days >= evidence_days, globally
+// and for each community's effective values (a cross-key rule the schema
+// cannot express).
+func (c *Config) checkRetention(t *tree) Problems {
+	var probs Problems
+	check := func(r Retention, path []string, label string) {
+		if r.AnnouncementSecretDays < r.EvidenceDays {
+			pos := t.where(append(path, "announcement_secret_days"))
+			probs = append(probs, Problem{Line: pos.line, Column: pos.col, Msg: fmt.Sprintf(
+				"%sretention.announcement_secret_days (%d) must be at least retention.evidence_days (%d)",
+				label, r.AnnouncementSecretDays, r.EvidenceDays)})
+		}
 	}
-	return nil
+	check(c.Retention, []string{"retention"}, "")
+	for _, id := range sortedKeys(c.Communities) {
+		check(c.RetentionFor(id), []string{"communities", id, "retention"}, "communities."+id+": ")
+	}
+	return probs
 }
 
-// Hash is the short sha256 of the loaded configuration, shown as "config v<hash>".
-func (c *Config) Hash() string {
-	b, err := json.Marshal(c)
+// RetentionFor returns a community's effective retention.
+func (c *Config) RetentionFor(community string) Retention {
+	r := c.Retention
+	if o := c.Communities[community].Retention; o != nil {
+		if o.EvidenceDays != nil {
+			r.EvidenceDays = *o.EvidenceDays
+		}
+		if o.ActionLogMonths != nil {
+			r.ActionLogMonths = *o.ActionLogMonths
+		}
+		if o.AnnouncementSecretDays != nil {
+			r.AnnouncementSecretDays = *o.AnnouncementSecretDays
+		}
+	}
+	return r
+}
+
+// LongestRetention is the longest of each window across the global settings
+// and every community: one purge serves all, so it keeps the longest.
+func (c *Config) LongestRetention() Retention {
+	r := c.Retention
+	for id := range c.Communities {
+		e := c.RetentionFor(id)
+		r.EvidenceDays = max(r.EvidenceDays, e.EvidenceDays)
+		r.ActionLogMonths = max(r.ActionLogMonths, e.ActionLogMonths)
+		r.AnnouncementSecretDays = max(r.AnnouncementSecretDays, e.AnnouncementSecretDays)
+	}
+	return r
+}
+
+// Spec is the rules' view of the config.
+func (c *Config) Spec() rules.Spec {
+	s := rules.Spec{
+		Mode: c.Mode, MinWordLength: c.Rules.MinWordLength, WordLists: c.WordLists,
+		LeetWordLists: c.LeetWordLists, NeverMatch: c.NeverMatch, AllowedDomains: c.AllowedDomains,
+		Rules: c.Rules.List, BanScope: c.Bans.Scope,
+	}
+	for _, id := range sortedKeys(c.Communities) {
+		cm := c.Communities[id]
+		s.Communities = append(s.Communities, rules.CommunitySpec{
+			ID: id, Groups: cm.Groups, Mode: cm.Mode, DisableRules: cm.DisableRules, WordLists: cm.WordLists,
+		})
+	}
+	return s
+}
+
+// ruleProblems places each compile error at its line in the file.
+func ruleProblems(t *tree, es rules.Errors) Problems {
+	var probs Problems
+	for _, e := range es {
+		pos := t.where(e.Path)
+		if len(e.Path) >= 2 && e.Path[0] == "communities" && len(e.Path) == 2 {
+			pos = t.keyAt(e.Path)
+		}
+		probs = append(probs, Problem{Line: pos.line, Column: pos.col, Msg: e.Msg})
+	}
+	return probs
+}
+
+func hashOf(c *Config, rs *rules.Ruleset) string {
+	b, err := json.Marshal(struct {
+		Config *Config `json:"config"`
+		Rules  string  `json:"rules"`
+	}{c, rs.Hash()})
 	if err != nil {
 		panic(fmt.Sprintf("config hash: %v", err)) // a plain struct always marshals
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // WhatsmeowDB is the WhatsApp session store (never backed up).
