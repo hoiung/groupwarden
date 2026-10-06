@@ -164,14 +164,15 @@ func TestOverdueTimerAlert(t *testing.T) {
 		store.StatusSyncLastRun: strconv.FormatInt(h.clock.Now().UnixMilli(), 10)}); err != nil {
 		t.Fatal(err)
 	}
-	h.clock.step(2*sync-time.Minute, 30*time.Second)
-	settle()
+	// One tick at a time, each handled before the next: the alert comes at
+	// the first tick past twice the interval, whatever the test's speed.
+	h.tick(2*sync - time.Minute)
 	if n := len(overdue("config sync")); n != 1 {
 		t.Fatalf("alerted again %d within twice the interval of a run", n)
 	}
-	h.clock.step(2*time.Minute, 30*time.Second)
+	h.tick(2 * time.Minute)
 	h.eventually("second sync episode", func() bool { return len(overdue("config sync")) == 2 })
-	if a := overdue("config sync")[1]; !strings.Contains(a.Text, "last run "+(2*sync+time.Minute).String()+" ago") {
+	if a := overdue("config sync")[1]; !strings.Contains(a.Text, "last run "+(2*sync+monitorEvery).String()+" ago") {
 		t.Fatalf("second sync alert %q", a.Text)
 	}
 
