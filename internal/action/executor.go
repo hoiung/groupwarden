@@ -44,6 +44,11 @@ type Executor struct {
 	Alerter   alert.Alerter
 	// Reported is called after a report was stored (wakes the reporter).
 	Reported func()
+	// NotAdmin is called when WhatsApp refused an action because the bot is
+	// not an admin of chat (cause names the action). The app sets it to the
+	// sweep's LostAdmin, which marks the group not covered and alerts (nil:
+	// the row is only failed).
+	NotAdmin func(ctx context.Context, chat client.JID, cause string)
 	Log      *slog.Logger
 	Now      func() time.Time
 	// Sleep waits for d or until ctx ends (tests replace it).
@@ -386,7 +391,13 @@ func (x *Executor) failed(ctx context.Context, row store.LedgerRow, err error) e
 		return x.Store.Retry(ctx, row.ID, now.Add(rateLimitBackoff), msg)
 	case errors.Is(err, client.ErrNotAdmin):
 		x.Log.Warn("the bot is not an admin there", "action", string(row.Action), "chat", mask.IDs(row.Chat))
-		return x.Store.Finish(ctx, row.ID, store.Failed, "the bot is not an admin in this group: "+msg, 0, now)
+		if err := x.Store.Finish(ctx, row.ID, store.Failed, "the bot is not an admin in this group: "+msg, 0, now); err != nil {
+			return err
+		}
+		if x.NotAdmin != nil {
+			x.NotAdmin(ctx, client.JID(row.Chat), "WhatsApp refused to "+what(row.Action))
+		}
+		return nil
 	case row.Attempts+1 >= maxAttempts:
 		x.Log.Error("action failed", "action", string(row.Action), "chat", mask.IDs(row.Chat), "err", msg)
 		return x.Store.Finish(ctx, row.ID, store.Failed, msg, 0, now)
