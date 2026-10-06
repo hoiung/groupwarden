@@ -160,3 +160,49 @@ func TestAnnouncementSecretKeptLonger(t *testing.T) {
 		t.Fatalf("at 91 days: %v, want only ANN-NEW", got)
 	}
 }
+
+// TestStripsDuePerCommunity: a posted message is due for text removal once
+// its report is older than its own community's evidence window (the default
+// for any other), chosen in the query; a stripped message keeps no copy.
+func TestStripsDuePerCommunity(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	s := openAt(t, &now)
+	const short, long = "99999000000777@g.us", "99999000000888@g.us"
+	for i, community := range []string{short, long, "", short} {
+		id, err := s.AddReport(ctx, Report{Kind: "action", Text: "r", Community: community}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AddTGMessage(ctx, TGMessage{ReportID: id, Role: RoleReport, ChatID: -1, MessageID: i + 1,
+			Stripped: "header (message text removed)", SentAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now = now.Add(10 * 24 * time.Hour)
+	ago := func(days int) time.Time { return now.AddDate(0, 0, -days) }
+	cutoffs := map[string]time.Time{short: ago(7), long: ago(30)}
+	due, err := s.StripsDue(ctx, ago(30), cutoffs, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(due) != 2 || due[0].MessageID != 1 || due[1].MessageID != 4 {
+		t.Fatalf("due %+v, want messages 1 and 4 (the 7-day community)", due)
+	}
+	if due, err = s.StripsDue(ctx, ago(30), cutoffs, 1); err != nil || len(due) != 1 {
+		t.Fatalf("limit 1: %d due, %v", len(due), err)
+	}
+	if due, err = s.StripsDue(ctx, ago(5), nil, 10); err != nil || len(due) != 4 {
+		t.Fatalf("no overrides, 5-day default: %d due, %v", len(due), err)
+	}
+	if err := s.MarkTGStripped(ctx, due[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := s.TGMessagesFor(ctx, due[0].ReportID)
+	if err != nil || len(msgs) != 1 || msgs[0].Stripped != "" || msgs[0].StrippedAt.IsZero() {
+		t.Fatalf("after the strip %+v (%v), want no stripped copy kept", msgs, err)
+	}
+	if again, _ := s.StripsDue(ctx, ago(5), nil, 10); len(again) != 3 {
+		t.Fatalf("%d due after one strip, want 3", len(again))
+	}
+}
