@@ -35,6 +35,23 @@ const CodeNotParticipant = 404
 // localTimeout bounds local session-store work done inside the event handler.
 const localTimeout = 10 * time.Second
 
+// callError marks WhatsApp's rate-limit (429) and permission (401, 403)
+// refusals with client.ErrRateLimited / client.ErrNotAdmin, so callers back
+// off or mark a group uncovered without knowing the library's errors.
+func callError(err error) error {
+	var iq *wm.IQError
+	if err == nil || !errors.As(err, &iq) {
+		return err
+	}
+	switch iq.Code {
+	case 429:
+		return fmt.Errorf("%w: %w", client.ErrRateLimited, err)
+	case 401, 403:
+		return fmt.Errorf("%w: %w", client.ErrNotAdmin, err)
+	}
+	return err
+}
+
 // waClient is the slice of *whatsmeow.Client the adapter uses; tests fake it.
 type waClient interface {
 	ConnectContext(ctx context.Context) error
@@ -243,7 +260,7 @@ func group(info *types.GroupInfo) client.Group {
 func (a *Adapter) JoinedGroups(ctx context.Context) ([]client.Group, error) {
 	infos, err := a.cli.GetJoinedGroups(ctx)
 	if err != nil {
-		return nil, err
+		return nil, callError(err)
 	}
 	out := make([]client.Group, 0, len(infos))
 	for _, info := range infos {
@@ -260,7 +277,7 @@ func (a *Adapter) GroupInfo(ctx context.Context, g client.JID) (client.Group, er
 	}
 	info, err := a.cli.GetGroupInfo(ctx, j)
 	if err != nil {
-		return client.Group{}, err
+		return client.Group{}, callError(err)
 	}
 	return group(info), nil
 }
@@ -273,7 +290,7 @@ func (a *Adapter) SubGroups(ctx context.Context, community client.JID) ([]client
 	}
 	targets, err := a.cli.GetSubGroups(ctx, j)
 	if err != nil {
-		return nil, err
+		return nil, callError(err)
 	}
 	out := make([]client.GroupRef, 0, len(targets))
 	for _, t := range targets {
@@ -290,7 +307,7 @@ func (a *Adapter) JoinRequests(ctx context.Context, g client.JID) ([]client.Join
 	}
 	reqs, err := a.cli.GetGroupRequestParticipants(ctx, j)
 	if err != nil {
-		return nil, err
+		return nil, callError(err)
 	}
 	out := make([]client.JoinRequest, 0, len(reqs))
 	for _, r := range reqs {
@@ -311,7 +328,7 @@ func (a *Adapter) Revoke(ctx context.Context, chat, sender client.JID, msgID str
 		return err
 	}
 	_, err = a.cli.SendMessage(ctx, c, a.cli.BuildRevoke(c, s, msgID))
-	return err
+	return callError(err)
 }
 
 // Remove removes members from a group, reporting each member's outcome.
@@ -326,7 +343,7 @@ func (a *Adapter) Remove(ctx context.Context, g client.JID, members []client.JID
 	}
 	got, err := a.cli.UpdateGroupParticipants(ctx, j, ms, wm.ParticipantChangeRemove)
 	if err != nil {
-		return nil, err
+		return nil, callError(err)
 	}
 	return memberResults(members, got), nil
 }
@@ -343,7 +360,7 @@ func (a *Adapter) RejectJoinRequests(ctx context.Context, g client.JID, members 
 	}
 	got, err := a.cli.UpdateGroupRequestParticipants(ctx, j, ms, wm.ParticipantChangeReject)
 	if err != nil {
-		return nil, err
+		return nil, callError(err)
 	}
 	return memberResults(members, got), nil
 }
