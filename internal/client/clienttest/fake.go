@@ -38,6 +38,9 @@ type Fake struct {
 	OnCall func(call string)
 	// Download answers DownloadMedia (default: an error).
 	Download func(ctx context.Context, msg *client.Message) ([]byte, string, string, error)
+	// Linked answers SubGroups for a community (default: the Groups whose
+	// parent it is), so a community can list a group the bot is not in.
+	Linked map[client.JID][]client.GroupRef
 
 	errs  map[string][]error
 	calls []string
@@ -175,6 +178,9 @@ func (f *Fake) GroupInfo(_ context.Context, g client.JID) (client.Group, error) 
 
 func (f *Fake) SubGroups(_ context.Context, community client.JID) ([]client.GroupRef, error) {
 	f.record("SubGroups " + string(community))
+	if refs, ok := f.Linked[community]; ok {
+		return refs, nil
+	}
 	var out []client.GroupRef
 	for _, x := range f.Groups {
 		if x.Parent == community {
