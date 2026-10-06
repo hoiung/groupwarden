@@ -38,9 +38,6 @@ var buttonNames = func() map[string]string {
 // limit is 200 characters); the full reply goes in the chat.
 const answerMax = 190
 
-const helpText = "Commands: /status, /pause (stops every action, deletes included), /resume, /reload, " +
-	"/join <invite link>, /ban (as a reply to a report), /unban <report number>."
-
 // handle takes one update. Only the configured chat counts; direct messages
 // and other chats are ignored.
 func (c *Chat) handle(ctx context.Context, _ *bot.Bot, u *models.Update) {
@@ -129,7 +126,7 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 		}
 		return c.act(ctx, id, ledger.ButtonUndo, by, false), id
 	}
-	return helpText, 0
+	return commandList(), 0
 }
 
 // press handles a button press on a report.
