@@ -46,6 +46,8 @@ const (
 	FewHumanAdmins Kind = "few_human_admins"
 	// SyncFailed: the config sync could not fetch or apply the config.
 	SyncFailed Kind = "sync_failed"
+	// BackupFailed: the nightly backup could not be made.
+	BackupFailed Kind = "backup_failed"
 	// Overdue: the config sync or backup timer has not run for twice its
 	// interval.
 	Overdue Kind = "overdue"
@@ -63,7 +65,8 @@ const (
 func (k Kind) Priority() bool {
 	switch k {
 	case FatalDisconnect, TemporaryBan, Paused, Breaker, Deafness, ProlongedDisconnect, BotDemoted, BotRemoved,
-		CoverageLost, ExtraCompanion, ConfigRejected, SyncFailed, Overdue, DecryptError, StorageFailure, PhoneEscalation:
+		CoverageLost, ExtraCompanion, ConfigRejected, SyncFailed, BackupFailed, Overdue, DecryptError, StorageFailure,
+		PhoneEscalation:
 		return true
 	}
 	return false
