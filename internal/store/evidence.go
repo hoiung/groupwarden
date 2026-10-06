@@ -14,7 +14,7 @@ const (
 	MediaPending  = "pending"   // to be downloaded (never delays the revoke)
 	MediaSaved    = "saved"     // the file is in the evidence dir
 	MediaTooLarge = "too_large" // over evidence.max_attachment_mb: type, name and size only
-	MediaFailed   = "failed"    // the download failed, or Telegram refused the file (error recorded)
+	MediaFailed   = "failed"    // the download failed, the file could not be saved, or Telegram refused it (error recorded)
 )
 
 // Evidence is the copy of a reported message kept on the node: the original
