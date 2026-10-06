@@ -60,11 +60,58 @@ func (c *Chat) deliverLoop(ctx context.Context) {
 	}
 }
 
+// owedWrite is a store write recording something already posted.
+type owedWrite struct {
+	what  string
+	write func(context.Context) error
+}
+
+// record makes write, the store's record of what was just posted (what
+// names it for the log). When the store will not take it, the write is kept
+// in memory and settle makes it before anything else is posted: a post
+// whose record is missing would otherwise be posted again at every retry (a
+// full disk re-posting every pending report every idlePoll). Every such
+// write is idempotent, so making it twice is harmless. Lost only if the
+// process exits first, which costs one repeated post.
+func (c *Chat) record(ctx context.Context, what string, write func(context.Context) error) error {
+	err := write(ctx)
+	if err == nil {
+		return nil
+	}
+	c.owedMu.Lock()
+	c.owed = append(c.owed, owedWrite{what: what, write: write})
+	n := len(c.owed)
+	c.owedMu.Unlock()
+	c.Log.Error("could not record a post in the store; delivery waits until it is recorded", "what", what,
+		"owed", n, "err", err)
+	return err
+}
+
+// settle makes the owed record writes, oldest first, stopping at the first
+// the store still refuses.
+func (c *Chat) settle(ctx context.Context) error {
+	c.owedMu.Lock()
+	defer c.owedMu.Unlock()
+	for len(c.owed) > 0 {
+		w := c.owed[0]
+		if err := w.write(ctx); err != nil {
+			return fmt.Errorf("record %s (%d owed): %w", w.what, len(c.owed), err)
+		}
+		c.owed = c.owed[1:]
+		c.Log.Info("post recorded after all", "what", w.what, "owed", len(c.owed))
+	}
+	return nil
+}
+
 // Step does one piece of work, most urgent first: a priority report, a
 // queued edit (`member forget`), a routine report (or a digest of them when
 // backlogged), an attachment to post or take down, a message whose text is
 // due to be removed, the daily summary. It reports whether it did any.
+// Nothing is posted while a record of an earlier post is still owed.
 func (c *Chat) Step(ctx context.Context) (bool, error) {
+	if err := c.settle(ctx); err != nil {
+		return false, err
+	}
 	pending, err := c.Store.UnsentReportsExcept(ctx, ledger.KindLog, pendingWindow)
 	if err != nil {
 		return false, err
@@ -102,8 +149,12 @@ func (c *Chat) Step(ctx context.Context) (bool, error) {
 }
 
 // Flush delivers every undelivered priority report now (the process is about
-// to exit). It gives up when ctx ends.
+// to exit). It gives up when ctx ends. An owed record that still fails does
+// not hold it back: the last word before exit beats a repeated part.
 func (c *Chat) Flush(ctx context.Context) error {
+	if err := c.settle(ctx); err != nil {
+		c.Log.Error("flushing priority reports with a post's record still owed", "err", err)
+	}
 	for {
 		reps, err := c.Store.UnsentReportsExcept(ctx, ledger.KindLog, 1)
 		if err != nil {
@@ -210,8 +261,11 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 		if i == 0 {
 			head = msg.ID
 		}
-		if err := c.Store.AddTGMessage(ctx, store.TGMessage{ReportID: r.ID, Role: role, ChatID: msg.Chat.ID,
-			MessageID: msg.ID, Stripped: out.stripped[i], SentAt: c.Now()}); err != nil {
+		m := store.TGMessage{ReportID: r.ID, Role: role, ChatID: msg.Chat.ID, MessageID: msg.ID,
+			Stripped: out.stripped[i], SentAt: c.Now()}
+		if err := c.record(ctx, fmt.Sprintf("report %d part %d", r.ID, i), func(ctx context.Context) error {
+			return c.Store.AddTGMessage(ctx, m)
+		}); err != nil {
 			return false, err
 		}
 	}
@@ -251,11 +305,17 @@ func (c *Chat) digest(ctx context.Context, reps []store.Report) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if err := c.Store.AddTGMessage(ctx, store.TGMessage{ReportID: ids[0], Role: store.RoleSummary, ChatID: msg.Chat.ID,
-		MessageID: msg.ID, SentAt: c.Now()}); err != nil {
-		return false, err
-	}
-	if err := c.Store.MarkReportsSent(ctx, ids); err != nil {
+	m := store.TGMessage{ReportID: ids[0], Role: store.RoleSummary, ChatID: msg.Chat.ID, MessageID: msg.ID,
+		SentAt: c.Now()}
+	// One record for the whole post: a write left out of it would let the
+	// digest go out again once the first was made.
+	if err := c.record(ctx, fmt.Sprintf("digest of reports %d-%d", ids[0], ids[len(ids)-1]),
+		func(ctx context.Context) error {
+			if err := c.Store.AddTGMessage(ctx, m); err != nil {
+				return err
+			}
+			return c.Store.MarkReportsSent(ctx, ids)
+		}); err != nil {
 		return false, err
 	}
 	c.Log.Info("digest delivered", "reports", len(ids))
@@ -366,8 +426,11 @@ func (c *Chat) showAttachment(ctx context.Context, r store.Report, ev store.Evid
 	if err != nil {
 		return false, err
 	}
-	if err := c.Store.AddTGMessage(ctx, store.TGMessage{ReportID: r.ID, Role: store.RoleAttachment, ChatID: msg.Chat.ID,
-		MessageID: msg.ID, SentAt: c.Now()}); err != nil {
+	m := store.TGMessage{ReportID: r.ID, Role: store.RoleAttachment, ChatID: msg.Chat.ID, MessageID: msg.ID,
+		SentAt: c.Now()}
+	if err := c.record(ctx, fmt.Sprintf("attachment of report %d", r.ID), func(ctx context.Context) error {
+		return c.Store.AddTGMessage(ctx, m)
+	}); err != nil {
 		return false, err
 	}
 	c.Log.Info("attachment posted", "report", r.ID, "evidence", ev.ID)
@@ -407,7 +470,7 @@ func (c *Chat) takeDown(ctx context.Context, m store.TGMessage) error {
 	})
 	if err == nil {
 		c.Log.Info("attachment post deleted", "report", m.ReportID, "message", m.MessageID)
-		return c.Store.MarkTGGone(ctx, m.ID)
+		return c.markGone(ctx, m)
 	}
 	if !badRequest(err) {
 		return err
@@ -430,7 +493,14 @@ func (c *Chat) takeDown(ctx context.Context, m store.TGMessage) error {
 		c.Log.Error("attachment post could be neither deleted nor replaced", "report", m.ReportID,
 			"message", m.MessageID, "err", err.Error())
 	}
-	return c.Store.MarkTGGone(ctx, m.ID)
+	return c.markGone(ctx, m)
+}
+
+// markGone records that attachment post m is taken down.
+func (c *Chat) markGone(ctx context.Context, m store.TGMessage) error {
+	return c.record(ctx, fmt.Sprintf("take-down of message %d", m.MessageID), func(ctx context.Context) error {
+		return c.Store.MarkTGGone(ctx, m.ID)
+	})
 }
 
 // stripDue removes the member's text from one posted message whose report is
@@ -481,7 +551,9 @@ func (c *Chat) strip(ctx context.Context, m store.TGMessage) error {
 	} else {
 		c.Log.Info("member text removed from a report", "report", m.ReportID, "message", m.MessageID, "role", m.Role)
 	}
-	return c.Store.MarkTGStripped(ctx, m.ID)
+	return c.record(ctx, fmt.Sprintf("text removal of message %d", m.MessageID), func(ctx context.Context) error {
+		return c.Store.MarkTGStripped(ctx, m.ID)
+	})
 }
 
 // summary sends the daily summary once a UTC day has ended: keyword-only
@@ -531,12 +603,17 @@ func (c *Chat) summary(ctx context.Context) (bool, error) {
 		}
 		sent = true
 	}
-	if err := c.Store.MarkReportsSent(ctx, ids); err != nil {
-		return false, err
+	through := today.AddDate(0, 0, -1).Format(time.DateOnly)
+	if err := c.record(ctx, "daily summary through "+through, func(ctx context.Context) error {
+		if err := c.Store.MarkReportsSent(ctx, ids); err != nil {
+			return err
+		}
+		return c.Store.SetStatus(ctx, map[string]string{store.StatusSummaryDay: through})
+	}); err != nil {
+		return sent, err
 	}
-	c.Log.Info("daily summary", "through", today.AddDate(0, 0, -1).Format(time.DateOnly), "sent", sent,
-		"log_reports", len(ids))
-	return sent, c.Store.SetStatus(ctx, map[string]string{store.StatusSummaryDay: today.AddDate(0, 0, -1).Format(time.DateOnly)})
+	c.Log.Info("daily summary", "through", through, "sent", sent, "log_reports", len(ids))
+	return sent, nil
 }
 
 // summaryLines turns one day's counters and log-rule matches into lines; a
