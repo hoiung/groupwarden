@@ -2,7 +2,6 @@ package telegram_test
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,44 +15,6 @@ import (
 	"github.com/hoiung/groupwarden/internal/telegram"
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
-
-// failWrites makes writes to table fail (those matching when, a trigger WHEN
-// condition on NEW, when it is not empty), as a full disk would, until the
-// returned lift is called. The store has one connection, so temporary
-// triggers on it see every write.
-func failWrites(t *testing.T, st *store.Store, table, when string) (lift func()) {
-	t.Helper()
-	cond := ""
-	if when != "" {
-		cond = " WHEN " + when
-	}
-	events := []string{"INSERT", "UPDATE"}
-	if when == "" {
-		events = append(events, "DELETE")
-	}
-	exec := func(stmts []string) {
-		t.Helper()
-		if err := st.Write(context.Background(), func(tx *sql.Tx) error {
-			for _, s := range stmts {
-				if _, err := tx.Exec(s); err != nil {
-					return fmt.Errorf("%s: %w", s, err)
-				}
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var create, drop []string
-	for _, ev := range events {
-		name := "fail_" + table + "_" + strings.ToLower(ev)
-		create = append(create, "CREATE TEMP TRIGGER "+name+" BEFORE "+ev+" ON "+table+cond+
-			" BEGIN SELECT RAISE(FAIL, 'database or disk is full'); END")
-		drop = append(drop, "DROP TRIGGER temp."+name)
-	}
-	exec(create)
-	return func() { exec(drop) }
-}
 
 // requests counts the Bot API calls of method whose text contains match.
 func requests(h *harness, method, match string) int {
@@ -235,7 +196,7 @@ func TestPostNotRepeatedWhileItsRecordFails(t *testing.T) {
 			}
 			c.setup(t, h)
 			before := c.posts(h)
-			lift := failWrites(t, h.k.Store, c.table, c.when)
+			lift := modtest.FailWrites(t, h.k.Store, c.table, c.when)
 			for i := 0; i < 3; i++ {
 				c.run(h)
 			}
