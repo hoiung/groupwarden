@@ -288,8 +288,9 @@ func (c *Chat) answer(ctx context.Context, queryID, text string) {
 
 // reply posts text in the admin chat as a reply to message replyTo.
 func (c *Chat) reply(ctx context.Context, replyTo int, reportID int64, text string) {
-	for _, part := range split(text, "") {
-		msg, err := c.sendText(ctx, true, part, replyTo, nil)
+	parts, _ := split(text, "")
+	for _, part := range parts {
+		msg, err := c.sendText(ctx, true, part, quote{}, replyTo, nil)
 		if err != nil {
 			c.Log.Error("could not reply in the admin chat", "report", reportID, "err", err.Error())
 			return
