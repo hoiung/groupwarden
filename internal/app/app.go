@@ -66,13 +66,16 @@ func (e *FatalError) Error() string {
 
 // App wires the adapter, inbox, worker and alerts together.
 type App struct {
-	Adapter  client.Adapter
-	Store    *store.Store
-	Inbox    *pipeline.Inbox
-	Worker   *pipeline.Worker
-	Alerter  alert.Alerter
-	Log      *slog.Logger
-	Clock    Clock
+	Adapter client.Adapter
+	Store   *store.Store
+	Inbox   *pipeline.Inbox
+	Worker  *pipeline.Worker
+	Alerter alert.Alerter
+	Log     *slog.Logger
+	Clock   Clock
+	// Zone is the time zone of daily_check_time (nil: the node's local time
+	// zone, from TZ or /etc/localtime).
+	Zone     *time.Location
 	Settings Settings
 	// Config is the running config; Reload requests (SIGHUP, and later the
 	// admin chat's /reload) swap it whole.
@@ -265,6 +268,9 @@ func (a *App) Run(ctx context.Context) error {
 		return fmt.Errorf("recover the ledger: %w", err)
 	}
 	hash := a.Config.Current().Hash
+	zone, offset := a.started.In(a.zone()).Zone()
+	a.Log.Info("daily check time zone", "zone", a.zone().String(), "abbrev", zone, "utc_offset_s", offset,
+		"daily_check_time", a.Config.Current().Config.DailyCheckTime)
 	a.alert(ctx, alert.Alert{Kind: alert.Started, Text: fmt.Sprintf("groupwarden %s started (config v%s).", Version(), hash)})
 	workerDone := make(chan struct{})
 	wctx, stopWorker := context.WithCancel(ctx)
@@ -351,6 +357,7 @@ func (a *App) supervise(ctx context.Context) error {
 				a.requestSweep()
 			}
 			a.writeStatus(ctx)
+			a.checkDaily(ctx, now) // after the status write: it reports the state just recorded
 		case <-a.lifecycle:
 			for {
 				l, ok := a.nextLifecycle()
@@ -406,13 +413,21 @@ func (a *App) supervise(ctx context.Context) error {
 	}
 }
 
-// alert delivers al with a deadline, so a stuck channel never blocks shutdown.
+// alert delivers al with a deadline, so a stuck channel never blocks shutdown;
+// a failure is logged.
 func (a *App) alert(ctx context.Context, al alert.Alert) {
+	_ = a.tryAlert(ctx, al)
+}
+
+// tryAlert is alert that also returns the failure.
+func (a *App) tryAlert(ctx context.Context, al alert.Alert) error {
 	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), alertTimeout)
 	defer cancel()
-	if err := a.Alerter.Alert(actx, al); err != nil {
+	err := a.Alerter.Alert(actx, al)
+	if err != nil {
 		a.Log.Error("alert delivery failed", "kind", string(al.Kind), "err", err)
 	}
+	return err
 }
 
 func (a *App) pause(ctx context.Context, p store.Pause) {
