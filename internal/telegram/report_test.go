@@ -277,7 +277,7 @@ func TestDigestKeepsRemoveBanReports(t *testing.T) {
 func TestPrioritySetJumpsQueue(t *testing.T) {
 	set := []alert.Kind{alert.FatalDisconnect, alert.TemporaryBan, alert.Breaker, alert.Paused, alert.Deafness,
 		alert.ProlongedDisconnect, alert.BotDemoted, alert.BotRemoved, alert.CoverageLost, alert.ExtraCompanion,
-		alert.ConfigRejected, alert.SyncFailed, alert.Overdue, alert.DecryptError}
+		alert.ConfigRejected, alert.SyncFailed, alert.BackupFailed, alert.Overdue, alert.DecryptError}
 	for _, kind := range set {
 		h := newHarness(t, "")
 		for i := 0; i < 5; i++ {
