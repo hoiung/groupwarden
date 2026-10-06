@@ -28,6 +28,7 @@ type fakeClock struct {
 
 type waiter struct {
 	at time.Time
+	d  time.Duration // what the caller asked for: tells timers due at the same moment apart
 	ch chan time.Time
 }
 
@@ -41,7 +42,7 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ch := make(chan time.Time, 1)
-	c.waiters = append(c.waiters, waiter{at: c.now.Add(d), ch: ch})
+	c.waiters = append(c.waiters, waiter{at: c.now.Add(d), d: d, ch: ch})
 	return ch
 }
 
@@ -60,11 +61,15 @@ func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
-func (c *fakeClock) hasWaiterAt(at time.Time) bool {
+// hasWaiter reports a timer armed for d that fires at at. The duration
+// matters: the 30-second tick and the 5-minute ping land on the same moments
+// as each other and as some connect retries, and matching the time alone let
+// a test move the clock before the timer it was waiting for was armed.
+func (c *fakeClock) hasWaiter(at time.Time, d time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, w := range c.waiters {
-		if w.at.Equal(at) {
+		if w.at.Equal(at) && w.d == d {
 			return true
 		}
 	}
@@ -253,7 +258,7 @@ func TestBackoffCapped(t *testing.T) {
 	h := start(t, &clienttest.Fake{ConnectErr: errors.New("network unreachable")}, Settings{})
 	for i, d := range want[:10] {
 		at := h.clock.Now().Add(d)
-		h.eventually("retry scheduled", func() bool { return h.clock.hasWaiterAt(at) })
+		h.eventually("retry scheduled", func() bool { return h.clock.hasWaiter(at, d) })
 		h.clock.Advance(d - time.Millisecond)
 		settle()
 		if n := h.fake.Count("Connect"); n != i+1 {
