@@ -11,6 +11,12 @@ func TestIDsKeepsLastFourDigits(t *testing.T) {
 		"+447700900456":                                       "…0456",
 		"removed 99999000000555@lid from 99999000000111@g.us": "removed lid…0555 from group…0111",
 		"no ids here, code 404":                               "no ids here, code 404",
+		"(447700900123), +447700900789.":                      "(…0123), …0789.",
+		"phone:447700900456;":                                 "phone:…0456;",
+		"config v55786e8be51a loaded":                         "config v55786e8be51a loaded",
+		"ok 55786e8be51a: no change":                          "ok 55786e8be51a: no change",
+		"commit e8be51a1234567 and ab12345cd":                 "commit e8be51a1234567 and ab12345cd",
+		"digits-only hash 123456789012":                       "digits-only hash …9012",
 	}
 	for in, want := range cases {
 		if got := IDs(in); got != want {
