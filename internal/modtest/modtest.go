@@ -1,6 +1,6 @@
 // Package modtest wires the whole moderation path (inbox worker, decision,
-// ledger, executor, reporter, attachment fetcher) over a fake WhatsApp
-// adapter and a fake clock, for tests in the packages that make it up.
+// ledger, executor, attachment fetcher) over a fake WhatsApp adapter and a
+// fake clock, for tests in the packages that make it up.
 package modtest
 
 import (
@@ -160,7 +160,6 @@ type Kit struct {
 	Mod      *pipeline.Moderator
 	Worker   *pipeline.Worker
 	Exec     *action.Executor
-	Reporter *ledger.Reporter
 	Media    *action.MediaFetcher
 	Log      *slog.Logger
 
@@ -195,11 +194,10 @@ func (k *Kit) open() {
 	}
 	k.T.Cleanup(func() { _ = st.Close() })
 	k.Store = st
-	k.Reporter = ledger.NewReporter(st, k.Alerts, k.Log)
 	k.Exec = &action.Executor{Store: st, Adapter: k.Fake, Config: k.Holder, Directory: k.Dir, Alerter: k.Alerts,
-		Reported: k.Reporter.Wake, Log: k.Log, Now: k.Clock.Now, Sleep: k.Clock.Sleep}
+		Log: k.Log, Now: k.Clock.Now, Sleep: k.Clock.Sleep}
 	k.Enforcer = &pipeline.Enforcer{Store: st, Config: k.Holder, Directory: k.Dir, Adapter: k.Fake, Log: k.Log}
-	k.Mod = &pipeline.Moderator{Store: st, Alerter: k.Alerts, Config: k.Holder, Directory: k.Dir, Enforcer: k.Enforcer, Log: k.Log}
+	k.Mod = &pipeline.Moderator{Store: st, Config: k.Holder, Directory: k.Dir, Enforcer: k.Enforcer, Log: k.Log}
 	k.Exec.Moderator = k.Mod
 	k.Worker = &pipeline.Worker{Store: st, Inbox: pipeline.NewInbox(st), Decider: k.Mod, Config: k.Holder, Log: k.Log}
 	k.Media = &action.MediaFetcher{Store: st, Adapter: k.Fake, Config: k.Holder, Dir: filepath.Join(filepath.Dir(k.DBPath), "evidence"),
@@ -296,6 +294,21 @@ func (k *Kit) write(p ledger.Plan) {
 		return err
 	}); err != nil {
 		k.T.Fatal(err)
+	}
+}
+
+// MarkAllSent records every stored report as delivered (what the admin chat
+// does once it has posted them).
+func (k *Kit) MarkAllSent() {
+	k.T.Helper()
+	reps, err := k.Store.UnsentReports(k.Ctx, 10000)
+	if err != nil {
+		k.T.Fatal(err)
+	}
+	for _, r := range reps {
+		if err := k.Store.MarkReportSent(k.Ctx, r.ID); err != nil {
+			k.T.Fatal(err)
+		}
 	}
 }
 
