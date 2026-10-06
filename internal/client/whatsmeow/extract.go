@@ -1,7 +1,6 @@
 package whatsmeow
 
 import (
-	"sort"
 	"strings"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -201,28 +200,9 @@ func extract(m *waE2E.Message) extracted {
 		}
 	}
 	for i := range raw {
-		raw[i].Match = maskMentions(raw[i].Text, mentions)
+		raw[i].Match = client.MaskMentions(raw[i].Text, mentions)
 	}
 	return extracted{fields: raw, mentions: mentions, media: mediaOf(m)}
-}
-
-// maskMentions replaces "@<user>" for every mentioned member with the neutral
-// marker, longest first so one user ID that prefixes another is not split.
-func maskMentions(text string, mentions []client.JID) string {
-	if len(mentions) == 0 {
-		return text
-	}
-	users := make([]string, 0, len(mentions))
-	for _, j := range mentions {
-		if u := j.User(); u != "" {
-			users = append(users, u)
-		}
-	}
-	sort.Slice(users, func(a, b int) bool { return len(users[a]) > len(users[b]) })
-	for _, u := range users {
-		text = strings.ReplaceAll(text, "@"+u, client.MentionMarker)
-	}
-	return text
 }
 
 // vcardNumbers returns the phone numbers on the TEL lines of a vCard.
