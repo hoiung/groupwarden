@@ -15,6 +15,7 @@ import (
 
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
+	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
@@ -39,7 +40,15 @@ type Settings struct {
 	DeafAfter           time.Duration // deafness_alert_hours
 	DisconnectAlert     time.Duration // disconnect_alert_minutes
 	CompanionCheckEvery time.Duration // reconcile.interval_minutes
-	ConfigHash          string
+}
+
+// SettingsFrom reads the supervisor's settings from a config.
+func SettingsFrom(c *config.Config) Settings {
+	return Settings{
+		DeafAfter:           time.Duration(c.DeafnessAlertHours) * time.Hour,
+		DisconnectAlert:     time.Duration(c.DisconnectAlertMinutes) * time.Minute,
+		CompanionCheckEvery: time.Duration(c.Reconcile.IntervalMinutes) * time.Minute,
+	}
 }
 
 // FatalError ends Run when the connection cannot continue without a human.
@@ -62,6 +71,14 @@ type App struct {
 	Log      *slog.Logger
 	Clock    Clock
 	Settings Settings
+	// Config is the running config; Reload requests (SIGHUP, and later the
+	// admin chat's /reload) swap it whole.
+	Config    *config.Holder
+	Directory *pipeline.Directory
+	Reload    <-chan struct{}
+	// BootRejected: the config file was refused at boot and the last good
+	// copy runs instead; reported once connected to the supervisor loop.
+	BootRejected *config.Rejected
 
 	mon *monitor
 
@@ -77,8 +94,27 @@ func (s sink) Persist(ev client.Event) error {
 	if err := s.a.Inbox.Persist(ev); err != nil {
 		return err
 	}
-	s.a.mon.onEvent(s.a.Clock.Now())
+	if s.a.moderated(ev) {
+		s.a.mon.onEvent(s.a.Clock.Now())
+	}
 	return nil
+}
+
+// moderated reports whether ev comes from a group of a configured community
+// (only those count against deafness). It reads memory only.
+func (a *App) moderated(ev client.Event) bool {
+	var group client.JID
+	switch e := ev.(type) {
+	case *client.Message:
+		group = e.Chat
+	case *client.Undecryptable:
+		group = e.Chat
+	case *client.GroupChange:
+		group = e.Group
+	case *client.JoinedGroup:
+		group = e.Group
+	}
+	return group != "" && a.Directory.Community(group, a.Config.Current().Rules) != ""
 }
 
 func (s sink) Lifecycle(l client.Lifecycle) {
@@ -142,6 +178,9 @@ func (a *App) supervise(ctx context.Context) error {
 		}
 	}
 	a.mon.onDisconnected(a.Clock.Now())
+	if a.BootRejected != nil {
+		a.alert(ctx, alert.Alert{Kind: alert.ConfigRejected, Priority: true, Text: a.BootRejected.Error()})
+	}
 	connect()
 	tick := a.Clock.After(monitorEvery)
 	for {
@@ -149,6 +188,8 @@ func (a *App) supervise(ctx context.Context) error {
 		case <-ctx.Done():
 			a.Adapter.Disconnect()
 			return nil
+		case <-a.Reload:
+			a.reload(ctx)
 		case <-retry:
 			retry = nil
 			connect()
@@ -160,6 +201,7 @@ func (a *App) supervise(ctx context.Context) error {
 			}
 			if connected, _, _ := a.mon.snapshot(); connected && !now.Before(nextCompanionCheck) {
 				nextCompanionCheck = now.Add(a.Settings.CompanionCheckEvery)
+				a.refreshDirectory(ctx)
 				a.checkCompanions(ctx)
 			}
 			a.writeStatus(ctx)
@@ -177,6 +219,7 @@ func (a *App) supervise(ctx context.Context) error {
 					a.mon.onConnected(now)
 					a.Log.Info("connected to WhatsApp")
 					nextCompanionCheck = now.Add(a.Settings.CompanionCheckEvery)
+					a.refreshDirectory(ctx)
 					a.checkCompanions(ctx)
 					a.writeStatus(ctx)
 				case l.Kind == client.Disconnected:
@@ -271,6 +314,33 @@ func (a *App) checkCompanions(ctx context.Context) {
 		"If you linked it yourself press [Resume]; if not, unlink it on the bot phone now."})
 }
 
+// reload swaps in the config file again (whole, or not at all) and applies
+// its supervisor settings; the admins hear "config v<hash> loaded" or why it
+// was REJECTED.
+func (a *App) reload(ctx context.Context) {
+	l, err := a.Config.Reload()
+	if err != nil {
+		a.Log.Error("config reload rejected", "err", err)
+		a.alert(ctx, alert.Alert{Kind: alert.ConfigRejected, Priority: true, Text: err.Error()})
+		return
+	}
+	a.Settings = SettingsFrom(l.Config)
+	a.mon.setThresholds(a.Settings.DeafAfter, a.Settings.DisconnectAlert)
+	a.Log.Info("config reloaded", "config", "v"+l.Hash)
+	a.alert(ctx, alert.Alert{Kind: alert.ConfigLoaded, Text: "config v" + l.Hash + " loaded"})
+	a.writeStatus(ctx)
+}
+
+// refreshDirectory relearns every group's community and admins.
+func (a *App) refreshDirectory(ctx context.Context) {
+	groups, err := a.Adapter.JoinedGroups(ctx)
+	if err != nil {
+		a.Log.Warn("could not list groups", "err", mask.IDs(err.Error()))
+		return
+	}
+	a.Directory.Update(groups)
+}
+
 // writeStatus records the run state for `healthcheck` and other commands.
 func (a *App) writeStatus(ctx context.Context) {
 	connected, deaf, last := a.mon.snapshot()
@@ -278,7 +348,7 @@ func (a *App) writeStatus(ctx context.Context) {
 		store.StatusHeartbeat:  "",
 		store.StatusConnected:  boolStr(connected),
 		store.StatusDeaf:       boolStr(deaf),
-		store.StatusConfigHash: a.Settings.ConfigHash,
+		store.StatusConfigHash: a.Config.Current().Hash,
 	}
 	if !last.IsZero() {
 		kv[store.StatusLastEvent] = strconv.FormatInt(last.UnixMilli(), 10)
