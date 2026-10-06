@@ -17,16 +17,23 @@ import (
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
-// CounterMissingParent counts announcement replies (and secret edits)
-// whose parent secret is not stored; it feeds the daily summary.
-const CounterMissingParent = "missing_parent_secret"
+// Daily counters (the admin chat's daily summary reads them).
+const (
+	// CounterMissingParent counts announcement replies (and secret edits)
+	// whose parent secret is not stored.
+	CounterMissingParent = "missing_parent_secret"
+	// CounterInboxUnreadable counts inbox items that could not be decoded.
+	CounterInboxUnreadable = "inbox_unreadable"
+	// CounterKeywordOnly prefixes "keyword_only|<community>|<word list>": a
+	// post with a keyword from that list that no rule acted on.
+	CounterKeywordOnly = "keyword_only|"
+)
 
 // Moderator is the Decider used by `run`. It turns each decision into a
 // ledger plan written in the decision's transaction: nothing fires until the
 // rows are committed.
 type Moderator struct {
 	Store     *store.Store
-	Alerter   alert.Alerter
 	Config    *config.Holder
 	Directory *Directory
 	Enforcer  *Enforcer
@@ -60,11 +67,15 @@ func (m *Moderator) Decide(ctx context.Context, tx *sql.Tx, item Item) error {
 		if ev.Reason == client.ReasonMissingParentSecret {
 			return store.IncrCounter(ctx, tx, day(m.Store.Now()), CounterMissingParent)
 		}
-		return m.Alerter.Alert(ctx, alert.Alert{
-			Kind:     alert.DecryptError,
-			Priority: true,
-			Text:     "could not decrypt a message in " + mask.IDs(string(ev.Chat)) + ": " + mask.IDs(ev.Detail),
-		})
+		// Stored with the decision (the store has one connection: nothing
+		// may write outside this transaction until it ends).
+		_, err := store.InsertReport(ctx, tx, store.Report{Kind: string(alert.DecryptError), Priority: true,
+			Text: "Could not decrypt a message in " + mask.IDs(string(ev.Chat)) + ": " + mask.IDs(ev.Detail)}, nil,
+			m.Store.Now())
+		if err == nil {
+			m.Enforcer.wake()
+		}
+		return err
 	case *client.Message:
 		return m.decideMessage(ctx, tx, ev, item)
 	case *client.GroupChange:
@@ -86,6 +97,12 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 	}
 	if d.Action == rules.ActionNone {
 		m.Log.Debug("message", "chat", mask.IDs(string(ev.Chat)), "lists", d.Lists, "config", "v"+hash)
+		// A keyword no rule acted on goes into the daily summary only.
+		for _, list := range d.Lists {
+			if err := store.IncrCounter(ctx, tx, day(m.Store.Now()), CounterKeywordOnly+community+"|"+list); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	m.Log.Info("decision", "action", string(d.Action), "rule", d.Rule, "would_have_acted", d.WouldHaveActed,
@@ -150,7 +167,11 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 	switch {
 	case enforce:
 		p.Reason = "spam post (rule " + d.Rule + ")"
-		p.Reports = []store.Report{{Kind: ledger.KindAction, Community: community, Buttons: []string{ledger.ButtonUndo},
+		buttons := []string{ledger.ButtonUndo}
+		if evidence.MediaState == store.MediaPending {
+			buttons = append(buttons, ledger.ButtonShowAttachment)
+		}
+		p.Reports = []store.Report{{Kind: ledger.KindAction, Community: community, Buttons: buttons,
 			Text: fmt.Sprintf("Spam in %s matched rule %s: the post is deleted and the sender removed and banned.", community, d.Rule)}}
 	case act && item.ReportOnly:
 		p.Reason = "too old to act on (older than act_on_replay_max_age)"
