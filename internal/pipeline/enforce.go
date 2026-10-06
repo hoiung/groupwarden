@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
+	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/ledger"
@@ -35,7 +37,7 @@ type Enforcer struct {
 }
 
 func (e *Enforcer) wake() {
-	if e.Wake != nil {
+	if e != nil && e.Wake != nil {
 		e.Wake()
 	}
 }
@@ -102,11 +104,15 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 	cur := e.Config.Current()
 	rs := cur.Rules
 	community := e.Directory.Community(ch.Group, rs)
+	name := e.Directory.GroupName(string(ch.Group))
 	// Membership is learned before the bans are checked, so a removal plan
 	// sees the person in the group they just joined.
 	e.Directory.Apply(ch)
 	if community == "" {
 		return nil
+	}
+	if err := e.selfChange(ctx, tx, ch, community, name, now); err != nil {
+		return err
 	}
 	trigger := eventID("join:", ch.DedupeKey())
 	actor := ch.Actor.Bare()
@@ -171,6 +177,37 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 		}
 	}
 	e.wake()
+	return nil
+}
+
+// selfChange raises a priority report when the bot itself was demoted in, or
+// removed from, a moderated group: it can no longer act there until a human
+// admin promotes or re-adds it.
+func (e *Enforcer) selfChange(ctx context.Context, tx *sql.Tx, ch *client.GroupChange, community, name string, now time.Time) error {
+	label := mask.IDs(string(ch.Group))
+	if name != "" {
+		label = name + " (" + label + ")"
+	}
+	var reps []store.Report
+	if slices.ContainsFunc(ch.Demoted, e.Directory.IsSelf) {
+		reps = append(reps, store.Report{Kind: string(alert.BotDemoted), Priority: true, Community: community,
+			Text: fmt.Sprintf("The bot is no longer an admin in %s (community %s): it cannot delete or remove there "+
+				"until a human admin promotes it again.", label, community)})
+	}
+	if slices.ContainsFunc(ch.Left, e.Directory.IsSelf) {
+		reps = append(reps, store.Report{Kind: string(alert.BotRemoved), Priority: true, Community: community,
+			Text: fmt.Sprintf("The bot was removed from %s (community %s): that group is not moderated until a "+
+				"human admin adds the bot back and promotes it.", label, community)})
+	}
+	for _, r := range reps {
+		if _, err := store.InsertReport(ctx, tx, r, nil, now); err != nil {
+			return err
+		}
+		e.Log.Error("the bot lost a moderated group", "kind", r.Kind, "group", label)
+	}
+	if len(reps) > 0 {
+		e.wake()
+	}
 	return nil
 }
 
