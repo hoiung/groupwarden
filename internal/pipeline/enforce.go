@@ -42,6 +42,10 @@ func (e *Enforcer) wake() {
 	}
 }
 
+// Notify wakes the workers after something outside the enforcer (the sweep's
+// coverage reports) queued reports.
+func (e *Enforcer) Notify() { e.wake() }
+
 // Removals plans the removal of m from every group of each community where
 // the directory shows them, plus inChat (where they were just seen). Where
 // the bot is a community admin it also removes them at community level (the
@@ -182,22 +186,28 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 
 // selfChange raises a priority report when the bot itself was demoted in, or
 // removed from, a moderated group: it can no longer act there until a human
-// admin promotes or re-adds it.
+// admin promotes or re-adds it. The group's stored coverage changes in the
+// same transaction, so the next sweep does not report the loss again.
 func (e *Enforcer) selfChange(ctx context.Context, tx *sql.Tx, ch *client.GroupChange, community, name string, now time.Time) error {
-	label := mask.IDs(string(ch.Group))
-	if name != "" {
-		label = name + " (" + label + ")"
-	}
+	label, cname := Label(name, ch.Group), CommunityLabel(e.Config.Current().Config, community)
 	var reps []store.Report
+	state := ""
 	if slices.ContainsFunc(ch.Demoted, e.Directory.IsSelf) {
+		state = store.CoverageNotAdmin
 		reps = append(reps, store.Report{Kind: string(alert.BotDemoted), Priority: true, Community: community,
-			Text: fmt.Sprintf("The bot is no longer an admin in %s (community %s): it cannot delete or remove there "+
-				"until a human admin promotes it again.", label, community)})
+			Text: fmt.Sprintf("The bot is no longer an admin in %s (%s): it cannot delete or remove there "+
+				"until a human admin promotes it again.", label, cname)})
 	}
 	if slices.ContainsFunc(ch.Left, e.Directory.IsSelf) {
+		state = store.CoverageAbsent
 		reps = append(reps, store.Report{Kind: string(alert.BotRemoved), Priority: true, Community: community,
-			Text: fmt.Sprintf("The bot was removed from %s (community %s): that group is not moderated until a "+
-				"human admin adds the bot back and promotes it.", label, community)})
+			Text: fmt.Sprintf("The bot was removed from %s (%s): that group is not moderated until a "+
+				"human admin adds the bot back and promotes it.", label, cname)})
+	}
+	if state != "" {
+		if err := store.MarkCoverage(ctx, tx, string(ch.Group), community, state, now); err != nil {
+			return err
+		}
 	}
 	for _, r := range reps {
 		if _, err := store.InsertReport(ctx, tx, r, nil, now); err != nil {
