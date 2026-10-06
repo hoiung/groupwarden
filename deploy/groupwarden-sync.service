@@ -1,0 +1,43 @@
+[Unit]
+Description=groupwarden config sync (pull the private config repo, check it, swap it in, reload the bot)
+Documentation=https://github.com/hoiung/groupwarden/blob/main/docs/deploy.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=groupwarden
+Group=groupwarden
+# The live config directory is a symlink the sync swaps; the staging clone is
+# the private config repo, cloned with the read-only deploy key. Both sit in
+# the state directory, so the sync can write them under ProtectSystem=strict.
+ExecStart=/usr/local/bin/groupwarden sync-config --config /var/lib/groupwarden/config/config.yaml --repo /var/lib/groupwarden/config-repo
+# The pull has its own 2-minute limit and reports a timeout as a failed sync;
+# this only stops a run that hangs anywhere else.
+TimeoutStartSec=5min
+StateDirectory=groupwarden
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
