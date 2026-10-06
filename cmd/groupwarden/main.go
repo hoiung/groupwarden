@@ -39,6 +39,9 @@ type env struct {
 	deviceOf func(path string) (uint64, error)
 	// signals returns a context cancelled on SIGINT/SIGTERM.
 	signals func() (context.Context, context.CancelFunc)
+	// hangups returns a channel that receives on each SIGHUP (a reload
+	// request) and a function that stops it; nil means no reloads.
+	hangups func() (<-chan struct{}, func())
 	// connectTimeout bounds the wait for a one-off connection.
 	connectTimeout time.Duration
 }
@@ -53,22 +56,46 @@ func main() {
 		signals: func() (context.Context, context.CancelFunc) {
 			return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 		},
+		hangups:        hangups,
 		connectTimeout: 90 * time.Second,
 	}
 	os.Exit(e.run(os.Args[1:]))
+}
+
+// hangups turns SIGHUP into reload requests (one pending at most).
+func hangups() (<-chan struct{}, func()) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGHUP)
+	out := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-sig:
+				select {
+				case out <- struct{}{}:
+				default:
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+	return out, func() { signal.Stop(sig); close(done) }
 }
 
 const usage = `usage: groupwarden <command> [flags]
 
 WhatsApp commands (take the data-dir lock; only one at a time):
   pair [--phone <digits>]      link the bot phone (QR code, or a pairing code with --phone)
-  run                          moderate
+  run                          moderate (SIGHUP reloads the config)
   groups                       list joined communities and groups with their IDs
   resolve-link <invite link>   show the group and community a link points to, without joining
 
 Store commands (work beside run):
   check [--secrets]            validate the config; --secrets lists each input as OK or MISSING
   healthcheck                  exit 0 only when run is connected, not deaf and has its config
+  corpus test --corpus <dir>   test every rule, as if enforced, against labelled samples
   fatal-exit-code              print the exit code that means "a human must act"
 
 Every command except fatal-exit-code takes --config <file> (default: $GROUPWARDEN_CONFIG).
@@ -85,6 +112,12 @@ func (e *env) run(args []string) int {
 		fmt.Fprintln(e.stdout, app.ExitFatal)
 		return exitOK
 	case "pair", "run", "groups", "resolve-link", "check", "healthcheck":
+	case "corpus":
+		if len(rest) == 0 || rest[0] != "test" {
+			fmt.Fprintln(e.stderr, "usage: groupwarden corpus test --config <file> --corpus <dir>")
+			return exitUsage
+		}
+		cmd, rest = "corpus test", rest[1:]
 	case "-h", "--help", "help":
 		fmt.Fprint(e.stdout, usage)
 		return exitOK
@@ -97,6 +130,7 @@ func (e *env) run(args []string) int {
 	cfgPath := fs.String("config", e.getenv("GROUPWARDEN_CONFIG"), "config file")
 	phone := fs.String("phone", "", "pair with a code for this number (digits with country code)")
 	secrets := fs.Bool("secrets", false, "check every provisioning input")
+	corpusDir := fs.String("corpus", "", "corpus directory (spam/ and legit/<class>/)")
 	if err := fs.Parse(rest); err != nil {
 		return exitUsage
 	}
@@ -104,17 +138,24 @@ func (e *env) run(args []string) int {
 		fmt.Fprintln(e.stderr, "no config: pass --config <file> or set GROUPWARDEN_CONFIG")
 		return exitUsage
 	}
-	if cmd == "check" {
+	switch cmd {
+	case "check":
 		return e.check(*cfgPath, *secrets)
-	}
-	cfg, err := config.Load(*cfgPath)
-	if err != nil {
-		fmt.Fprintf(e.stderr, "refusing to start: %v\n", err)
-		return exitFail
+	case "corpus test":
+		return e.corpusTest(*cfgPath, *corpusDir)
 	}
 	log := slog.New(slog.NewJSONHandler(e.stderr, nil))
 	ctx, stop := e.signals()
 	defer stop()
+	if cmd == "run" {
+		return e.runBot(ctx, *cfgPath, log)
+	}
+	l, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "refusing to start: %v\n", err)
+		return exitFail
+	}
+	cfg := l.Config
 	switch cmd {
 	case "healthcheck":
 		return e.healthcheck(ctx, cfg)
@@ -128,8 +169,6 @@ func (e *env) run(args []string) int {
 			}
 			return p.Pair(ctx, *phone, e.stdout)
 		})
-	case "run":
-		return e.runBot(ctx, cfg, log)
 	case "groups":
 		return e.withWhatsApp(ctx, cfg, log, func(ctx context.Context, w *whatsApp) error { return e.groups(ctx, w) })
 	case "resolve-link":
