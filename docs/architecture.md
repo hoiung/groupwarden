@@ -26,15 +26,21 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 
            internal/reconcile sweep (at connect and every reconcile interval):
                banned members present ► removed; their join requests ► rejected
+
+           internal/telegram: the stored reports and alerts ► the private admin
+               chat (≤ 20 posts a minute, priority first); admins' buttons and
+               commands ► internal/app Controls ► internal/pipeline Admin
 ```
 
 | Package | Job |
 |---|---|
 | `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test`, `ledger summary`, `ban add\|remove\|list`, `member show\|forget`, `fatal-exit-code` |
 | `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation |
-| `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload |
-| `internal/pipeline` | Inbox worker, the group directory (communities, members, admins), the moderator, ban enforcement on joins |
-| `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction; report delivery; crash recovery; retention purge |
+| `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders; the admin chat's controls |
+| `internal/pipeline` | Inbox worker, the group directory (communities, members, admins), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
+| `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction; crash recovery; retention purge |
+| `internal/telegram` | The admin chat: report and alert delivery from the store (rate limit, priority, digests, attachments, text removed after the evidence window), buttons and commands from admins of that chat only |
+| `internal/alert` | Alert kinds and which of them are priority |
 | `internal/action` | Fires the outbox: rate limit, circuit breaker, fire-time re-check; saves evidence attachments |
 | `internal/reconcile` | The periodic sweep, backing off on WhatsApp's rate limit |
 | `internal/config` | YAML 1.2 parsing, schema validation, defaults, the reloadable `Holder` |
@@ -65,7 +71,8 @@ Maintained libraries are used instead of hand-written code wherever one fits. Ev
 | `filippo.io/age` | Checking the backup recipient key (and encrypting backups) | `v1.3.2` | 2026-08-29 | BSD-3-Clause |
 | `github.com/mdp/qrterminal/v3` | Pairing QR code in the terminal | `v3.2.1` | 2025-03-19 | MIT |
 | `google.golang.org/protobuf` | WhatsApp message types | `v1.36.12` | 2026-08-10 | BSD-3-Clause |
-| `golang.org/x/time/rate` | The token bucket on outbound WhatsApp actions | `v0.16.0` | 2026-08-19 | BSD-3-Clause |
+| `golang.org/x/time/rate` | The token bucket on outbound WhatsApp actions and on admin-chat posts | `v0.16.0` | 2026-08-19 | BSD-3-Clause |
+| `github.com/go-telegram/bot` | The Telegram Bot API client for the admin chat (no dependencies of its own). Not chosen: `go-telegram-bot-api/v5` (last release 2021-12), `telebot.v4` (beta), `telego` (more dependencies) | `v1.27.0` | 2026-09-11 | MIT |
 
 Go's standard `regexp` (RE2, linear time) is the only regular-expression engine; deployers cannot supply their own patterns.
 
