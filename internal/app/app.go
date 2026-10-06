@@ -85,17 +85,34 @@ type App struct {
 
 	// The moderation workers (each optional: nil is not started).
 	Executor *action.Executor     // fires the outbox
-	Reporter *ledger.Reporter     // delivers stored reports
 	Media    *action.MediaFetcher // saves evidence attachments
 	Purger   *ledger.Purger       // applies retention
 	Sweep    *reconcile.Sweep     // removes banned members found in groups
-	sweepNow chan struct{}
+	// AdminChat delivers reports and alerts and takes the admins' buttons
+	// and commands (Controls); Admin is what those buttons write.
+	AdminChat Runner
+	Admin     *pipeline.Admin
+	sweepNow  chan struct{}
 
-	mon *monitor
+	mon     *monitor
+	started time.Time
+	// overdue: for each outside timer alerted as overdue, the last run the
+	// alert was about (one alert per episode).
+	overdue map[string]time.Time
 
 	mu        sync.Mutex
 	queue     []client.Lifecycle
 	lifecycle chan struct{} // signals that queue is non-empty
+
+	// reloadMu makes a reload (SIGHUP or /reload) one at a time;
+	// settingsMu guards Settings, which a reload replaces.
+	reloadMu   sync.Mutex
+	settingsMu sync.Mutex
+}
+
+// Runner is a worker that runs until ctx ends.
+type Runner interface {
+	Run(ctx context.Context)
 }
 
 // sink is what the adapter's handler talks to.
@@ -140,6 +157,7 @@ func (s sink) Lifecycle(l client.Lifecycle) {
 
 func (a *App) init() {
 	a.mon = &monitor{deafAfter: a.Settings.DeafAfter, disconnectAfter: a.Settings.DisconnectAlert}
+	a.overdue = map[string]time.Time{}
 	a.lifecycle = make(chan struct{}, 1)
 	a.sweepNow = make(chan struct{}, 1)
 	a.Adapter.Events(sink{a})
@@ -156,8 +174,8 @@ func (a *App) workers(ctx context.Context) func() {
 			run(ctx)
 		}()
 	}
-	if a.Reporter != nil {
-		start(a.Reporter.Run)
+	if a.AdminChat != nil {
+		start(a.AdminChat.Run)
 	}
 	if a.Executor != nil {
 		start(a.Executor.Run)
@@ -215,11 +233,14 @@ func (a *App) nextLifecycle() (client.Lifecycle, bool) {
 // fatally (*FatalError).
 func (a *App) Run(ctx context.Context) error {
 	a.init()
+	a.started = a.Clock.Now()
 	// Actions a crash left at intended stay queued: the executor re-checks
 	// and retries them, and the startup report lists them.
 	if _, err := ledger.Recover(ctx, a.Store, a.Log); err != nil {
 		return fmt.Errorf("recover the ledger: %w", err)
 	}
+	hash := a.Config.Current().Hash
+	a.alert(ctx, alert.Alert{Kind: alert.Started, Text: fmt.Sprintf("groupwarden %s started (config v%s).", Version(), hash)})
 	workerDone := make(chan struct{})
 	wctx, stopWorker := context.WithCancel(ctx)
 	go func() {
@@ -233,6 +254,13 @@ func (a *App) Run(ctx context.Context) error {
 	stopWorker()
 	<-workerDone
 	waitWorkers()
+	if err == nil {
+		// A clean stop (signal): the admins hear it before the process
+		// exits (a fatal stop already sent its own alert).
+		a.alert(ctx, alert.Alert{Kind: alert.Stopping, Priority: true, Text: fmt.Sprintf(
+			"groupwarden %s stopping (config v%s). Reports not yet sent go out after the restart.", Version(),
+			a.Config.Current().Hash)})
+	}
 	a.writeStatus(context.WithoutCancel(ctx))
 	return err
 }
@@ -263,7 +291,7 @@ func (a *App) supervise(ctx context.Context) error {
 			a.Adapter.Disconnect()
 			return nil
 		case <-a.Reload:
-			a.reload(ctx)
+			a.reload(ctx, true)
 		case <-retry:
 			retry = nil
 			connect()
@@ -273,8 +301,10 @@ func (a *App) supervise(ctx context.Context) error {
 			for _, al := range a.mon.check(now) {
 				a.alert(ctx, al)
 			}
+			a.checkOverdue(ctx, now)
+			a.checkPhone(ctx, now)
 			if connected, _, _ := a.mon.snapshot(); connected && !now.Before(nextCompanionCheck) {
-				nextCompanionCheck = now.Add(a.Settings.CompanionCheckEvery)
+				nextCompanionCheck = now.Add(a.settings().CompanionCheckEvery)
 				a.refreshDirectory(ctx)
 				a.checkCompanions(ctx)
 				a.requestSweep()
@@ -293,7 +323,7 @@ func (a *App) supervise(ctx context.Context) error {
 					bannedUntil = time.Time{}
 					a.mon.onConnected(now)
 					a.Log.Info("connected to WhatsApp")
-					nextCompanionCheck = now.Add(a.Settings.CompanionCheckEvery)
+					nextCompanionCheck = now.Add(a.settings().CompanionCheckEvery)
 					a.Directory.SetSelf(a.Adapter.Self())
 					a.refreshDirectory(ctx)
 					a.checkCompanions(ctx)
@@ -392,20 +422,132 @@ func (a *App) checkCompanions(ctx context.Context) {
 }
 
 // reload swaps in the config file again (whole, or not at all) and applies
-// its supervisor settings; the admins hear "config v<hash> loaded" or why it
-// was REJECTED.
-func (a *App) reload(ctx context.Context) {
+// its supervisor settings. It returns "config v<hash> loaded" or why it was
+// REJECTED; announce also tells the admins (a /reload gets it as its reply).
+// Safe from any goroutine.
+func (a *App) reload(ctx context.Context, announce bool) string {
+	a.reloadMu.Lock()
+	defer a.reloadMu.Unlock()
 	l, err := a.Config.Reload()
 	if err != nil {
 		a.Log.Error("config reload rejected", "err", err)
-		a.alert(ctx, alert.Alert{Kind: alert.ConfigRejected, Priority: true, Text: err.Error()})
+		if announce {
+			a.alert(ctx, alert.Alert{Kind: alert.ConfigRejected, Priority: true, Text: err.Error()})
+		}
+		return err.Error()
+	}
+	s := SettingsFrom(l.Config)
+	a.settingsMu.Lock()
+	a.Settings = s
+	a.settingsMu.Unlock()
+	if a.mon != nil { // nil until Run starts
+		a.mon.setThresholds(s.DeafAfter, s.DisconnectAlert)
+	}
+	a.Log.Info("config reloaded", "config", "v"+l.Hash)
+	text := "config v" + l.Hash + " loaded"
+	if announce {
+		a.alert(ctx, alert.Alert{Kind: alert.ConfigLoaded, Text: text})
+	}
+	a.writeStatus(ctx)
+	return text
+}
+
+func (a *App) settings() Settings {
+	a.settingsMu.Lock()
+	defer a.settingsMu.Unlock()
+	return a.Settings
+}
+
+// Outside timers the app watches (they write their last run to the store).
+var timers = []struct {
+	key, name string
+	every     func(a *App) time.Duration
+}{
+	{store.StatusSyncLastRun, "config sync", func(a *App) time.Duration {
+		return time.Duration(a.Config.Current().Config.ConfigSyncMinutes) * time.Minute
+	}},
+	{store.StatusBackupLastRun, "backup", func(*App) time.Duration { return 24 * time.Hour }},
+}
+
+// checkOverdue raises one priority alert per episode when the config sync or
+// the nightly backup has not run for twice its interval (counted from this
+// start when it never ran).
+func (a *App) checkOverdue(ctx context.Context, now time.Time) {
+	st, err := a.Store.Status(ctx)
+	if err != nil {
+		a.Log.Error("read status", "err", err)
 		return
 	}
-	a.Settings = SettingsFrom(l.Config)
-	a.mon.setThresholds(a.Settings.DeafAfter, a.Settings.DisconnectAlert)
-	a.Log.Info("config reloaded", "config", "v"+l.Hash)
-	a.alert(ctx, alert.Alert{Kind: alert.ConfigLoaded, Text: "config v" + l.Hash + " loaded"})
-	a.writeStatus(ctx)
+	for _, t := range timers {
+		last := msStatus(st, t.key)
+		since := last
+		if since.IsZero() {
+			since = a.started
+		}
+		every := t.every(a)
+		if now.Sub(since) <= 2*every {
+			delete(a.overdue, t.key)
+			continue
+		}
+		if seen, ok := a.overdue[t.key]; ok && seen.Equal(last) {
+			continue
+		}
+		a.overdue[t.key] = last
+		a.Log.Error("outside timer overdue", "timer", t.name, "last_run", last, "every", every)
+		a.alert(ctx, alert.Alert{Kind: alert.Overdue, Priority: true, Text: fmt.Sprintf(
+			"The %s timer has not run for %s (it runs every %s; last run %s). Check its systemd timer on the node "+
+				"(docs/runbook.md).", t.name, now.Sub(since).Round(time.Minute), every, ago(now, last))})
+	}
+}
+
+// Phone reminder timings (WhatsApp unlinks a linked device after 14 days
+// without the phone; fixed, not tunables).
+const (
+	phoneRemindAfter   = 7 * 24 * time.Hour
+	phoneEscalateAfter = 10 * 24 * time.Hour
+)
+
+// checkPhone sends the weekly "open WhatsApp on the bot phone" reminder with
+// [Done], and a priority escalation on day 10 without [Done]; each once per
+// [Done] episode.
+func (a *App) checkPhone(ctx context.Context, now time.Time) {
+	st, err := a.Store.Status(ctx)
+	if err != nil {
+		a.Log.Error("read status", "err", err)
+		return
+	}
+	key := st[store.StatusPhoneDone].Value
+	done := msStatus(st, store.StatusPhoneDone)
+	if done.IsZero() {
+		// No [Done] yet: count from this first start.
+		if err := a.Store.SetStatus(ctx, map[string]string{
+			store.StatusPhoneDone: strconv.FormatInt(now.UnixMilli(), 10)}); err != nil {
+			a.Log.Error("write status", "err", err)
+		}
+		return
+	}
+	age := now.Sub(done)
+	days := int(age / (24 * time.Hour))
+	switch {
+	case age >= phoneEscalateAfter && st[store.StatusPhoneEscalated].Value != key:
+		a.Log.Error("bot phone not confirmed opened", "days", days)
+		a.alert(ctx, alert.Alert{Kind: alert.PhoneEscalation, Priority: true, Buttons: []string{ledger.ButtonDone},
+			Text: fmt.Sprintf("Day %d without [Done]: open WhatsApp on the bot phone NOW. WhatsApp unlinks the bot's "+
+				"linked device after 14 days without the phone, and groupwarden stops until it is paired again. "+
+				"Press [Done] once you have.", days)})
+		a.setStatus(ctx, store.StatusPhoneEscalated, key)
+	case age >= phoneRemindAfter && age < phoneEscalateAfter && st[store.StatusPhoneReminded].Value != key:
+		a.alert(ctx, alert.Alert{Kind: alert.PhoneReminder, Buttons: []string{ledger.ButtonDone},
+			Text: "Weekly check: open WhatsApp on the bot phone (WhatsApp unlinks the bot's linked device after 14 " +
+				"days without the phone). Press [Done] once you have."})
+		a.setStatus(ctx, store.StatusPhoneReminded, key)
+	}
+}
+
+func (a *App) setStatus(ctx context.Context, key, value string) {
+	if err := a.Store.SetStatus(ctx, map[string]string{key: value}); err != nil {
+		a.Log.Error("write status", "key", key, "err", err)
+	}
 }
 
 // refreshDirectory relearns every group's community and admins.
@@ -420,6 +562,9 @@ func (a *App) refreshDirectory(ctx context.Context) {
 
 // writeStatus records the run state for `healthcheck` and other commands.
 func (a *App) writeStatus(ctx context.Context) {
+	if a.mon == nil { // nil until Run starts
+		return
+	}
 	connected, deaf, last := a.mon.snapshot()
 	kv := map[string]string{
 		store.StatusHeartbeat:  "",
