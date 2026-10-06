@@ -206,7 +206,7 @@ func (rs *Ruleset) Decide(in Input) Decision {
 	case d.Action == DeleteRemoveBan && in.SenderIsAdmin:
 		d.Action, d.Exempt = Log, ExemptAdmin
 	case d.Action == DeleteRemoveBan:
-		d.BanIn = rs.banTargets(in.Community)
+		d.BanIn = rs.BanTargets(in.Community)
 	case acting != nil:
 		d.Action, d.Rule, d.WouldHaveActed = Log, acting.Rule, true
 	case logged != nil:
@@ -215,9 +215,9 @@ func (rs *Ruleset) Decide(in Input) Decision {
 	return d
 }
 
-// banTargets is every configured community for all_communities, else the
+// BanTargets is every configured community for all_communities, else the
 // message's own community.
-func (rs *Ruleset) banTargets(community string) []string {
+func (rs *Ruleset) BanTargets(community string) []string {
 	if rs.banScope == PerCommunity {
 		if community == "" {
 			return nil
