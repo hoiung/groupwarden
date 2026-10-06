@@ -31,6 +31,9 @@ type Item struct {
 	// ReportOnly: the message is older than act_on_replay_max_age by its
 	// server time (an offline replay), so it may only be reported.
 	ReportOnly bool
+	// TargetTime is the server time of the message an action would target:
+	// the original, for an edit (zero for other events).
+	TargetTime time.Time
 }
 
 // Decider records what to do about an item inside the transaction that also
@@ -100,11 +103,11 @@ func (w *Worker) decide(ctx context.Context, row store.InboxRow) error {
 			return store.IncrCounter(ctx, tx, day(w.Store.Now()), "inbox_unreadable")
 		})
 	}
-	reportOnly, err := w.reportOnly(ctx, ev)
+	reportOnly, target, err := w.age(ctx, ev)
 	if err != nil {
 		return err
 	}
-	item := Item{Event: ev, ReceivedAt: row.ReceivedAt, ReportOnly: reportOnly}
+	item := Item{Event: ev, ReceivedAt: row.ReceivedAt, ReportOnly: reportOnly, TargetTime: target}
 	if err := w.Store.Decide(ctx, row, seenOf(ev), func(tx *sql.Tx) error {
 		return w.Decider.Decide(ctx, tx, item)
 	}); err != nil {
@@ -113,18 +116,18 @@ func (w *Worker) decide(ctx context.Context, row store.InboxRow) error {
 	return nil
 }
 
-// reportOnly ages a message by the server time of the message an action would
-// target: the original, for an edit.
-func (w *Worker) reportOnly(ctx context.Context, ev client.Event) (bool, error) {
+// age ages a message by the server time of the message an action would
+// target (the original, for an edit) and returns that time.
+func (w *Worker) age(ctx context.Context, ev client.Event) (reportOnly bool, target time.Time, err error) {
 	m, ok := ev.(*client.Message)
 	if !ok {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	sent := m.Time
 	if m.TargetID != m.ID {
 		orig, found, err := w.Store.SeenTime(ctx, string(m.Chat), m.TargetID)
 		if err != nil {
-			return false, err
+			return false, time.Time{}, err
 		}
 		if found {
 			sent = orig
@@ -133,7 +136,7 @@ func (w *Worker) reportOnly(ctx context.Context, ev client.Event) (bool, error) 
 		}
 	}
 	maxAge := time.Duration(w.Config.Current().Config.ActOnReplayMaxAge)
-	return w.Store.Now().Sub(sent) > maxAge, nil
+	return w.Store.Now().Sub(sent) > maxAge, sent, nil
 }
 
 func (w *Worker) purge(ctx context.Context) {
