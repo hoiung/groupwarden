@@ -15,6 +15,7 @@ const (
 	StatusDeaf           = "deaf"            // "1" while no event arrived for deafness_alert_hours
 	StatusConfigHash     = "config_hash"     // hash of the loaded config
 	StatusCompanionsSeen = "companions_seen" // linked devices already reported (comma list)
+	StatusBreakerReset   = "breaker_reset"   // unix ms of the last [Resume]: the breaker counts from there
 )
 
 // StatusValue is one status entry.
