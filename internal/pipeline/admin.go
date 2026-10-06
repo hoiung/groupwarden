@@ -63,48 +63,48 @@ func (a *Admin) Undo(ctx context.Context, reportID int64, actor string) (Undone,
 	if err != nil {
 		return Undone{}, err
 	}
-	// Read before the transaction: the store has one connection.
-	rows, err := a.Store.LedgerForTargets(ctx, m.IDs())
-	if err != nil {
-		return Undone{}, err
-	}
-	linked, err := a.Store.LedgerForReport(ctx, reportID)
-	if err != nil {
-		return Undone{}, err
-	}
-	bans, err := a.Store.BansFor(ctx, m.IDs())
-	if err != nil {
-		return Undone{}, err
-	}
-	var ids []int64
-	removed := map[client.JID]bool{}
-	for _, row := range rows {
-		switch row.Action {
-		case store.ActRemove, store.ActReject, store.ActBan:
-			if row.Status == store.Intended || row.Status == store.Requested {
-				ids = append(ids, row.ID)
-			}
-			if row.Action == store.ActRemove && row.Status == store.Requested && row.Mode == store.ModeEnforce {
-				removed[client.JID(row.Chat)] = true
-			}
-		}
-	}
-	for _, row := range linked {
-		if row.Action == store.ActRevoke && row.Status == store.Intended {
-			ids = append(ids, row.ID)
-		}
-	}
 	cur := a.Config.Current()
 	reason := "undone in the admin chat by " + actor
 	p := ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonUndo), Target: m, ConfigHash: cur.Hash,
 		Actor: client.JID(actor), Reason: reason, Lift: true, BanCommunity: r.Community}
 	var n int64
+	var bans []store.Ban
+	removed := map[client.JID]bool{}
 	now := a.Store.Now()
+	// The reads and the overturn are one transaction, so an action the
+	// executor settles meanwhile is either listed here or overturned after.
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
+		rows, err := store.LedgerForTargetsIn(ctx, tx, m.IDs())
+		if err != nil {
+			return err
+		}
+		linked, err := store.LedgerForReportIn(ctx, tx, reportID)
+		if err != nil {
+			return err
+		}
+		if bans, err = store.BansForIn(ctx, tx, m.IDs()); err != nil {
+			return err
+		}
+		var ids []int64
+		for _, row := range rows {
+			switch row.Action {
+			case store.ActRemove, store.ActReject, store.ActBan:
+				if row.Status == store.Intended || row.Status == store.Requested {
+					ids = append(ids, row.ID)
+				}
+				if row.Action == store.ActRemove && row.Status == store.Requested && row.Mode == store.ModeEnforce {
+					removed[client.JID(row.Chat)] = true
+				}
+			}
+		}
+		for _, row := range linked {
+			if row.Action == store.ActRevoke && row.Status == store.Intended {
+				ids = append(ids, row.ID)
+			}
+		}
 		if _, err := ledger.Write(ctx, tx, p, now); err != nil {
 			return err
 		}
-		var err error
 		n, err = store.Overturn(ctx, tx, ids, reason, now)
 		return err
 	}); err != nil {
@@ -208,7 +208,7 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 	}
 	p.Intents = append(p.Intents, removals...)
 	p.ConfigHash, p.Actor = cur.Hash, client.JID(actor)
-	p.Ban, p.BanEnforce, p.BanCommunity = banScopes(rs, community), enforce, community
+	p.Ban, p.BanEnforce, p.BanCommunity = BanScopes(rs, community), enforce, community
 	var w ledger.Written
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
 		var err error
