@@ -120,10 +120,18 @@ func TestSyncConfigReloadsTheRunningBot(t *testing.T) {
 		}
 		return rs
 	}
-	c3 := repo.Commit(map[string]string{"config.yaml": base + "mode: banana\n"}, "bad")
+	// The rejected commit's error names a community by its group ID: the
+	// result line and the JSON log (both in the sync service's journal) mask it.
+	c3 := repo.Commit(map[string]string{"config.yaml": base + "communities:\n  \"99999000000999@g.us\":\n    mode: banana\n"}, "bad")
 	for i := 0; i < 2; i++ {
 		if code := sync(); code != exitFail || !strings.HasPrefix(te.out.String(), "REJECTED "+c3[:12]+": ") {
 			t.Fatalf("rejected sync %d: exit %d\n%s", i, code, te.out)
+		}
+		if !strings.Contains(te.out.String(), "communities.group…0999.mode") ||
+			!strings.Contains(te.errb.String(), `"msg":"config sync: new config rejected"`) ||
+			!strings.Contains(te.errb.String(), "communities.group…0999.mode") ||
+			strings.Contains(te.out.String()+te.errb.String(), "99999000000999") {
+			t.Fatalf("rejected sync %d: the community ID is not masked in the result and the log:\n%s%s", i, te.out, te.errb)
 		}
 	}
 	if rs := reports(alert.ConfigRejected); len(rs) != 1 || !rs[0].Priority ||
