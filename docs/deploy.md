@@ -18,6 +18,7 @@ Both timers have `Persistent=true`, so a run missed while the node was off happe
 - An [age](https://age-encryption.org) key pair for the backups. Only the public key (`age1…`) goes on the node, in `backup.age_recipient`; keep the private key somewhere else, or the backups are only as safe as the node.
 - A second disk for the backups (`backup.target_dir`). `groupwarden check --secrets` refuses a target on the same disk as the data.
 - Go (the version in `go.mod`) and git on the node, for `deploy/install.sh --version`.
+- The node's clock in your time zone: the daily check is posted at `daily_check_time` (12:00 by default) in the node's local time. `date` shows it; set it with `sudo timedatectl set-timezone Europe/London` (your zone), or `-e TZ=Europe/London` for Docker. The bot logs the zone it uses when it starts.
 
 ## Layout on the node
 
@@ -212,7 +213,7 @@ Put `config.yaml` (with `data_dir: /data` and `secrets_file: /config/secrets.env
 ```bash
 docker volume create groupwarden-data
 docker run -it --rm -v groupwarden-data:/data -v /path/to/config:/config:ro groupwarden pair
-docker run -d --name groupwarden --restart on-failure -v groupwarden-data:/data -v /path/to/config:/config:ro groupwarden
+docker run -d --name groupwarden --restart on-failure -e TZ=Europe/London -v groupwarden-data:/data -v /path/to/config:/config:ro groupwarden
 ```
 
 `pair` takes the same lock as `run`, so pair before you start the bot. The image has no git and no timers: reload a changed config with `docker kill --signal HUP groupwarden`, and run the backup from the host's scheduler with `docker run --rm -v groupwarden-data:/data -v /path/to/config:/config:ro -v /path/to/backups:/backup groupwarden backup` (with `backup.target_dir: /backup`). `--restart on-failure` also restarts after exit code 78, which needs a human; check the admin chat before you restart a stopped container.
