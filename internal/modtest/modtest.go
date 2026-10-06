@@ -83,13 +83,20 @@ communities:
 // SpamText matches the confirmed "pitch" rule.
 const SpamText = "cheap crypto signals https://example.org/join"
 
-// Clock is a fake clock; Sleep advances it.
+// Clock is a fake clock; Sleep and Advance move it, and an After channel
+// fires once the clock reaches its time.
 type Clock struct {
-	mu    sync.Mutex
-	now   time.Time
-	slept []time.Duration
+	mu      sync.Mutex
+	now     time.Time
+	slept   []time.Duration
+	waiters []waiter
 	// OnSleep runs inside every Sleep, after the clock moved.
 	OnSleep func(d time.Duration)
+}
+
+type waiter struct {
+	at time.Time
+	ch chan time.Time
 }
 
 // Now is the current fake time.
@@ -99,17 +106,40 @@ func (c *Clock) Now() time.Time {
 	return c.now
 }
 
+// After returns a channel that receives once the clock has moved d on.
+func (c *Clock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	c.waiters = append(c.waiters, waiter{at: c.now.Add(d), ch: ch})
+	return ch
+}
+
+// move advances the clock and fires every After now due (c.mu held).
+func (c *Clock) move(d time.Duration) {
+	c.now = c.now.Add(d)
+	keep := c.waiters[:0]
+	for _, w := range c.waiters {
+		if w.at.After(c.now) {
+			keep = append(keep, w)
+			continue
+		}
+		w.ch <- c.now
+	}
+	c.waiters = keep
+}
+
 // Advance moves the clock on.
 func (c *Clock) Advance(d time.Duration) {
 	c.mu.Lock()
-	c.now = c.now.Add(d)
+	c.move(d)
 	c.mu.Unlock()
 }
 
 // Sleep records d and advances the clock by it.
 func (c *Clock) Sleep(ctx context.Context, d time.Duration) error {
 	c.mu.Lock()
-	c.now = c.now.Add(d)
+	c.move(d)
 	c.slept = append(c.slept, d)
 	hook := c.OnSleep
 	c.mu.Unlock()
