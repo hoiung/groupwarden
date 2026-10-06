@@ -58,6 +58,9 @@ const (
 	// PinRefused: the admin chat's command list is posted but Telegram would
 	// not pin it (the bot lacks the "Pin messages" right); routine.
 	PinRefused Kind = "pin_refused"
+	// DailyCheck: once a day at daily_check_time, the bot says it is alive
+	// and working (or what is not working), with the date; routine.
+	DailyCheck Kind = "daily_check"
 )
 
 // Priority reports whether an alert of kind k always jumps the admin chat's
