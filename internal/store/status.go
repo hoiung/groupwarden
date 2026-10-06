@@ -32,10 +32,11 @@ const (
 	StatusPhoneReminded  = "phone_reminded"
 	StatusPhoneEscalated = "phone_escalated"
 	// Timers outside the bot (config sync, backup): unix ms of the last run
-	// and the sync's result line.
+	// and its result line.
 	StatusSyncLastRun   = "sync_last_run"
 	StatusSyncResult    = "sync_result"
 	StatusBackupLastRun = "backup_last_run"
+	StatusBackupResult  = "backup_result"
 )
 
 // StatusValue is one status entry.
