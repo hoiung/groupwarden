@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/client"
+	"github.com/hoiung/groupwarden/internal/config/configtest"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -55,7 +56,7 @@ func open(t *testing.T, path string, now time.Time) *store.Store {
 }
 
 func worker(s *store.Store, d Decider) *Worker {
-	return &Worker{Store: s, Inbox: NewInbox(s), Decider: d, MaxReplayAge: 47 * time.Hour,
+	return &Worker{Store: s, Inbox: NewInbox(s), Decider: d, Config: configtest.Static(""),
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
