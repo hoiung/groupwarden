@@ -35,13 +35,18 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
            internal/telegram: the stored reports and alerts ► the private admin
                chat (≤ 20 posts a minute, priority first); admins' buttons and
                commands ► internal/app Controls ► internal/pipeline Admin
+
+           deploy/groupwarden-sync.timer ► groupwarden sync-config
+               (internal/configsync): git pull the private config repo ► the
+               same checks as a reload ► swap the live config directory to a
+               copy of that commit ► SIGHUP to run ► "config v<hash> loaded"
 ```
 
 | Package | Job |
 |---|---|
-| `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test`, `ledger summary`, `ban add\|remove\|list`, `member show\|forget`, `fatal-exit-code` |
+| `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test\|add`, `ledger summary`, `ban add\|remove\|list`, `member show\|forget`, `sync-config`, `schedule sync`, `fatal-exit-code` |
 | `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation |
-| `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders; the admin chat's controls |
+| `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders; the admin chat's controls; the data-dir lock (it names the holding process and command, so the config sync signals only `run`) |
 | `internal/pipeline` | Inbox worker (it decides nothing until the group directory has loaded once), the group directory (communities, members, admins), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
 | `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction; crash recovery; retention purge |
 | `internal/telegram` | The admin chat: report and alert delivery from the store (rate limit, priority, digests, attachments, text removed after the evidence window), buttons and commands from admins of that chat only, the command list pinned there and set as its "/" menu |
@@ -51,9 +56,10 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | `internal/config` | YAML 1.2 parsing, schema validation, defaults, the reloadable `Holder` |
 | `internal/rules` | Rule compilation and checks, built-in conditions, the decision |
 | `internal/normalise` | The matching views of a text and the word/phrase matcher |
-| `internal/corpus` | Labelled spam and legit samples, and the corpus test |
+| `internal/corpus` | Labelled spam and legit samples; the corpus test (per-rule hits, the closest rule for missed spam, the rules behind a legit false hit); `corpus add` (redaction that keeps a pattern's shape, or full redaction with `--public`; dedupe; a new private corpus seeded from the public legit set) |
+| `internal/configsync` | The config sync: pull with the deploy key and a time limit, check, swap the live config directory's symlink, signal `run`; one alert per failure episode |
 | `internal/store` | SQLite: migrations, inbox, ledger, outbox, ban list, evidence, reports, pauses, group coverage; maintenance of the WhatsApp session store (message-secret purge, `member forget`) |
-| `internal/mask` | Masks phone numbers, LIDs and group IDs in logs |
+| `internal/mask` | Masks phone numbers, LIDs and group IDs in logs and reports (a digit run touching a letter, such as a config hash, is left alone) |
 | `schema` | The config schema (embedded in the binary) |
 
 The config keys and the code that reads each one are in [config.md](config.md).
