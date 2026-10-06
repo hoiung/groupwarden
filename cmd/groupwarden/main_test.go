@@ -420,8 +420,32 @@ func TestHealthcheckRunsBesideRun(t *testing.T) {
 	if !strings.Contains(te.out.String(), "telegram: ok") {
 		t.Fatalf("healthy beside run without the admin chat:\n%s", te.out)
 	}
-	if posted := tg.Posted(); len(posted) == 0 || !strings.Contains(posted[0].Params["text"], "started") {
-		t.Fatalf("first admin-chat post %v, want the started report", posted)
+	// The started report and the command list both reach the chat (in either
+	// order), and the list is pinned quietly with the "/" menu set for the chat.
+	// Each call waits its turn in the 20-a-minute bucket (one every 3 s), so
+	// the four calls take up to ~12 s.
+	var started, list telegramtest.Request
+	for deadline := time.Now().Add(30 * time.Second); started.Method == "" || list.Method == "" ||
+		len(tg.Requests("pinChatMessage")) == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("admin-chat posts %+v, want the started report and the pinned command list", tg.Posted())
+		}
+		for _, p := range tg.Posted() {
+			switch text := p.Params["text"]; {
+			case strings.Contains(text, "started"):
+				started = p
+			case strings.HasPrefix(text, "groupwarden commands"):
+				list = p
+			}
+		}
+	}
+	if pin := tg.Requests("pinChatMessage")[0]; pin.Params["message_id"] != strconv.Itoa(list.MessageID) ||
+		pin.Params["disable_notification"] != "true" {
+		t.Fatalf("pin %+v, want the command list (message %d) pinned quietly", pin, list.MessageID)
+	}
+	if menus := tg.Requests("setMyCommands"); len(menus) != 1 ||
+		!strings.Contains(menus[0].Params["scope"], strconv.FormatInt(telegramtest.ChatID, 10)) {
+		t.Fatalf("command menu calls %+v, want one scoped to the admin chat", menus)
 	}
 	if code := te.cmd("check", "--secrets"); code != 0 {
 		t.Fatalf("check beside run: exit %d\n%s", code, te.out)
