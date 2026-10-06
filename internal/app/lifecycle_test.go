@@ -16,8 +16,10 @@ import (
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
+	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/config/configtest"
 	"github.com/hoiung/groupwarden/internal/ledger"
+	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -303,5 +305,24 @@ func TestPhoneReminderNotMarkedWhenRefused(t *testing.T) {
 	a.checkPhone(ctx, now.Add(3*monitorEvery))
 	if n := len(rec.OfKind(alert.PhoneReminder)); n != 1 {
 		t.Fatalf("%d reminders once the admin chat took one, want 1", n)
+	}
+}
+
+// TestBootRejectionLogged: a config refused at boot, the bot running on the
+// last good copy, is logged (masked, like every line) when the bot starts, as
+// its alert is raised.
+func TestBootRejectionLogged(t *testing.T) {
+	var logs lockedBuffer
+	reason := errors.New("line 3: communities." + string(testGroup) + ".mode must be one of shadow, enforce (got banana)")
+	h := startWith(t, &clienttest.Fake{SelfIDs: botSelf}, Settings{}, func(a *App) {
+		a.Log = mask.JSONLogger(&logs, nil)
+		a.BootRejected = &config.Rejected{Reason: reason, Running: "55786e8be51a"}
+	})
+	h.eventually("the rejection alert", func() bool { return len(h.rec.OfKind(alert.ConfigRejected)) == 1 })
+	got := logs.String()
+	if !strings.Contains(got, `"msg":"config rejected at boot; running the last good config"`) ||
+		!strings.Contains(got, "communities.group…0111.mode") || !strings.Contains(got, "still running v55786e8be51a") ||
+		strings.Contains(got, "99999000000111") {
+		t.Fatalf("the boot rejection is not logged, masked, with its reason:\n%s", got)
 	}
 }
