@@ -128,6 +128,9 @@ func (c *Chat) wakeSetup() {
 // list is posted, current and pinned there. It returns errPinRefused when the
 // list is posted but Telegram would not pin it.
 func (c *Chat) Setup(ctx context.Context) error {
+	if err := c.settle(ctx); err != nil {
+		return err // the list's own record may be among them
+	}
 	chatID := c.ChatID()
 	if err := c.setMenu(ctx, chatID); err != nil {
 		return err
@@ -195,7 +198,9 @@ func (c *Chat) pinList(ctx context.Context, chatID int64) error {
 			return fmt.Errorf("update the pinned command list: %w", err)
 		default:
 			c.Log.Info("pinned command list updated", "message", msgID)
-			if err := c.Store.SetStatus(ctx, map[string]string{store.StatusTelegramPinHash: hash}); err != nil {
+			if err := c.record(ctx, "command list update", func(ctx context.Context) error {
+				return c.Store.SetStatus(ctx, map[string]string{store.StatusTelegramPinHash: hash})
+			}); err != nil {
 				return err
 			}
 		}
@@ -206,10 +211,13 @@ func (c *Chat) pinList(ctx context.Context, chatID int64) error {
 			return fmt.Errorf("post the command list: %w", err)
 		}
 		chatID, msgID, state = msg.Chat.ID, msg.ID, ""
-		if err := c.Store.SetStatus(ctx, map[string]string{
+		kv := map[string]string{
 			store.StatusTelegramPin:      strconv.FormatInt(chatID, 10) + ":" + strconv.Itoa(msgID),
 			store.StatusTelegramPinHash:  hash,
 			store.StatusTelegramPinState: state,
+		}
+		if err := c.record(ctx, "command list post", func(ctx context.Context) error {
+			return c.Store.SetStatus(ctx, kv)
 		}); err != nil {
 			return err
 		}
@@ -232,7 +240,9 @@ func (c *Chat) pin(ctx context.Context, msgID int, state string) error {
 	switch {
 	case err == nil:
 		c.Log.Info("command list pinned", "message", msgID)
-		return c.Store.SetStatus(ctx, map[string]string{store.StatusTelegramPinState: pinPinned})
+		return c.record(ctx, "command list pin", func(ctx context.Context) error {
+			return c.Store.SetStatus(ctx, map[string]string{store.StatusTelegramPinState: pinPinned})
+		})
 	case !badRequest(err):
 		return fmt.Errorf("pin the command list: %w", err)
 	}
@@ -244,7 +254,9 @@ func (c *Chat) pin(ctx context.Context, msgID int, state string) error {
 			"chat; the bot tries again every hour."}); aerr != nil {
 			return aerr
 		}
-		if serr := c.Store.SetStatus(ctx, map[string]string{store.StatusTelegramPinState: pinRefused}); serr != nil {
+		if serr := c.record(ctx, "pin refusal report", func(ctx context.Context) error {
+			return c.Store.SetStatus(ctx, map[string]string{store.StatusTelegramPinState: pinRefused})
+		}); serr != nil {
 			return serr
 		}
 	}
