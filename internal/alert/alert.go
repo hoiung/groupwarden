@@ -22,6 +22,9 @@ const (
 	ExtraCompanion      Kind = "extra_companion"
 	DecryptError        Kind = "decrypt_error"
 	StorageFailure      Kind = "storage_failure"
+	// Undecided: an inbox item whose decision kept failing was set aside so
+	// the items behind it could be decided (priority).
+	Undecided Kind = "undecided"
 	// ConfigLoaded: "config v<hash> loaded" (routine).
 	ConfigLoaded Kind = "config_loaded"
 	// ConfigRejected: "REJECTED: <reason>, still running v<hash>" (priority).
@@ -69,7 +72,7 @@ func (k Kind) Priority() bool {
 	switch k {
 	case FatalDisconnect, TemporaryBan, Paused, Breaker, Deafness, ProlongedDisconnect, BotDemoted, BotRemoved,
 		CoverageLost, ExtraCompanion, ConfigRejected, SyncFailed, BackupFailed, Overdue, DecryptError, StorageFailure,
-		PhoneEscalation:
+		Undecided, PhoneEscalation:
 		return true
 	}
 	return false
