@@ -49,16 +49,28 @@ type StatusValue struct {
 
 // SetStatus writes the given keys in one transaction.
 func (s *Store) SetStatus(ctx context.Context, kv map[string]string) error {
-	now := s.now().UnixMilli()
+	return s.SetStatusReporting(ctx, kv, nil)
+}
+
+// SetStatusReporting writes the given keys and, when r is not nil, the report
+// r in one transaction. A failure report and the status that records it was
+// raised stand or fall together: written apart, a status write failing after
+// the report would raise it again on the next run.
+func (s *Store) SetStatusReporting(ctx context.Context, kv map[string]string, r *Report) error {
+	now := s.now()
 	return s.Write(ctx, func(tx *sql.Tx) error {
 		for k, v := range kv {
 			if _, err := tx.ExecContext(ctx, `
 INSERT INTO status (key, value, updated_at) VALUES (?, ?, ?)
-ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, k, v, now); err != nil {
+ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, k, v, now.UnixMilli()); err != nil {
 				return err
 			}
 		}
-		return nil
+		if r == nil {
+			return nil
+		}
+		_, err := InsertReport(ctx, tx, *r, nil, now)
+		return err
 	})
 }
 
