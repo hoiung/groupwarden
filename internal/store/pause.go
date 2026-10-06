@@ -28,6 +28,11 @@ const (
 	// SourceRestore: the database was restored from a backup; every action
 	// waits until an admin has checked /status and resumed.
 	SourceRestore = "restore"
+	// SourceTelegram: the admin chat keeps refusing the bot, so no admin
+	// could press [Undo]; cleared by the first message that goes through.
+	SourceTelegram = "telegram"
+	// SourceAdmin: an admin sent /pause (every action stops).
+	SourceAdmin = "admin"
 )
 
 // Pause is one active pause.
