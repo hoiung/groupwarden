@@ -43,6 +43,10 @@
       "description": "Optional URL pinged every 5 minutes while the healthcheck passes. Empty = off.",
       "type": "string", "default": "", "pattern": "^(https?://\\S+)?$"
     },
+    "daily_check_time": {
+      "description": "When the bot posts its daily check in the admin chat: HH:MM, 24-hour, in the node's local time zone.",
+      "type": "string", "default": "12:00", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+    },
     "mode": {
       "description": "Global mode: shadow reports what would happen; enforce acts. Communities may override it.",
       "enum": ["shadow", "enforce"], "default": "shadow"
