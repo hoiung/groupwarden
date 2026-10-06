@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/store"
@@ -43,5 +44,31 @@ func ReadHealth(st map[string]store.StatusValue, now time.Time) Health {
 // OK is the healthy state: running, connected, not deaf, a config loaded and
 // the admin chat reached.
 func (h Health) OK() bool {
-	return h.Running && h.Connected && !h.Deaf && h.ConfigHash != "" && h.Telegram == "1"
+	return len(h.Problems()) == 0
+}
+
+// Problems names, in plain words, each part of the healthy state h is
+// missing (none when OK).
+func (h Health) Problems() []string {
+	var out []string
+	if !h.Running {
+		out = append(out, fmt.Sprintf("its status has not been written for over %d minutes", int(BeatFresh/time.Minute)))
+	}
+	if !h.Connected {
+		out = append(out, "WhatsApp is not connected")
+	}
+	if h.Deaf {
+		out = append(out, "no message has arrived from any moderated group for a long time (the event stream may have stalled)")
+	}
+	if h.ConfigHash == "" {
+		out = append(out, "no config is loaded")
+	}
+	switch h.Telegram {
+	case "1":
+	case "0":
+		out = append(out, "Telegram refused the bot's last message to the admin chat")
+	default:
+		out = append(out, "the admin chat has not taken a message yet")
+	}
+	return out
 }
