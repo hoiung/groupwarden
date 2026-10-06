@@ -235,30 +235,35 @@ func (s *Store) OutboxLen(ctx context.Context) (int, error) {
 // was in flight, the row keeps that status and settled is false, but a call
 // that went out (sent set) is still recorded on it, so the breaker counts it.
 func (s *Store) Finish(ctx context.Context, id int64, st Status, reason string, code int, sent time.Time) (settled bool, err error) {
+	err = s.Write(ctx, func(tx *sql.Tx) error {
+		settled, err = FinishIn(ctx, tx, id, st, reason, code, sent, s.now())
+		return err
+	})
+	return settled, err
+}
+
+// FinishIn is Finish inside tx.
+func FinishIn(ctx context.Context, tx *sql.Tx, id int64, st Status, reason string, code int, sent, now time.Time) (bool, error) {
 	if !st.Terminal() {
 		return false, fmt.Errorf("ledger: %s is not a final status", st)
 	}
-	err = s.Write(ctx, func(tx *sql.Tx) error {
-		now := s.now().UnixMilli()
-		res, err := tx.ExecContext(ctx, `UPDATE ledger SET status = ?, reason = ?, code = ?, sent_at = COALESCE(?, sent_at),
-	updated_at = ? WHERE id = ? AND status = 'intended'`, string(st), reason, code, nullTime(sent), now, id)
-		if err != nil {
-			return err
+	res, err := tx.ExecContext(ctx, `UPDATE ledger SET status = ?, reason = ?, code = ?, sent_at = COALESCE(?, sent_at),
+	updated_at = ? WHERE id = ? AND status = 'intended'`, string(st), reason, code, nullTime(sent), now.UnixMilli(), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	settled := n == 1
+	if !settled && !sent.IsZero() {
+		if _, err := tx.ExecContext(ctx, `UPDATE ledger SET code = ?, sent_at = ?, updated_at = ? WHERE id = ?`,
+			code, sent.UnixMilli(), now.UnixMilli(), id); err != nil {
+			return false, err
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		settled = n == 1
-		if !settled && !sent.IsZero() {
-			if _, err := tx.ExecContext(ctx, `UPDATE ledger SET code = ?, sent_at = ?, updated_at = ? WHERE id = ?`,
-				code, sent.UnixMilli(), now, id); err != nil {
-				return err
-			}
-		}
-		_, err = tx.ExecContext(ctx, `DELETE FROM outbox WHERE ledger_id = ?`, id)
-		return err
-	})
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM outbox WHERE ledger_id = ?`, id)
 	return settled, err
 }
 
@@ -281,17 +286,22 @@ func (s *Store) Retry(ctx context.Context, id int64, notBefore time.Time, reason
 	})
 }
 
-// ToShadow turns a queued row into a shadow record (its target scope is no
-// longer in enforce mode) and drops it from the outbox.
-func (s *Store) ToShadow(ctx context.Context, id int64, reason string) error {
-	return s.Write(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE ledger SET mode = 'shadow', reason = ?, updated_at = ? WHERE id = ?`,
-			reason, s.now().UnixMilli(), id); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM outbox WHERE ledger_id = ?`, id)
-		return err
-	})
+// ToShadowIn turns a queued row into a shadow record (its target scope is no
+// longer in enforce mode) and drops it from the outbox, inside tx. Only a row
+// still at intended changes ([Undo] may have overturned it meanwhile); changed
+// says whether it did.
+func ToShadowIn(ctx context.Context, tx *sql.Tx, id int64, reason string, now time.Time) (changed bool, err error) {
+	res, err := tx.ExecContext(ctx, `UPDATE ledger SET mode = 'shadow', reason = ?, updated_at = ?
+WHERE id = ? AND status = 'intended'`, reason, now.UnixMilli(), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM outbox WHERE ledger_id = ?`, id)
+	return n == 1, err
 }
 
 // AdminTrigger prefixes the trigger of a row an admin ordered from the admin
