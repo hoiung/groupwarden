@@ -5,6 +5,7 @@ package action
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -157,23 +158,51 @@ func (x *Executor) Step(ctx context.Context) (bool, error) {
 	case hold:
 		return false, nil
 	case shadow:
-		if err := x.Store.ToShadow(ctx, row.ID, v.reason); err != nil {
+		moved, err := x.settle(ctx, row.ID, func(tx *sql.Tx, now time.Time) (bool, error) {
+			return store.ToShadowIn(ctx, tx, row.ID, v.reason, now)
+		}, &store.Report{Kind: ledger.KindWouldRemove, Community: row.Community, Subject: row.Target,
+			Text: fmt.Sprintf("Would %s in %s, which is in shadow mode: not done.", what(row.Action), row.Community)})
+		if err != nil {
 			return false, err
 		}
 		x.Log.Info("action moved to shadow", "action", string(row.Action), "chat", mask.IDs(row.Chat),
-			"reason", mask.IDs(v.reason))
-		x.report(ctx, store.Report{Kind: ledger.KindWouldRemove, Community: row.Community, Subject: row.Target,
-			Text: fmt.Sprintf("Would %s in %s, which is in shadow mode: not done.", what(row.Action), row.Community)}, row.ID)
+			"reason", mask.IDs(v.reason), "moved", moved)
 		return true, nil
 	case fail:
-		if v.report != nil {
-			x.report(ctx, *v.report, row.ID)
-		}
 		x.Log.Info("action not sent", "action", string(row.Action), "chat", mask.IDs(row.Chat), "reason", mask.IDs(v.reason))
-		_, err := x.Store.Finish(ctx, row.ID, store.Failed, v.reason, 0, time.Time{})
+		_, err := x.settle(ctx, row.ID, func(tx *sql.Tx, now time.Time) (bool, error) {
+			return store.FinishIn(ctx, tx, row.ID, store.Failed, v.reason, 0, time.Time{}, now)
+		}, v.report)
 		return true, err
 	}
 	return true, x.send(ctx, row)
+}
+
+// settle writes a row's change and, when rep is not nil, the report about it
+// (linked to the row) in one transaction. Written apart, the report could be
+// lost after the change committed (nothing decides the row again) or repeated
+// when the change failed after it (the next step decides again). The report
+// is written only when change reports the row was still intended.
+func (x *Executor) settle(ctx context.Context, rowID int64, change func(tx *sql.Tx, now time.Time) (bool, error),
+	rep *store.Report) (changed bool, err error) {
+	reported := false
+	err = x.Store.Write(ctx, func(tx *sql.Tx) error {
+		now := x.Store.Now()
+		reported = false
+		var err error
+		if changed, err = change(tx, now); err != nil || !changed || rep == nil {
+			return err
+		}
+		if _, err := store.InsertReport(ctx, tx, *rep, []int64{rowID}, now); err != nil {
+			return err
+		}
+		reported = true
+		return nil
+	})
+	if err == nil && reported && x.Reported != nil {
+		x.Reported()
+	}
+	return changed, err
 }
 
 // allowed is which outbox scopes may fire now: deletes stop only for a full
@@ -413,6 +442,10 @@ func (x *Executor) send(ctx context.Context, row store.LedgerRow) error {
 	}
 	// [Undo] overturned the row while its call was in flight: the member was
 	// removed (or refused) anyway, and the Undo reply did not list this group.
+	// This report is written after Finish, not with it: rolled back together,
+	// a failed report would also lose the record that the call went out (sent
+	// time and code on the overturned row), and nothing would retry it, since
+	// [Undo] already dropped the row from the outbox.
 	next := "re-invite them there by hand"
 	if row.Action == store.ActReject {
 		next = "they can ask to join again"
