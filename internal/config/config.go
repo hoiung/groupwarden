@@ -121,6 +121,7 @@ type Config struct {
 	DisconnectAlertMinutes int                  `json:"disconnect_alert_minutes"`
 	ConfigSyncMinutes      int                  `json:"config_sync_minutes"`
 	HeartbeatURL           string               `json:"heartbeat_url"`
+	DailyCheckTime         string               `json:"daily_check_time"`
 	Mode                   rules.Mode           `json:"mode"`
 	Retention              Retention            `json:"retention"`
 	Rate                   Rate                 `json:"rate"`
