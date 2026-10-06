@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	filippo.io/age v1.3.2
 	github.com/eskriett/confusables v0.0.0-20250910043846-220432c5bd73
+	github.com/go-telegram/bot v1.27.0
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.mau.fi/whatsmeow v0.0.0-20261005195255-6bb48c0f1ff0
