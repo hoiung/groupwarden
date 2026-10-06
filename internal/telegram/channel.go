@@ -38,7 +38,7 @@ func (c *Chat) Alert(ctx context.Context, a alert.Alert) error {
 func (c *Chat) sendDirect(ctx context.Context, text string) {
 	ctx, cancel := context.WithTimeout(ctx, directDeadline)
 	defer cancel()
-	if _, err := c.sendText(ctx, true, c.labelText(text), 0, nil); err != nil {
+	if _, err := c.sendText(ctx, true, c.labelText(text), quote{}, 0, nil); err != nil {
 		c.Log.Error("could not send an alert directly", "err", err.Error())
 		return
 	}
