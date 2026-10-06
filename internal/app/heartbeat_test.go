@@ -32,7 +32,7 @@ func TestHeartbeatOnlyWhenHealthy(t *testing.T) {
 	pinged := func() int32 {
 		t.Helper()
 		next := h.clock.Now().Add(pingEvery)
-		h.eventually("the pinger's check", func() bool { return h.clock.hasWaiterAt(next) })
+		h.eventually("the pinger's check", func() bool { return h.clock.hasWaiter(next, pingEvery) })
 		return hits.Load()
 	}
 
@@ -89,7 +89,7 @@ func (h *harness) tick(d time.Duration) {
 	for moved := time.Duration(0); moved < d; moved += monitorEvery {
 		h.clock.Advance(monitorEvery)
 		next := h.clock.Now().Add(monitorEvery)
-		h.eventually("the supervisor's tick", func() bool { return h.clock.hasWaiterAt(next) })
+		h.eventually("the supervisor's tick", func() bool { return h.clock.hasWaiter(next, monitorEvery) })
 	}
 }
 
