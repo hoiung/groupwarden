@@ -200,13 +200,23 @@ func (rs *Ruleset) Decide(in Input) Decision {
 			logged = m
 		}
 	}
+	// An admin or Meta AI is exempt from every acting rule, enforced or
+	// watch-only: a watch-only match on them is reported as exempt, never as
+	// one the bot would have acted on.
+	var exempt Exemption
 	switch {
-	case d.Action == DeleteRemoveBan && in.FromMetaAI:
-		d.Action, d.Exempt = Log, ExemptMetaAI
-	case d.Action == DeleteRemoveBan && in.SenderIsAdmin:
-		d.Action, d.Exempt = Log, ExemptAdmin
+	case in.FromMetaAI:
+		exempt = ExemptMetaAI
+	case in.SenderIsAdmin:
+		exempt = ExemptAdmin
+	}
+	switch {
+	case d.Action == DeleteRemoveBan && exempt != "":
+		d.Action, d.Exempt = Log, exempt
 	case d.Action == DeleteRemoveBan:
 		d.BanIn = rs.BanTargets(in.Community)
+	case acting != nil && exempt != "":
+		d.Action, d.Rule, d.Exempt = Log, acting.Rule, exempt
 	case acting != nil:
 		d.Action, d.Rule, d.WouldHaveActed = Log, acting.Rule, true
 	case logged != nil:
