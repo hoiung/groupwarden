@@ -23,6 +23,11 @@ const (
 	SourceStorage        = "storage"
 	SourceTempBan        = "temporary_ban"
 	SourceExtraCompanion = "extra_companion"
+	// SourceBreaker: too many removals in the breaker window.
+	SourceBreaker = "breaker"
+	// SourceRestore: the database was restored from a backup; every action
+	// waits until an admin has checked /status and resumed.
+	SourceRestore = "restore"
 )
 
 // Pause is one active pause.
