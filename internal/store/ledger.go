@@ -269,6 +269,30 @@ func (s *Store) ToShadow(ctx context.Context, id int64, reason string) error {
 	})
 }
 
+// AdminTrigger prefixes the trigger of a row an admin ordered from the admin
+// chat ("tg:<report>:<button>"): the report ID + button key of AC 3.1.
+const AdminTrigger = "tg:"
+
+// Overturn marks each given row that is still intended or requested as
+// overturned (an admin pressed [Undo]) and drops it from the outbox, in tx.
+// It returns how many rows changed.
+func Overturn(ctx context.Context, tx *sql.Tx, ids []int64, reason string, now time.Time) (int64, error) {
+	var n int64
+	for _, id := range ids {
+		res, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'overturned', reason = ?, updated_at = ?
+WHERE id = ? AND status IN ('intended', 'requested')`, reason, now.UnixMilli(), id)
+		if err != nil {
+			return n, fmt.Errorf("overturn: %w", err)
+		}
+		c, _ := res.RowsAffected()
+		n += c
+		if _, err := tx.ExecContext(ctx, `DELETE FROM outbox WHERE ledger_id = ?`, id); err != nil {
+			return n, fmt.Errorf("overturn: %w", err)
+		}
+	}
+	return n, nil
+}
+
 // Requeue puts a failed row back in the outbox (a sweep retrying the same
 // target and action stays one row per episode).
 func Requeue(ctx context.Context, tx *sql.Tx, r LedgerRow, now time.Time) error {
