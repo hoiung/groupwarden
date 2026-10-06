@@ -53,6 +53,7 @@ type fakeWA struct {
 	info         *types.GroupInfo
 	infoErr      error
 	iqResp       *waBinary.Node
+	iqErr        error
 	iqTo         types.JID
 	iqContent    waBinary.Node
 
@@ -156,7 +157,7 @@ func (f *fakeWA) lidForPhone(_ context.Context, phone types.JID) (types.JID, err
 func (f *fakeWA) sendGroupIQ(_ context.Context, to types.JID, content waBinary.Node) (*waBinary.Node, error) {
 	f.record("sendGroupIQ", true)
 	f.iqTo, f.iqContent = to, content
-	return f.iqResp, nil
+	return f.iqResp, f.iqErr
 }
 
 // fakeSink records what the handler persisted and signalled.
