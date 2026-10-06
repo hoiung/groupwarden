@@ -134,6 +134,7 @@ func (a *Adapter) convertMessage(e *events.Message) client.Event {
 	m := &client.Message{
 		Chat: jid(info.Chat), Sender: jid(info.Sender), SenderAlt: jid(info.SenderAlt),
 		ID: info.ID, TargetID: info.ID, Time: info.Timestamp, PushName: info.PushName,
+		FromMetaAI: info.Sender.IsBot() || info.SenderAlt.IsBot(),
 	}
 	content := unwrap(e.Message)
 	switch {
