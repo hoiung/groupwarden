@@ -103,6 +103,14 @@ The nightly backup is an age-encrypted copy of `groupwarden.db` only, never the 
 
 `restore` refuses to run while the bot runs, over an existing database, with the wrong key, and on a file that is not a groupwarden backup.
 
+## The database cannot be written
+
+**"groupwarden.db cannot be written (…): every action is PAUSED until an admin resumes"**: the data disk is full or read-only. Deletes, removals and bans stop at once. Alerts and the daily check still reach the admin chat, sent directly without a record (each once), and the journal logs every alert as it is raised (`alert raised`). Queued reports wait: the bot posts nothing again while it cannot record what it posted, and delivery carries on by itself once the disk takes writes again.
+
+1. `df -h /var/lib/groupwarden` and `journalctl -u groupwarden.service` (the SQLite error is in the log).
+2. Free space on that disk, or bring it back read-write.
+3. Type `/resume` in the admin chat (the alert has no button: it was sent around the store). `/status` then shows no storage pause; queued actions are checked again before they run.
+
 ## Alerts about timers and backups
 
 - **"The config sync timer has not run for …"** or **"The backup timer has not run for …"**: the systemd timer stopped. Check `systemctl list-timers 'groupwarden*'` and `systemctl status groupwarden-sync.service groupwarden-backup.service`. On a Windows node, check that WSL is up and, for the backup, that the backup disk is mounted (`ls /mnt/wsl/gwbackup`); the boot task mounts it.
