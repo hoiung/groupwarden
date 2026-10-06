@@ -14,6 +14,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
+	"github.com/hoiung/groupwarden/internal/config/configtest"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
 )
@@ -108,10 +109,15 @@ func start(t *testing.T, fake *clienttest.Fake, s Settings) *harness {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := &alert.Recorder{}
 	inbox := pipeline.NewInbox(st)
+	// The test group is a configured standalone set, so its events count as
+	// moderated (deafness only counts moderated groups).
+	holder := configtest.Static("communities:\n  test-set:\n    groups: [\"99999000000111@g.us\"]\n")
+	dir := &pipeline.Directory{}
 	a := &App{
 		Adapter: fake, Store: st, Inbox: inbox, Alerter: rec, Log: log, Clock: clock, Settings: s,
-		Worker: &pipeline.Worker{Store: st, Inbox: inbox, MaxReplayAge: 47 * time.Hour, Log: log,
-			Decider: &pipeline.Moderator{Store: st, Alerter: rec, Log: log}},
+		Config: holder, Directory: dir,
+		Worker: &pipeline.Worker{Store: st, Inbox: inbox, Config: holder, Log: log,
+			Decider: &pipeline.Moderator{Store: st, Alerter: rec, Config: holder, Directory: dir, Log: log}},
 	}
 	h := &harness{t: t, app: a, fake: fake, clock: clock, rec: rec, st: st, done: make(chan error, 1)}
 	ctx, cancel := context.WithCancel(context.Background())
