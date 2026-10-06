@@ -1,0 +1,12 @@
+[Unit]
+Description=Back up groupwarden.db every night
+Documentation=https://github.com/hoiung/groupwarden/blob/main/docs/deploy.md
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+# A night missed while the node was off is made up as soon as it is back.
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
