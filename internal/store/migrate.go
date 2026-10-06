@@ -177,6 +177,19 @@ CREATE TABLE tg_presses (
 	PRIMARY KEY (report_id, button)
 );
 `,
+	// 4: where the bot stands in each group of a configured community, as last
+	// reported to the admins (internal/reconcile coverage.go has the states).
+	`
+CREATE TABLE coverage (
+	grp        TEXT    PRIMARY KEY,
+	community  TEXT    NOT NULL,
+	state      TEXT    NOT NULL CHECK (state IN ('absent', 'not_admin', 'covered')),
+	listed     INTEGER NOT NULL DEFAULT 0,
+	few_admins INTEGER NOT NULL DEFAULT 0,
+	join_tried INTEGER NOT NULL DEFAULT 0,
+	updated_at INTEGER NOT NULL
+);
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
