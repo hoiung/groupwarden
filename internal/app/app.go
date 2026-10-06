@@ -13,11 +13,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hoiung/groupwarden/internal/action"
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/config"
+	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/pipeline"
+	"github.com/hoiung/groupwarden/internal/reconcile"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -80,6 +83,14 @@ type App struct {
 	// copy runs instead; reported once connected to the supervisor loop.
 	BootRejected *config.Rejected
 
+	// The moderation workers (each optional: nil is not started).
+	Executor *action.Executor     // fires the outbox
+	Reporter *ledger.Reporter     // delivers stored reports
+	Media    *action.MediaFetcher // saves evidence attachments
+	Purger   *ledger.Purger       // applies retention
+	Sweep    *reconcile.Sweep     // removes banned members found in groups
+	sweepNow chan struct{}
+
 	mon *monitor
 
 	mu        sync.Mutex
@@ -130,7 +141,63 @@ func (s sink) Lifecycle(l client.Lifecycle) {
 func (a *App) init() {
 	a.mon = &monitor{deafAfter: a.Settings.DeafAfter, disconnectAfter: a.Settings.DisconnectAlert}
 	a.lifecycle = make(chan struct{}, 1)
+	a.sweepNow = make(chan struct{}, 1)
 	a.Adapter.Events(sink{a})
+}
+
+// workers starts the moderation workers and returns a function that waits
+// for them to stop (after ctx ends).
+func (a *App) workers(ctx context.Context) func() {
+	var wg sync.WaitGroup
+	start := func(run func(context.Context)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			run(ctx)
+		}()
+	}
+	if a.Reporter != nil {
+		start(a.Reporter.Run)
+	}
+	if a.Executor != nil {
+		start(a.Executor.Run)
+	}
+	if a.Media != nil {
+		start(a.Media.Run)
+	}
+	if a.Purger != nil {
+		start(a.Purger.Run)
+	}
+	if a.Sweep != nil {
+		start(a.sweeper)
+	}
+	return wg.Wait
+}
+
+// sweeper runs a sweep each time one is asked for (at connect and every
+// reconcile interval), one at a time.
+func (a *App) sweeper(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.sweepNow:
+		}
+		runID := a.Clock.Now().UTC().Format("20060102T150405.000")
+		res, err := a.Sweep.Run(ctx, runID)
+		if err != nil && ctx.Err() == nil {
+			a.Log.Error("sweep failed", "err", mask.IDs(err.Error()))
+		}
+		a.Log.Info("sweep", "run", runID, "groups", res.Groups, "rate_limited", res.RateLimited, "errors", res.Errors)
+	}
+}
+
+// requestSweep asks for a sweep (one pending at most).
+func (a *App) requestSweep() {
+	select {
+	case a.sweepNow <- struct{}{}:
+	default:
+	}
 }
 
 func (a *App) nextLifecycle() (client.Lifecycle, bool) {
@@ -148,6 +215,11 @@ func (a *App) nextLifecycle() (client.Lifecycle, bool) {
 // fatally (*FatalError).
 func (a *App) Run(ctx context.Context) error {
 	a.init()
+	// Actions a crash left at intended stay queued: the executor re-checks
+	// and retries them, and the startup report lists them.
+	if _, err := ledger.Recover(ctx, a.Store, a.Log); err != nil {
+		return fmt.Errorf("recover the ledger: %w", err)
+	}
 	workerDone := make(chan struct{})
 	wctx, stopWorker := context.WithCancel(ctx)
 	go func() {
@@ -156,9 +228,11 @@ func (a *App) Run(ctx context.Context) error {
 			a.Log.Error("inbox worker stopped", "err", err)
 		}
 	}()
+	waitWorkers := a.workers(wctx)
 	err := a.supervise(ctx)
 	stopWorker()
 	<-workerDone
+	waitWorkers()
 	a.writeStatus(context.WithoutCancel(ctx))
 	return err
 }
@@ -203,6 +277,7 @@ func (a *App) supervise(ctx context.Context) error {
 				nextCompanionCheck = now.Add(a.Settings.CompanionCheckEvery)
 				a.refreshDirectory(ctx)
 				a.checkCompanions(ctx)
+				a.requestSweep()
 			}
 			a.writeStatus(ctx)
 		case <-a.lifecycle:
@@ -219,8 +294,10 @@ func (a *App) supervise(ctx context.Context) error {
 					a.mon.onConnected(now)
 					a.Log.Info("connected to WhatsApp")
 					nextCompanionCheck = now.Add(a.Settings.CompanionCheckEvery)
+					a.Directory.SetSelf(a.Adapter.Self())
 					a.refreshDirectory(ctx)
 					a.checkCompanions(ctx)
+					a.requestSweep()
 					a.writeStatus(ctx)
 				case l.Kind == client.Disconnected:
 					a.mon.onDisconnected(now)
