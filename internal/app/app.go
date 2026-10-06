@@ -93,6 +93,12 @@ type App struct {
 	AdminChat Runner
 	Admin     *pipeline.Admin
 	sweepNow  chan struct{}
+	// refreshNow asks the supervisor to relearn the groups (the bot joined
+	// one) and sweep.
+	refreshNow chan struct{}
+	// dirAlerted: the admins were told the group list does not load
+	// (supervisor goroutine only).
+	dirAlerted bool
 
 	mon     *monitor
 	started time.Time
@@ -124,6 +130,14 @@ func (s sink) Persist(ev client.Event) error {
 	}
 	if s.a.moderated(ev) {
 		s.a.mon.onEvent(s.a.Clock.Now())
+	}
+	if _, ok := ev.(*client.JoinedGroup); ok {
+		// The directory learns the new group (and its community) now, not
+		// at the next reconcile interval.
+		select {
+		case s.a.refreshNow <- struct{}{}:
+		default:
+		}
 	}
 	return nil
 }
@@ -160,6 +174,15 @@ func (a *App) init() {
 	a.overdue = map[string]time.Time{}
 	a.lifecycle = make(chan struct{}, 1)
 	a.sweepNow = make(chan struct{}, 1)
+	a.refreshNow = make(chan struct{}, 1)
+	// Nothing is decided before the bot knows its groups: a message matched
+	// against an empty directory would count as unmoderated and be dropped.
+	a.Worker.Ready = a.Directory.Loaded()
+	// An action WhatsApp refused as the bot is not an admin marks that group
+	// not covered at once.
+	if a.Executor != nil && a.Sweep != nil {
+		a.Executor.NotAdmin = a.Sweep.LostAdmin
+	}
 	a.Adapter.Events(sink{a})
 }
 
@@ -206,7 +229,8 @@ func (a *App) sweeper(ctx context.Context) {
 		if err != nil && ctx.Err() == nil {
 			a.Log.Error("sweep failed", "err", mask.IDs(err.Error()))
 		}
-		a.Log.Info("sweep", "run", runID, "groups", res.Groups, "rate_limited", res.RateLimited, "errors", res.Errors)
+		a.Log.Info("sweep", "run", runID, "groups", res.Groups, "joins", res.Joins, "reports", res.Reports,
+			"rate_limited", res.RateLimited, "errors", res.Errors)
 	}
 }
 
@@ -292,6 +316,11 @@ func (a *App) supervise(ctx context.Context) error {
 			return nil
 		case <-a.Reload:
 			a.reload(ctx, true)
+		case <-a.refreshNow:
+			if connected, _, _ := a.mon.snapshot(); connected {
+				a.refreshDirectory(ctx)
+				a.requestSweep()
+			}
 		case <-retry:
 			retry = nil
 			connect()
@@ -303,10 +332,17 @@ func (a *App) supervise(ctx context.Context) error {
 			}
 			a.checkOverdue(ctx, now)
 			a.checkPhone(ctx, now)
-			if connected, _, _ := a.mon.snapshot(); connected && !now.Before(nextCompanionCheck) {
+			connected, _, _ := a.mon.snapshot()
+			switch {
+			case connected && !now.Before(nextCompanionCheck):
 				nextCompanionCheck = now.Add(a.settings().CompanionCheckEvery)
 				a.refreshDirectory(ctx)
 				a.checkCompanions(ctx)
+				a.requestSweep()
+			case connected && !a.Directory.IsLoaded():
+				// The group list failed at connect: nothing is decided until
+				// it loads, so try again every tick, not every interval.
+				a.refreshDirectory(ctx)
 				a.requestSweep()
 			}
 			a.writeStatus(ctx)
@@ -550,14 +586,23 @@ func (a *App) setStatus(ctx context.Context, key, value string) {
 	}
 }
 
-// refreshDirectory relearns every group's community and admins.
+// refreshDirectory relearns every group's community and admins. While the
+// list has never loaded nothing is decided, so that failure is a priority
+// alert (once until a list loads).
 func (a *App) refreshDirectory(ctx context.Context) {
 	groups, err := a.Adapter.JoinedGroups(ctx)
 	if err != nil {
 		a.Log.Warn("could not list groups", "err", mask.IDs(err.Error()))
+		if !a.Directory.IsLoaded() && !a.dirAlerted {
+			a.dirAlerted = true
+			a.alert(ctx, alert.Alert{Kind: alert.CoverageLost, Priority: true, Text: "The bot could not list its " +
+				"WhatsApp groups (" + mask.IDs(err.Error()) + "): no message is checked until it can. It tries again " +
+				"every 30 seconds; messages wait in its inbox meanwhile."})
+		}
 		return
 	}
 	a.Directory.Update(groups)
+	a.dirAlerted = false
 }
 
 // writeStatus records the run state for `healthcheck` and other commands.
