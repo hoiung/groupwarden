@@ -39,7 +39,7 @@ Whoever deploys groupwarden is the **data controller** for the members' data it 
 4. A banned person who rejoins — by link, join request or community join — is removed or rejected. Only an admin can unban them: **[Undo]** in Telegram, `/unban`, or re-adding them by hand.
 5. Every action, with the rule and config version that caused it, goes to the Telegram admin chat and the local ledger. Make the bot an admin of that chat with the **Pin messages** right: it pins a list of its commands there.
 
-Rules live in a separate private config repo. Paste a new spam message into Claude Code and the `spam-intake` skill saves it to your private corpus, tests every rule against the whole corpus, proposes the smallest rule change with before/after counts, and commits it on your yes; the running bot picks it up within minutes.
+Rules live in a separate private config repo. Paste a new spam message into Claude Code and the `spam-intake` skill saves it to your private corpus, tests every rule against the whole corpus, proposes the smallest rule change with before/after counts, and commits it on your yes; the running bot picks it up within minutes. Install the skill with `make install-skill` (it links `.claude/skills/spam-intake` into `~/.claude/skills`).
 
 ## Known limits
 
@@ -53,7 +53,8 @@ Rules live in a separate private config repo. Paste a new spam message into Clau
 
 | Path | What |
 |---|---|
-| `cmd/groupwarden/` | The CLI (`pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `ban`, `member`, `ledger`, `corpus`) |
+| `cmd/groupwarden/` | The CLI (`pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `ban`, `member`, `ledger`, `corpus`, `sync-config`, `schedule`) |
+| `.claude/skills/spam-intake/` | The Claude Code skill that turns a pasted spam message into a tested rule change |
 | `internal/` | Client layer, store, pipeline, rules, ledger, actions, Telegram, reconcile, backup |
 | `schema/` | JSON Schema for `config.yaml` |
 | `examples/` | Example config with English word lists |
