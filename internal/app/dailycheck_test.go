@@ -28,7 +28,9 @@ import (
 // from now, so a following h.tick moves it one tick at a time.
 func (h *harness) armed() {
 	h.t.Helper()
-	h.eventually("the next tick armed", func() bool { return h.clock.hasWaiterAt(h.clock.Now().Add(monitorEvery)) })
+	h.eventually("the next tick armed", func() bool {
+		return h.clock.hasWaiter(h.clock.Now().Add(monitorEvery), monitorEvery)
+	})
 }
 
 // TestDailyCheckOncePerDay: the daily check is posted at daily_check_time
@@ -200,7 +202,7 @@ func TestDailyCheckReachesTheAdminChat(t *testing.T) {
 		return err == nil && s[store.StatusConnected].Value == "1" && s[store.StatusTelegramOK].Value == "1" &&
 			a.Directory.IsLoaded()
 	}, func() string { return fmt.Sprintf("posts %q", texts()) })
-	waitFor(t, "the first tick armed", func() bool { return clock.hasWaiterAt(clock.Now().Add(monitorEvery)) },
+	waitFor(t, "the first tick armed", func() bool { return clock.hasWaiter(clock.Now().Add(monitorEvery), monitorEvery) },
 		func() string { return "" })
 	clock.Advance(monitorEvery) // 12:00:00
 	want := "Daily check, Tuesday 6 October 2026: groupwarden is alive and working."
