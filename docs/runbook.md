@@ -4,9 +4,20 @@ What to do when groupwarden asks for a human. Paths are the node layout in [depl
 
 ## Where to look
 
+- **The daily check**: every day at `daily_check_time` (12:00 by default, the node's local time) the bot posts "Daily check, <date>: groupwarden is alive and working." in the admin chat, or names what is not working. See [No daily check](#no-daily-check).
 - **The admin chat**: every alert lands there. `/status` shows the connection, pauses, the config version, the last config sync and backup, the ban list and queue sizes, and coverage per community.
 - **`sudo -u groupwarden groupwarden healthcheck --config CFG`**: exit 0 only when the bot is running, connected, hearing messages, has its config and has reached the admin chat; otherwise one line says which part is not.
 - **`journalctl -u groupwarden.service`** (and `-u groupwarden-sync.service`, `-u groupwarden-backup.service`): structured JSON logs. Phone numbers and IDs are masked and message text is only logged at debug level.
+
+## No daily check
+
+No daily check by a quarter past the time means the bot is not running, or the node is off, asleep or offline: the post comes from the running bot, so nothing else can send it. Look at the node:
+
+1. Is it on and online? On a Windows node: is the laptop on, on mains power, and is WSL up (`wsl -l -v` shows the distro Running)?
+2. `systemctl status groupwarden`: if it stopped with exit code 78, see the next section; otherwise `sudo systemctl start groupwarden` and read `journalctl -u groupwarden.service` for why it stopped.
+3. `sudo -u groupwarden groupwarden healthcheck --config CFG`.
+
+When the post says "alive but not working fully", it names each part that is not working (WhatsApp not connected, no messages arriving, no config loaded, or the admin chat refusing the bot): the alert for that part, and `healthcheck`, say what to do. A bot started after the time posts that day within a minute; a day it was down for is not posted afterwards.
 
 ## The bot stopped and is not restarting (exit code 78)
 
