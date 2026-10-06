@@ -47,7 +47,7 @@ func TestMigrationsFromEmpty(t *testing.T) {
 	}
 	_ = rows.Close()
 	want := []string{"bans", "counters", "evidence", "inbox", "ledger", "outbox", "pause", "report_edits", "report_ledger",
-		"reports", "schema_version", "seen", "status"}
+		"reports", "schema_version", "seen", "status", "tg_messages", "tg_presses"}
 	sort.Strings(want)
 	if strings.Join(tables, ",") != strings.Join(want, ",") {
 		t.Fatalf("tables = %v, want %v", tables, want)
@@ -70,6 +70,50 @@ func TestMigrationsFromEmpty(t *testing.T) {
 	_ = s2.Close()
 	if _, err := Open(ctx, path, Options{}); err == nil || !strings.Contains(err.Error(), "schema version") {
 		t.Fatalf("newer schema: err = %v, want refusal", err)
+	}
+}
+
+// TestConcurrentOpenMigratesOnce: processes opening the same new database at
+// once (healthcheck beside a starting run) all succeed and the schema is
+// applied exactly once.
+func TestConcurrentOpenMigratesOnce(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "groupwarden.db")
+	const openers = 8
+	start := make(chan struct{})
+	errs := make(chan error, openers)
+	stores := make(chan *Store, openers)
+	for i := 0; i < openers; i++ {
+		go func() {
+			<-start
+			s, err := Open(ctx, path, Options{})
+			errs <- err
+			stores <- s
+		}()
+	}
+	close(start)
+	for i := 0; i < openers; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("concurrent open: %v", err)
+		}
+		if s := <-stores; s != nil {
+			t.Cleanup(func() { _ = s.Close() })
+		}
+	}
+	if t.Failed() {
+		return
+	}
+	s, err := Open(ctx, path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	var rows, version int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), MAX(version) FROM schema_version`).Scan(&rows, &version); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || version != len(migrations) {
+		t.Fatalf("schema_version rows=%d version=%d, want 1 row at %d", rows, version, len(migrations))
 	}
 }
 
