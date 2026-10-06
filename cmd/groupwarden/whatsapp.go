@@ -203,20 +203,30 @@ func (e *env) resolveLink(ctx context.Context, w *whatsApp, link string) error {
 	return nil
 }
 
-// runBot is `groupwarden run`.
-func (e *env) runBot(ctx context.Context, cfg *config.Config, log *slog.Logger) int {
-	return e.withWhatsApp(ctx, cfg, log, func(ctx context.Context, w *whatsApp) error {
-		log.Info("starting", "config", "v"+cfg.Hash())
+// runBot is `groupwarden run`. A config file that fails its checks still
+// boots when data_dir holds the last good copy (and the admins are told it
+// was REJECTED); with no good copy the bot refuses to start.
+func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
+	holder, rejected, err := config.Boot(path)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "refusing to start: %v\n", err)
+		return exitFail
+	}
+	cur := holder.Current()
+	var reload <-chan struct{}
+	if e.hangups != nil {
+		ch, stop := e.hangups()
+		defer stop()
+		reload = ch
+	}
+	return e.withWhatsApp(ctx, cur.Config, log, func(ctx context.Context, w *whatsApp) error {
+		log.Info("starting", "config", "v"+cur.Hash)
+		dir := &pipeline.Directory{}
 		a := &app.App{
 			Adapter: w.adapter, Store: w.store, Inbox: w.inbox, Alerter: w.alerter, Log: log, Clock: app.SystemClock{},
-			Worker: &pipeline.Worker{Store: w.store, Inbox: w.inbox, MaxReplayAge: time.Duration(cfg.ActOnReplayMaxAge), Log: log,
-				Decider: &pipeline.Moderator{Store: w.store, Alerter: w.alerter, Log: log}},
-			Settings: app.Settings{
-				DeafAfter:           time.Duration(cfg.DeafnessAlertHours) * time.Hour,
-				DisconnectAlert:     time.Duration(cfg.DisconnectAlertMinutes) * time.Minute,
-				CompanionCheckEvery: time.Duration(cfg.Reconcile.IntervalMinutes) * time.Minute,
-				ConfigHash:          cfg.Hash(),
-			},
+			Worker: &pipeline.Worker{Store: w.store, Inbox: w.inbox, Config: holder, Log: log,
+				Decider: &pipeline.Moderator{Store: w.store, Alerter: w.alerter, Config: holder, Directory: dir, Log: log}},
+			Settings: app.SettingsFrom(cur.Config), Config: holder, Directory: dir, Reload: reload, BootRejected: rejected,
 		}
 		err := a.Run(ctx)
 		log.Info("stopped", "err", err)
