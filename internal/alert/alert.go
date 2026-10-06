@@ -37,6 +37,13 @@ const (
 	BotRemoved Kind = "bot_removed"
 	// CoverageLost: a moderated group the bot no longer covers.
 	CoverageLost Kind = "coverage_lost"
+	// Coverage: the groups of a community the bot found, a new group, or a
+	// group it joined or asked to join, each with what an admin must do
+	// (routine).
+	Coverage Kind = "coverage"
+	// FewHumanAdmins: a group the bot is in has fewer than 2 human admins
+	// (routine; once per episode).
+	FewHumanAdmins Kind = "few_human_admins"
 	// SyncFailed: the config sync could not fetch or apply the config.
 	SyncFailed Kind = "sync_failed"
 	// Overdue: the config sync or backup timer has not run for twice its
