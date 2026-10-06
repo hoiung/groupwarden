@@ -81,7 +81,7 @@ func Build(p Parts) (*App, error) {
 	a := &App{
 		Adapter: p.Adapter, Store: p.Store, Inbox: p.Inbox, Alerter: p.Alerts, Log: p.Log, Clock: SystemClock{},
 		Settings:  SettingsFrom(p.Config.Current().Config),
-		Worker:    &pipeline.Worker{Store: p.Store, Inbox: p.Inbox, Config: p.Config, Log: p.Log, Decider: mod},
+		Worker:    &pipeline.Worker{Store: p.Store, Inbox: p.Inbox, Config: p.Config, Log: p.Log, Decider: mod, Wake: chat.Wake},
 		Config:    p.Config,
 		Directory: dir,
 		Executor:  exec,
