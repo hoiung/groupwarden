@@ -20,6 +20,11 @@ const (
 	StatusTelegramOK   = "tg_ok"          // "1" once Telegram took a message; "0" while it keeps refusing the bot (401/403)
 	StatusTelegramChat = "tg_chat_id"     // the chat ID after Telegram migrated the group (overrides the secrets file)
 	StatusSummaryDay   = "tg_summary_day" // the last UTC day (2006-01-02) the daily summary covered
+	// The pinned command list: "<chat ID>:<message ID>", the hash of the
+	// text it shows, and "pinned" / "refused" ("" until a pin was tried).
+	StatusTelegramPin      = "tg_pin"
+	StatusTelegramPinHash  = "tg_pin_hash"
+	StatusTelegramPinState = "tg_pin_state"
 	// The "open WhatsApp on the bot phone" reminder: unix ms of the last
 	// [Done] (of the first start, before any [Done]), and the [Done] time each
 	// reminder and escalation was sent for (one of each per episode).
