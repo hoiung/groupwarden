@@ -55,8 +55,8 @@ var (
 	tgRe   = regexp.MustCompile(`\btg://\S+`)
 	// handleRe: an "@username" not inside a word or an email address.
 	handleRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_@.])@(\p{L}[\p{L}\p{N}_.]{2,31})`)
-	// phoneRe: a digit run with phone separators; checked for 9-15 digits.
-	phoneRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}])(\+?\d[\d \t().\-]{7,24}\d)`)
+	// PhoneRe: a digit run with phone separators (group 1); IsPhone checks it.
+	PhoneRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}])(\+?\d[\d \t().\-]{7,24}\d)`)
 	moneyRe = regexp.MustCompile(`[$£€¥₹₦₽]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:k|m)?\s?(?:usd|usdt|usdc|gbp|eur|dollars?|pounds?|euros?|btc|eth)\b`)
 )
 
@@ -110,8 +110,8 @@ func detect(fields []client.Field, allowed map[string]bool) signals {
 				s[Handle] = true
 			}
 		}
-		for _, m := range phoneRe.FindAllStringSubmatch(rest, -1) {
-			if isPhone(m[1]) {
+		for _, m := range PhoneRe.FindAllStringSubmatch(rest, -1) {
+			if IsPhone(m[1]) {
 				s[PhoneNumber] = true
 			}
 		}
@@ -173,9 +173,9 @@ func registrable(host string) string {
 	return host
 }
 
-// isPhone accepts 9-15 digits starting with + or 0, or one unbroken run of
+// IsPhone accepts 9-15 digits starting with + or 0, or one unbroken run of
 // 10-15 digits ("447700900123"), so dates and prices do not count.
-func isPhone(s string) bool {
+func IsPhone(s string) bool {
 	digits := 0
 	for _, r := range s {
 		if r >= '0' && r <= '9' {
