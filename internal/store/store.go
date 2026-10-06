@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -64,22 +65,56 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	if opts.OnWriteFailure != nil {
 		s.onFailure = opts.OnWriteFailure
 	}
-	if err := s.migrate(ctx); err != nil {
+	if err := s.migrateWhenFree(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
-// DSN is the SQLite connection string used for both databases: WAL so other
-// groupwarden commands can read beside `run`, synchronous FULL so an
-// acknowledged message survives a power cut, a busy timeout so a short write
-// from another command waits instead of failing, and secure_delete so a
+// migrateWhenFree migrates, retrying while another process holds the lock. A
+// new database switches to WAL on its first connection, which needs an
+// exclusive lock that SQLite does not wait for when another process is opening
+// the same file at that moment (it answers SQLITE_BUSY at once rather than
+// risk a deadlock), so the busy timeout alone does not cover a healthcheck
+// started beside the first `run`.
+func (s *Store) migrateWhenFree(ctx context.Context) error {
+	deadline := time.Now().Add(busyTimeout)
+	for {
+		err := s.migrate(ctx)
+		if err == nil || !isBusy(err) || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+func isBusy(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	c := se.Code() & 0xff
+	return c == sqlite3.SQLITE_BUSY || c == sqlite3.SQLITE_LOCKED
+}
+
+// DSN is the SQLite connection string used for both databases: a busy timeout
+// so a short write from another command waits instead of failing (first, so
+// it also covers switching a new database to WAL while another process opens
+// it), WAL so other groupwarden commands can read beside `run`, synchronous
+// FULL so an acknowledged message survives a power cut, and secure_delete so a
 // decided message's text is overwritten on disk, not just unlinked.
 func DSN(path string) string {
-	return "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=busy_timeout(10000)" +
-		"&_pragma=foreign_keys(1)&_pragma=secure_delete(1)"
+	return "file:" + path + "?_pragma=busy_timeout(" + strconv.FormatInt(busyTimeout.Milliseconds(), 10) + ")" +
+		"&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)&_pragma=foreign_keys(1)&_pragma=secure_delete(1)"
 }
+
+// busyTimeout is how long a write waits for another process's write lock.
+const busyTimeout = 10 * time.Second
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
