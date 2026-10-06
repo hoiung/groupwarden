@@ -227,17 +227,16 @@ func (rs *Ruleset) BanTargets(community string) []string {
 	return rs.Communities()
 }
 
-// ActsOn reports whether any acting rule matches as if every rule were
-// confirmed and enforced (the corpus test's view), and which rules matched.
-func (rs *Ruleset) ActsOn(in Input) (bool, []string) {
+// ActsOn is the corpus test's view of a message, as if every rule were
+// confirmed and enforced: the matching rules that would delete it, and every
+// matching rule.
+func (rs *Ruleset) ActsOn(in Input) (acting, matched []string) {
 	matches, _ := rs.matchAll(in, rs.scopeFor(in.Community))
-	var names []string
-	acts := false
 	for _, m := range matches {
-		names = append(names, m.Rule)
+		matched = append(matched, m.Rule)
 		if m.Action == DeleteRemoveBan {
-			acts = true
+			acting = append(acting, m.Rule)
 		}
 	}
-	return acts, names
+	return acting, matched
 }
