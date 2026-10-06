@@ -209,8 +209,23 @@ func (c *Chat) ChatID() int64 {
 	return c.chatID
 }
 
-// lock takes the delivery slot, or gives up when ctx ends.
-func (c *Chat) lock(ctx context.Context) error {
+// slotKey marks a context whose caller holds the delivery slot.
+type slotKey struct{}
+
+// slotHold is that mark: held is false while a routine wait has let the slot
+// go (and stays false if taking it back failed).
+type slotHold struct{ held bool }
+
+// lock takes the delivery slot, or gives up when ctx ends. The context it
+// returns carries the hold; pass it on and give it to unlock.
+func (c *Chat) lock(ctx context.Context) (context.Context, error) {
+	if err := c.acquire(ctx); err != nil {
+		return ctx, err
+	}
+	return context.WithValue(ctx, slotKey{}, &slotHold{held: true}), nil
+}
+
+func (c *Chat) acquire(ctx context.Context) error {
 	select {
 	case c.sem <- struct{}{}:
 		return nil
@@ -219,37 +234,37 @@ func (c *Chat) lock(ctx context.Context) error {
 	}
 }
 
-func (c *Chat) unlock() { <-c.sem }
+// unlock gives the slot back, if ctx (from lock) still holds it.
+func (c *Chat) unlock(ctx context.Context) {
+	if h, ok := ctx.Value(slotKey{}).(*slotHold); ok && h.held {
+		h.held = false
+		<-c.sem
+	}
+}
 
-// waitTurn waits until a message may go: past any retry_after, through the
-// shared bucket, and (a routine message) until fewer than
-// groupPerMinute-priorityHeadroom routine messages went in the last minute.
+// waitTurn waits until a message may go: past any retry_after, (a routine
+// message) until fewer than groupPerMinute-priorityHeadroom routine messages
+// went in the last minute, then through the shared bucket.
 func (c *Chat) waitTurn(ctx context.Context, priority bool) error {
+	const routineMax = groupPerMinute - priorityHeadroom
 	for {
-		c.mu.Lock()
-		until := c.blockedUntil
-		c.mu.Unlock()
 		now := c.Now()
-		if !now.Before(until) {
+		c.mu.Lock()
+		wait := c.blockedUntil.Sub(now)
+		if n := len(c.routineSent); !priority && n >= routineMax {
+			wait = max(wait, c.routineSent[n-routineMax].Add(time.Minute).Sub(now))
+		}
+		c.mu.Unlock()
+		if wait <= 0 {
 			break
 		}
-		if err := c.Sleep(ctx, until.Sub(now)); err != nil {
+		if err := c.pause(ctx, priority, wait); err != nil {
 			return err
 		}
 	}
-	const routineMax = groupPerMinute - priorityHeadroom
 	now := c.Now()
-	var wait time.Duration
-	c.mu.Lock()
-	if n := len(c.routineSent); !priority && n >= routineMax {
-		wait = max(c.routineSent[n-routineMax].Add(time.Minute).Sub(now), 0)
-	}
-	c.mu.Unlock()
-	if d := c.shared.ReserveN(now.Add(wait), 1).DelayFrom(now); d > wait {
-		wait = d
-	}
-	if wait > 0 {
-		if err := c.Sleep(ctx, wait); err != nil {
+	if d := c.shared.ReserveN(now, 1).DelayFrom(now); d > 0 {
+		if err := c.pause(ctx, priority, d); err != nil {
 			return err
 		}
 	}
@@ -261,6 +276,27 @@ func (c *Chat) waitTurn(ctx context.Context, priority bool) error {
 		}
 		c.mu.Unlock()
 	}
+	return nil
+}
+
+// pause sleeps d before a send. A routine send holding the delivery slot lets
+// it go meanwhile and takes it back after, so a priority report (a fatal
+// alert's flush) never waits behind a routine message's wait: the routine
+// budget, its turn in the shared bucket, or a retry_after.
+func (c *Chat) pause(ctx context.Context, priority bool, d time.Duration) error {
+	h, ok := ctx.Value(slotKey{}).(*slotHold)
+	if priority || !ok || !h.held {
+		return c.Sleep(ctx, d)
+	}
+	h.held = false
+	<-c.sem
+	if err := c.Sleep(ctx, d); err != nil {
+		return err
+	}
+	if err := c.acquire(ctx); err != nil {
+		return err
+	}
+	h.held = true
 	return nil
 }
 
@@ -435,3 +471,10 @@ func refusal(err error) bool {
 // badRequest: Telegram will never accept this request (the message is gone,
 // too old to delete, or already in that state).
 func badRequest(err error) bool { return errors.Is(err, bot.ErrorBadRequest) }
+
+// fileRefused: Telegram will never take this file, a 400 (an empty file) or
+// a 413 (over its upload limit; the library has no error kind for it, so the
+// code is read from its "<method>, <code> <description>" message).
+func fileRefused(err error) bool {
+	return badRequest(err) || strings.Contains(err.Error(), ", 413 ")
+}
