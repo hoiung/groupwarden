@@ -212,6 +212,7 @@ func (a *App) workers(ctx context.Context) func() {
 	if a.Sweep != nil {
 		start(a.sweeper)
 	}
+	start(a.pinger) // reads heartbeat_url at each ping, so a reload can turn it on
 	return wg.Wait
 }
 
@@ -313,6 +314,10 @@ func (a *App) supervise(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			a.Adapter.Disconnect()
+			// The last status write says so: a stopped bot is not connected,
+			// and the install script's health check must not pass on the
+			// status of the process it just restarted.
+			a.mon.onDisconnected(a.Clock.Now())
 			return nil
 		case <-a.Reload:
 			a.reload(ctx, true)
