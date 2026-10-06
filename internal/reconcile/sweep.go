@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/client"
@@ -32,6 +33,18 @@ type Sweep struct {
 	Log       *slog.Logger
 	// Sleep waits for d or until ctx ends.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Now is the clock (nil: time.Now).
+	Now func() time.Time
+
+	mu       sync.Mutex
+	coverage Coverage
+}
+
+func (s *Sweep) now() time.Time {
+	if s.Now == nil {
+		return time.Now()
+	}
+	return s.Now()
 }
 
 // Result counts what one sweep did.
@@ -43,6 +56,10 @@ type Result struct {
 // (a retry of the same removal in a later pass stays one row per episode).
 func (s *Sweep) Run(ctx context.Context, runID string) (Result, error) {
 	var res Result
+	cov := s.discover(ctx, &res)
+	s.mu.Lock()
+	s.coverage = cov
+	s.mu.Unlock()
 	rs := s.Config.Current().Rules
 	for _, g := range s.Directory.Moderated(rs) {
 		res.Groups++
