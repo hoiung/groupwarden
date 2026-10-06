@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 // ChatID is the fake admin chat (a supergroup ID, negative like every group).
@@ -175,6 +176,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.failWith(w, r, reply)
 		return
 	}
+	if refused, ok := refuse(req); ok {
+		s.failWith(w, r, refused)
+		return
+	}
 	var result any
 	switch method {
 	case "getMe":
@@ -210,6 +215,38 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result})
+}
+
+// refuse answers what the Bot API refuses whatever the test set up: a text
+// that is empty once trimmed, an empty file, and an entity outside the text.
+func refuse(req Request) (Reply, bool) {
+	bad := func(d string) (Reply, bool) { return Reply{Code: 400, Description: "Bad Request: " + d}, true }
+	switch req.Method {
+	case "sendMessage", "editMessageText":
+		text := req.Params["text"]
+		if strings.TrimSpace(text) == "" {
+			return bad("message text is empty")
+		}
+		var entities []struct{ Offset, Length int }
+		if e := req.Params["entities"]; e != "" {
+			if err := json.Unmarshal([]byte(e), &entities); err != nil {
+				return bad("can't parse entities: " + err.Error())
+			}
+		}
+		n := len(utf16.Encode([]rune(text)))
+		for _, e := range entities {
+			if e.Offset < 0 || e.Length <= 0 || e.Offset+e.Length > n {
+				return bad("can't parse entities: an entity is outside the text")
+			}
+		}
+	case "sendDocument":
+		for _, f := range req.Files {
+			if len(f) == 0 {
+				return bad("file must be non-empty")
+			}
+		}
+	}
+	return Reply{}, false
 }
 
 func (s *Server) message(req Request) (map[string]any, int) {
