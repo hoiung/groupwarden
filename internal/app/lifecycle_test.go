@@ -3,7 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -238,5 +241,67 @@ func TestPhoneReminderEscalates(t *testing.T) {
 	h.eventually("reminder a week after [Done]", func() bool { return len(reminders()) == 2 })
 	if n := len(escalations()); n != 1 {
 		t.Fatalf("%d escalations a week after [Done]", n)
+	}
+}
+
+// TestPhoneRemindersOnceWhileTheStoreCannotWrite: with the store unwritable
+// the weekly reminder and the day-10 escalation each go to the admin chat
+// once per episode, however many ticks check them.
+func TestPhoneRemindersOnceWhileTheStoreCannotWrite(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "g.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	if err := st.SetStatus(ctx, map[string]string{
+		store.StatusPhoneDone: strconv.FormatInt(now.Add(-8*24*time.Hour).UnixMilli(), 10)}); err != nil {
+		t.Fatal(err)
+	}
+	readOnly(t, st)
+	holder, _ := configtest.Holder(t, testSet)
+	rec := &alert.Recorder{}
+	a := &App{Store: st, Config: holder, Alerter: rec, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	for i := 0; i < 3; i++ {
+		a.checkPhone(ctx, now.Add(time.Duration(i)*monitorEvery))
+	}
+	for i := 0; i < 3; i++ {
+		a.checkPhone(ctx, now.Add(2*24*time.Hour+time.Duration(i)*monitorEvery))
+	}
+	if r, e := len(rec.OfKind(alert.PhoneReminder)), len(rec.OfKind(alert.PhoneEscalation)); r != 1 || e != 1 {
+		t.Fatalf("%d reminders and %d escalations over 3 ticks each, want 1 each", r, e)
+	}
+}
+
+// TestPhoneReminderNotMarkedWhenRefused: a reminder the admin chat did not
+// take is not marked as sent, so the next tick tries again; once taken, it
+// is not sent again.
+func TestPhoneReminderNotMarkedWhenRefused(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "g.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	if err := st.SetStatus(ctx, map[string]string{
+		store.StatusPhoneDone: strconv.FormatInt(now.Add(-8*24*time.Hour).UnixMilli(), 10)}); err != nil {
+		t.Fatal(err)
+	}
+	holder, _ := configtest.Holder(t, testSet)
+	ref := &refusing{}
+	a := &App{Store: st, Config: holder, Alerter: ref, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	a.checkPhone(ctx, now)
+	a.checkPhone(ctx, now.Add(monitorEvery))
+	if ref.tries != 2 {
+		t.Fatalf("%d tries over 2 ticks the admin chat refused, want 2", ref.tries)
+	}
+	rec := &alert.Recorder{}
+	a.Alerter = rec
+	a.checkPhone(ctx, now.Add(2*monitorEvery))
+	a.checkPhone(ctx, now.Add(3*monitorEvery))
+	if n := len(rec.OfKind(alert.PhoneReminder)); n != 1 {
+		t.Fatalf("%d reminders once the admin chat took one, want 1", n)
 	}
 }
