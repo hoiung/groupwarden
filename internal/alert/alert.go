@@ -46,6 +46,9 @@ const (
 	// with [Done]); PhoneEscalation repeats it on day 10 without [Done].
 	PhoneReminder   Kind = "phone_reminder"
 	PhoneEscalation Kind = "phone_escalation"
+	// PinRefused: the admin chat's command list is posted but Telegram would
+	// not pin it (the bot lacks the "Pin messages" right); routine.
+	PinRefused Kind = "pin_refused"
 )
 
 // Priority reports whether an alert of kind k always jumps the admin chat's
