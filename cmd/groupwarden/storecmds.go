@@ -22,12 +22,13 @@ const heartbeatFresh = 2 * time.Minute
 // check validates the config and, with --secrets, every machine-checkable
 // provisioning input, one `OK <item>` or `MISSING <item>: <why>` line each.
 func (e *env) check(path string, secrets bool) int {
-	cfg, err := config.Load(path)
+	l, err := config.Load(path)
 	if err != nil {
 		fmt.Fprintf(e.stdout, "MISSING config: %v\n", err)
 		return exitFail
 	}
-	fmt.Fprintf(e.stdout, "OK config v%s\n", cfg.Hash())
+	cfg := l.Config
+	fmt.Fprintf(e.stdout, "OK config v%s\n", l.Hash)
 	if !secrets {
 		return exitOK
 	}
