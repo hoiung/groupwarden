@@ -150,36 +150,68 @@ CREATE TABLE report_edits (
 	UNIQUE (report_id, op)
 );
 `,
+	// 3: the admin chat — every message the bot posted there, and every
+	// button press or command that acted on a report.
+	`
+CREATE TABLE tg_messages (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	report_id   INTEGER REFERENCES reports (id) ON DELETE CASCADE,
+	role        TEXT    NOT NULL CHECK (role IN ('report', 'followup', 'attachment', 'summary', 'reply')),
+	chat_id     INTEGER NOT NULL,
+	message_id  INTEGER NOT NULL,
+	stripped    TEXT    NOT NULL DEFAULT '',
+	sent_at     INTEGER NOT NULL,
+	stripped_at INTEGER,
+	gone_at     INTEGER,
+	UNIQUE (chat_id, message_id)
+);
+CREATE INDEX tg_messages_report ON tg_messages (report_id, role);
+CREATE INDEX tg_messages_sent ON tg_messages (role, sent_at);
+CREATE TABLE tg_presses (
+	report_id  INTEGER NOT NULL,
+	button     TEXT    NOT NULL,
+	user_id    INTEGER NOT NULL,
+	user_name  TEXT    NOT NULL,
+	created_at INTEGER NOT NULL,
+	result     TEXT    NOT NULL DEFAULT '',
+	PRIMARY KEY (report_id, button)
+);
+`,
 }
 
+// migrate brings the schema up to date in ONE write transaction. Every
+// connection begins immediate, so the version is read under the write lock: a
+// second process opening the same new database (healthcheck beside run) waits,
+// then finds the schema current, instead of both applying migration 1.
 func (s *Store) migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
-		return s.check(fmt.Errorf("create schema_version: %w", err))
-	}
-	var current int
-	err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&current)
-	switch {
-	case err == sql.ErrNoRows:
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (0)`); err != nil {
-			return s.check(fmt.Errorf("init schema_version: %w", err))
+	return s.Write(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)`); err != nil {
+			return fmt.Errorf("create schema_version: %w", err)
 		}
-	case err != nil:
-		return fmt.Errorf("read schema version: %w", err)
-	}
-	if current > len(migrations) {
-		return fmt.Errorf("groupwarden.db is at schema version %d but this binary knows only %d: run the newer binary or restore a matching backup", current, len(migrations))
-	}
-	for v := current; v < len(migrations); v++ {
-		err := s.Write(ctx, func(tx *sql.Tx) error {
+		var current int
+		err := tx.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&current)
+		switch {
+		case err == sql.ErrNoRows:
+			if _, err := tx.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (0)`); err != nil {
+				return fmt.Errorf("init schema_version: %w", err)
+			}
+		case err != nil:
+			return fmt.Errorf("read schema version: %w", err)
+		}
+		if current > len(migrations) {
+			return fmt.Errorf("groupwarden.db is at schema version %d but this binary knows only %d: run the newer binary or restore a matching backup", current, len(migrations))
+		}
+		for v := current; v < len(migrations); v++ {
 			if _, err := tx.ExecContext(ctx, migrations[v]); err != nil {
 				return fmt.Errorf("migration %d: %w", v+1, err)
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, v+1)
-			return err
-		})
-		if err != nil {
-			return err
 		}
-	}
-	return nil
+		if current == len(migrations) {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE schema_version SET version = ?`, len(migrations)); err != nil {
+			return fmt.Errorf("set schema version: %w", err)
+		}
+		return nil
+	})
 }
