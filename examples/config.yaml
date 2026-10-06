@@ -18,6 +18,10 @@ backup:
 
 # corpus_dir: /etc/groupwarden/corpus   # every load must catch all spam and no legit sample
 
+# The daily "alive and working" post in the admin chat, in the node's local
+# time zone (HH:MM, 24-hour).
+daily_check_time: "12:00"
+
 # shadow: report what would happen. enforce: act. A rule only acts when its
 # community is in enforce mode AND the rule says confirmed: true.
 mode: shadow
