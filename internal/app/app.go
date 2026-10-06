@@ -336,8 +336,10 @@ func (a *App) supervise(ctx context.Context) error {
 			retry = nil
 			connect()
 		case <-tick:
-			tick = a.Clock.After(monitorEvery)
+			// The time first, then the next tick: once that is armed, this
+			// tick's checks have their time (tests step the clock on it).
 			now := a.Clock.Now()
+			tick = a.Clock.After(monitorEvery)
 			for _, al := range a.mon.check(now) {
 				a.alert(ctx, al)
 			}
