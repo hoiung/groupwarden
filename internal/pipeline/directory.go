@@ -5,8 +5,28 @@ import (
 	"sync"
 
 	"github.com/hoiung/groupwarden/internal/client"
+	"github.com/hoiung/groupwarden/internal/config"
+	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/rules"
 )
+
+// Label names a group for the admins: its name and masked ID (the masked ID
+// alone when the name is unknown).
+func Label(name string, group client.JID) string {
+	if name == "" {
+		return mask.IDs(string(group))
+	}
+	return name + " (" + mask.IDs(string(group)) + ")"
+}
+
+// CommunityLabel names a configured community for the admins: its configured
+// name, else its masked ID.
+func CommunityLabel(c *config.Config, id string) string {
+	if cm, ok := c.Communities[id]; ok && cm.Name != "" {
+		return cm.Name
+	}
+	return mask.IDs(id)
+}
 
 // Directory is what the bot last learned about its groups from WhatsApp:
 // each group's parent community, its members and its admins. The app
@@ -17,6 +37,29 @@ type Directory struct {
 	mu     sync.RWMutex
 	groups map[client.JID]*dirGroup
 	self   client.Member
+
+	initOnce, loadOnce sync.Once
+	loaded             chan struct{}
+}
+
+func (d *Directory) loadedChan() chan struct{} {
+	d.initOnce.Do(func() { d.loaded = make(chan struct{}) })
+	return d.loaded
+}
+
+// Loaded is closed once the directory has been filled from WhatsApp's group
+// list for the first time: before that no message can be matched to its
+// community.
+func (d *Directory) Loaded() <-chan struct{} { return d.loadedChan() }
+
+// IsLoaded reports whether Loaded is closed.
+func (d *Directory) IsLoaded() bool {
+	select {
+	case <-d.Loaded():
+		return true
+	default:
+		return false
+	}
 }
 
 type dirGroup struct {
@@ -44,6 +87,9 @@ func (d *Directory) GroupName(jid string) string {
 	}
 	return ""
 }
+
+// Label names group for the admins (see Label).
+func (d *Directory) Label(group client.JID) string { return Label(d.GroupName(string(group)), group) }
 
 // Known reports whether the bot is in group (as last listed or changed).
 func (d *Directory) Known(group client.JID) bool {
@@ -104,6 +150,7 @@ func (d *Directory) Update(groups []client.Group) {
 	d.mu.Lock()
 	d.groups = next
 	d.mu.Unlock()
+	d.loadOnce.Do(func() { close(d.loadedChan()) })
 }
 
 // SetSelf records the bot's own addresses.
@@ -224,6 +271,20 @@ func (d *Directory) BotIsAdmin(group client.JID) bool {
 	return g != nil && ((d.self.LID != "" && g.admins[d.self.LID]) || (d.self.Phone != "" && g.admins[d.self.Phone]))
 }
 
+// BotNotAdmin records that the bot is no longer an admin of group (WhatsApp
+// refused it an admin-only call there). The next refresh relearns it.
+func (d *Directory) BotNotAdmin(group client.JID) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if g := d.groups[group]; g != nil {
+		for _, j := range []client.JID{d.self.LID, d.self.Phone} {
+			if j != "" {
+				delete(g.admins, j)
+			}
+		}
+	}
+}
+
 // IsCommunity reports whether jid is a community the bot knows.
 func (d *Directory) IsCommunity(jid client.JID) bool {
 	d.mu.RLock()
@@ -332,6 +393,13 @@ func (d *Directory) Apply(ch *client.GroupChange) {
 	for _, j := range ch.Demoted {
 		for _, a := range both(j) {
 			delete(g.admins, a)
+		}
+	}
+	// The bot itself left: it is no longer in the group at all.
+	for _, j := range ch.Left {
+		if b := j.Bare(); b != "" && (b == d.self.LID || b == d.self.Phone) {
+			delete(d.groups, ch.Group)
+			return
 		}
 	}
 }
