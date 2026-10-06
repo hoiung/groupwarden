@@ -306,10 +306,9 @@ func TestMissingParentSecretCountedNotAlerted(t *testing.T) {
 	if !a.handle(comment("U2")) {
 		t.Fatal("undecryptable reply not acknowledged")
 	}
-	rec := &alert.Recorder{}
 	holder := configtest.Static("")
 	w := &pipeline.Worker{Store: st, Inbox: inbox, Config: holder, Log: a.log,
-		Decider: &pipeline.Moderator{Store: st, Alerter: rec, Config: holder, Directory: &pipeline.Directory{}, Log: a.log}}
+		Decider: &pipeline.Moderator{Store: st, Config: holder, Directory: &pipeline.Directory{}, Log: a.log}}
 	if err := w.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -317,9 +316,13 @@ func TestMissingParentSecretCountedNotAlerted(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("missing-parent counter = %d (%v), want 1", n, err)
 	}
-	alerts := rec.All()
-	if len(alerts) != 1 || alerts[0].Kind != alert.DecryptError || !alerts[0].Priority {
-		t.Fatalf("alerts %+v, want exactly one priority decrypt_error (for U2 only)", alerts)
+	// The decrypt error is a stored priority report for the admin chat.
+	reps, err := st.UnsentReports(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reps) != 1 || reps[0].Kind != string(alert.DecryptError) || !reps[0].Priority {
+		t.Fatalf("reports %+v, want exactly one priority decrypt_error (for U2 only)", reps)
 	}
 }
 
