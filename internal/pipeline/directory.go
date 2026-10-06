@@ -20,6 +20,7 @@ type Directory struct {
 }
 
 type dirGroup struct {
+	name         string
 	parent       client.JID
 	community    bool
 	announcement bool
@@ -29,8 +30,53 @@ type dirGroup struct {
 }
 
 func newDirGroup(g client.Group) *dirGroup {
-	return &dirGroup{parent: g.Parent, community: g.IsCommunity, announcement: g.IsAnnouncement,
+	return &dirGroup{name: g.Name, parent: g.Parent, community: g.IsCommunity, announcement: g.IsAnnouncement,
 		admins: map[client.JID]bool{}, members: map[client.JID]bool{}, alt: map[client.JID]client.JID{}}
+}
+
+// GroupName is a group's (or community's) name as WhatsApp last gave it
+// ("" when unknown).
+func (d *Directory) GroupName(jid string) string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if g := d.groups[client.JID(jid)]; g != nil {
+		return g.name
+	}
+	return ""
+}
+
+// Known reports whether the bot is in group (as last listed or changed).
+func (d *Directory) Known(group client.JID) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.groups[group] != nil
+}
+
+// HumanAdmins counts the admins of group other than the bot, one per person
+// (an admin known by both addresses counts once).
+func (d *Directory) HumanAdmins(group client.JID) int {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	g := d.groups[group]
+	if g == nil {
+		return 0
+	}
+	seen := map[client.JID]bool{}
+	n := 0
+	for j := range g.admins {
+		if seen[j] || j == d.self.LID || j == d.self.Phone {
+			continue
+		}
+		seen[j] = true
+		if a, ok := g.alt[j]; ok {
+			if a == d.self.LID || a == d.self.Phone {
+				continue
+			}
+			seen[a] = true
+		}
+		n++
+	}
+	return n
 }
 
 // Update replaces the directory with groups (as JoinedGroups lists them).
