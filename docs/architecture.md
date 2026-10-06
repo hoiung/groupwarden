@@ -39,7 +39,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders; the admin chat's controls |
 | `internal/pipeline` | Inbox worker, the group directory (communities, members, admins), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
 | `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction; crash recovery; retention purge |
-| `internal/telegram` | The admin chat: report and alert delivery from the store (rate limit, priority, digests, attachments, text removed after the evidence window), buttons and commands from admins of that chat only |
+| `internal/telegram` | The admin chat: report and alert delivery from the store (rate limit, priority, digests, attachments, text removed after the evidence window), buttons and commands from admins of that chat only, the command list pinned there and set as its "/" menu |
 | `internal/alert` | Alert kinds and which of them are priority |
 | `internal/action` | Fires the outbox: rate limit, circuit breaker, fire-time re-check; saves evidence attachments |
 | `internal/reconcile` | The periodic sweep, backing off on WhatsApp's rate limit |
