@@ -1,7 +1,8 @@
 // Package telegram is the admin chat: one private Telegram group where the
 // bot delivers every stored report and alert, posts (then takes down) a
 // deleted post's attachment, removes members' message text once the evidence
-// window ends, and takes buttons and commands from that group's admins only.
+// window ends, keeps a list of its commands pinned at the top, and takes
+// buttons and commands from that group's admins only.
 //
 // Everything it still has to do lives in groupwarden.db (undelivered reports,
 // queued edits, posted messages), so a restart picks up where it stopped.
@@ -85,6 +86,10 @@ type Chat struct {
 	sem    chan struct{}
 	shared *rate.Limiter // every message (≤ 20 a minute)
 	wake   chan struct{}
+	// setupWake reruns the command menu and pinned list setup (the chat
+	// moved); pinRetry is how long it waits after Telegram refused the pin.
+	setupWake chan struct{}
+	pinRetry  time.Duration
 
 	mu     sync.Mutex // guards the fields below
 	chatID int64
@@ -96,6 +101,7 @@ type Chat struct {
 	okRecorded   bool // tg_ok=1 is written for the current healthy stretch
 	lastErr      string
 	lastErrAt    time.Time
+	menuFor      int64 // the chat the command menu was set for
 	// routineSent: when the last routine messages went (at most
 	// groupPerMinute-priorityHeadroom in any minute, counted on actual send
 	// times so the headroom holds whatever the shared bucket adds).
@@ -114,6 +120,8 @@ func New(o Options, c *Chat) (*Chat, error) {
 	c.sem = make(chan struct{}, 1)
 	c.shared = rate.NewLimiter(rate.Every(time.Minute/groupPerMinute), 1)
 	c.wake = make(chan struct{}, 1)
+	c.setupWake = make(chan struct{}, 1)
+	c.pinRetry = pinRetryDefault
 	opts := []bot.Option{
 		bot.WithSkipGetMe(),
 		bot.WithNotAsyncHandlers(),
@@ -148,17 +156,21 @@ func sleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// Run takes button presses and commands and delivers everything queued,
-// until ctx ends.
+// Run takes button presses and commands, keeps the command list pinned and
+// delivers everything queued, until ctx ends.
 func (c *Chat) Run(ctx context.Context) {
 	if err := c.restoreChatID(ctx); err != nil {
 		c.Log.Error("read the admin chat ID", "err", err)
 	}
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		c.api.Start(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		c.setupLoop(ctx)
 	}()
 	c.deliverLoop(ctx)
 	wg.Wait()
@@ -299,6 +311,7 @@ func (c *Chat) migrate(ctx context.Context, to int64) {
 		store.StatusTelegramChat: strconv.FormatInt(to, 10)}); err != nil {
 		c.Log.Error("could not record the admin chat's new ID", "err", err)
 	}
+	c.wakeSetup() // the menu and the pinned list belong to the old ID
 }
 
 // noteOK ends a refusal episode (and its pause) at the first request that
