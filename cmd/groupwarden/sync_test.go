@@ -20,6 +20,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/configsync/configsynctest"
+	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/store"
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
@@ -148,6 +149,17 @@ func TestSyncConfigReloadsTheRunningBot(t *testing.T) {
 	if err := os.RemoveAll(repo.Remote); err != nil {
 		t.Fatal(err)
 	}
+	// The alert and the status recording it are written together: while the
+	// status cannot be written, a failed sync raises no alert, so the next
+	// run's alert is the only one.
+	lift := modtest.FailWritesInFile(t, st, "status", "")
+	if code := sync(); code != exitFail {
+		t.Fatalf("failed pull while the status cannot be written: exit %d\n%s", code, te.out)
+	}
+	if rs := reports(alert.SyncFailed); len(rs) != 0 {
+		t.Fatalf("sync_failed reports %+v while their status could not be written, want none", rs)
+	}
+	lift()
 	for i := 0; i < 2; i++ {
 		if code := sync(); code != exitFail || !strings.HasPrefix(te.out.String(), "FAILED -: git pull: ") {
 			t.Fatalf("failed pull %d: exit %d\n%s", i, code, te.out)
