@@ -39,10 +39,12 @@ The full deleted message and any attachment are shown to the admins in a private
 | Evidence copy of a deleted message and its attachment | [30 days] | `retention.evidence_days` |
 | Action log | [12 months] | `retention.action_log_months` |
 | Ban list | Until an admin lifts the ban | — |
-| Announcement-group message secrets (so replies can be read) | [90 days] | `retention.announcement_secret_days` |
+| Admins' button presses (Telegram user ID and name) | With their report: [12 months] | `retention.action_log_months` |
+| Message secrets (one per message, no text; so replies and edits can be read) | [30 days] | `retention.evidence_days` |
+| Announcement-group message secrets | [90 days] | `retention.announcement_secret_days` |
 | Encrypted backups of the database | The last [14] nights, then they age out | `backup.keep` |
 
-`groupwarden member show` prints everything held about one person (for an access request) and `groupwarden member forget` deletes it (an active ban is kept, as the record of why they are kept out).
+`groupwarden member show` prints what is held about one person (for an access request): their ledger, evidence, ban and report rows, and the contact and LID-to-phone rows in the WhatsApp session. `groupwarden member forget` deletes those (an active ban is kept, as the record of why they are kept out) and removes the message text from their reports in Telegram. The message secrets of the messages they sent are not listed or deleted by these commands; they age out as the table above says.
 
 ## 6. Risks and measures
 
