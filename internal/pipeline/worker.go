@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/client"
+	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/store"
 )
@@ -40,11 +41,13 @@ type Decider interface {
 
 // Worker drains the inbox.
 type Worker struct {
-	Store        *store.Store
-	Inbox        *Inbox
-	Decider      Decider
-	MaxReplayAge time.Duration
-	Log          *slog.Logger
+	Store   *store.Store
+	Inbox   *Inbox
+	Decider Decider
+	// Config supplies act_on_replay_max_age (read per message, so a reload
+	// applies at once).
+	Config *config.Holder
+	Log    *slog.Logger
 
 	lastPurge time.Time
 }
@@ -129,7 +132,8 @@ func (w *Worker) reportOnly(ctx context.Context, ev client.Event) (bool, error) 
 			sent = m.Time.Add(-editWindow)
 		}
 	}
-	return w.Store.Now().Sub(sent) > w.MaxReplayAge, nil
+	maxAge := time.Duration(w.Config.Current().Config.ActOnReplayMaxAge)
+	return w.Store.Now().Sub(sent) > maxAge, nil
 }
 
 func (w *Worker) purge(ctx context.Context) {
