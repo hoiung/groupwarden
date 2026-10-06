@@ -41,6 +41,10 @@ Whoever deploys groupwarden is the **data controller** for the members' data it 
 
 Rules live in a separate private config repo. Paste a new spam message into Claude Code and the `spam-intake` skill saves it to your private corpus, tests every rule against the whole corpus, proposes the smallest rule change with before/after counts, and commits it on your yes; the running bot picks it up within minutes. Install the skill with `make install-skill` (it links `.claude/skills/spam-intake` into `~/.claude/skills`).
 
+## Run it
+
+On a machine that stays on: a Linux box, a Windows PC running WSL2, or Docker. [docs/deploy.md](docs/deploy.md) walks through the install (systemd units, an install script that rolls back a bad upgrade, nightly encrypted backups); [docs/runbook.md](docs/runbook.md) says what to do when the bot needs a human; [docs/config.md](docs/config.md) lists every config key.
+
 ## Known limits
 
 - WhatsApp never confirms a delete, so the ledger records "requested", never "succeeded".
@@ -53,7 +57,7 @@ Rules live in a separate private config repo. Paste a new spam message into Clau
 
 | Path | What |
 |---|---|
-| `cmd/groupwarden/` | The CLI (`pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `ban`, `member`, `ledger`, `corpus`, `sync-config`, `schedule`) |
+| `cmd/groupwarden/` | The CLI (`pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `ban`, `member`, `ledger`, `corpus`, `sync-config`, `schedule`, `backup`, `restore`) |
 | `.claude/skills/spam-intake/` | The Claude Code skill that turns a pasted spam message into a tested rule change |
 | `internal/` | Client layer, store, pipeline, rules, ledger, actions, Telegram, reconcile, backup |
 | `schema/` | JSON Schema for `config.yaml` |
