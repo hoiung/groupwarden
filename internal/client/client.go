@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 )
@@ -29,6 +30,26 @@ func (j JID) Server() string {
 // MentionMarker replaces every @-mention of a listed member in a field's
 // matching view, so a mention is never read as a phone number or a handle.
 const MentionMarker = "@mention"
+
+// MaskMentions replaces "@<user>" for every mentioned member with
+// MentionMarker, longest user first so one ID that prefixes another is not
+// split. It builds a field's matching view.
+func MaskMentions(text string, mentions []JID) string {
+	if len(mentions) == 0 {
+		return text
+	}
+	users := make([]string, 0, len(mentions))
+	for _, j := range mentions {
+		if u := j.User(); u != "" {
+			users = append(users, u)
+		}
+	}
+	sort.Slice(users, func(a, b int) bool { return len(users[a]) > len(users[b]) })
+	for _, u := range users {
+		text = strings.ReplaceAll(text, "@"+u, MentionMarker)
+	}
+	return text
+}
 
 // Field is one piece of text the sender wrote.
 type Field struct {
@@ -60,10 +81,13 @@ type Message struct {
 	IsComment bool `json:"is_comment,omitempty"`
 	// PushName is the sender's own display name: a separate rule input that
 	// never combines with the body fields.
-	PushName string  `json:"push_name,omitempty"`
-	Fields   []Field `json:"fields"`
-	Mentions []JID   `json:"mentions,omitempty"`
-	Media    *Media  `json:"media,omitempty"`
+	PushName string `json:"push_name,omitempty"`
+	// FromMetaAI: the sender is WhatsApp's Meta AI participant (exempt from
+	// actions; reported only).
+	FromMetaAI bool    `json:"from_meta_ai,omitempty"`
+	Fields     []Field `json:"fields"`
+	Mentions   []JID   `json:"mentions,omitempty"`
+	Media      *Media  `json:"media,omitempty"`
 }
 
 // UndecryptableReason says why a reply or secret edit could not be read.
