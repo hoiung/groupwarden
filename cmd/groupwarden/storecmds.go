@@ -183,6 +183,11 @@ func (e *env) healthcheck(ctx context.Context, cfg *config.Config) int {
 	} else {
 		fmt.Fprintln(e.stdout, "last event: none yet")
 	}
+	if n, err := st.OutboxLen(ctx); err == nil {
+		fmt.Fprintf(e.stdout, "queued actions: %d\n", n)
+	} else {
+		fmt.Fprintf(e.stdout, "queued actions: unknown (%v)\n", err)
+	}
 	pauses, err := st.Pauses(ctx)
 	switch {
 	case err != nil:
