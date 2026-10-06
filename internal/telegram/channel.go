@@ -2,17 +2,28 @@ package telegram
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/hoiung/groupwarden/internal/alert"
+	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
 // Alert stores a as a report for the admin chat (the alert's kind is the
 // report's kind) and wakes delivery, so an alert survives a restart like any
 // report. A fatal or stopping alert is delivered before Alert returns, within
-// ctx's deadline: the process is about to exit.
+// ctx's deadline: the process is about to exit. Every alert is logged as it
+// is raised (the journal then says what was paused and why even while the
+// chat is unreachable). A nil return means the admins will get it: stored,
+// or, when the store cannot take it, handed to a direct send; a caller that
+// marks something as posted on nil then does not post it again every tick.
 func (c *Chat) Alert(ctx context.Context, a alert.Alert) error {
 	priority := a.Priority || a.Kind.Priority()
+	level := slog.LevelInfo
+	if priority {
+		level = slog.LevelWarn
+	}
+	c.Log.Log(ctx, level, "alert raised", "kind", string(a.Kind), "priority", priority, "text", mask.IDs(a.Text))
 	if a.Kind == alert.StorageFailure {
 		// The database cannot be written, and the failing write may be one
 		// made by a delivery that holds the slot: send around the store, in
@@ -24,7 +35,7 @@ func (c *Chat) Alert(ctx context.Context, a alert.Alert) error {
 		Buttons: a.Buttons}, nil); err != nil {
 		c.Log.Error("could not store an alert; sending it directly", "kind", string(a.Kind), "err", err)
 		go c.sendDirect(context.WithoutCancel(ctx), a.Text)
-		return err
+		return nil
 	}
 	c.Wake()
 	if a.Kind == alert.FatalDisconnect || a.Kind == alert.Stopping {
