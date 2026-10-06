@@ -3,7 +3,9 @@ package action
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"mime"
 	"os"
@@ -98,18 +100,45 @@ func (f *MediaFetcher) fetchOne(ctx context.Context, e store.Evidence) error {
 		f.Log.Warn("attachment download failed", "evidence", e.ID, "err", mask.IDs(err.Error()))
 		return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", mask.IDs(err.Error()))
 	}
-	limit := int64(f.Config.Current().Config.Evidence.MaxAttachmentMB) << 20
-	if int64(len(data)) > limit {
+	limitMB := f.Config.Current().Config.Evidence.MaxAttachmentMB
+	if int64(len(data)) > int64(limitMB)<<20 {
+		f.Log.Info("attachment over the size limit; not kept", "evidence", e.ID, "bytes", len(data), "limit_mb", limitMB)
 		return f.Store.SetMedia(ctx, e.ID, store.MediaTooLarge, "", "")
 	}
 	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
-		return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", err.Error())
+		return f.saveFailed(ctx, e, err)
 	}
 	path := filepath.Join(f.Dir, fmt.Sprintf("%d%s", e.ID, extension(mimeType, name, e.MediaName)))
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", err.Error())
+	if err := writeFile(path, data); err != nil {
+		return f.saveFailed(ctx, e, err)
 	}
 	return f.Store.SetMedia(ctx, e.ID, store.MediaSaved, path, "")
+}
+
+// saveFailed records an attachment that downloaded but could not be written
+// to the evidence directory (no space, no permission): it is logged, and the
+// row is settled as failed, which the report shows.
+func (f *MediaFetcher) saveFailed(ctx context.Context, e store.Evidence, err error) error {
+	f.Log.Error("could not save an attachment", "evidence", e.ID, "err", err)
+	return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", "could not save it: "+err.Error())
+}
+
+// writeFile writes data under a temporary name and renames it into place, so
+// a short write never leaves a file under the final name. On failure the
+// temporary file is removed too: retention and `member forget` delete only the
+// files a row records, so a leftover would keep the member's media for good.
+func writeFile(path string, data []byte) error {
+	part := path + ".part"
+	err := os.WriteFile(part, data, 0o600)
+	if err == nil {
+		err = os.Rename(part, path)
+	}
+	if err != nil {
+		if rmErr := os.Remove(part); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("the partial file is left behind: %w", rmErr))
+		}
+	}
+	return err
 }
 
 // extension picks a file extension from the file name, else the MIME type.
