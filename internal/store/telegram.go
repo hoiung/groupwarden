@@ -70,15 +70,20 @@ func (s *Store) TGMessagesFor(ctx context.Context, reportID int64) ([]TGMessage,
 	return s.tgMessages(ctx, `SELECT `+tgCols+` FROM tg_messages WHERE report_id = ? ORDER BY id`, reportID)
 }
 
-// ReportOfTGMessage returns the report a posted message belongs to.
+// ReportOfTGMessage returns the report a posted message belongs to; ok is
+// false when the message is not a report part (unknown, or a summary). A read
+// error is returned as such, never as "not a report".
 func (s *Store) ReportOfTGMessage(ctx context.Context, chatID int64, messageID int) (int64, bool, error) {
 	var id int64
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(report_id, 0) FROM tg_messages WHERE chat_id = ? AND message_id = ?`,
 		chatID, messageID).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) || id == 0 {
+	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
-	return id, err == nil, err
+	if err != nil {
+		return 0, false, fmt.Errorf("read the report of an admin-chat message: %w", err)
+	}
+	return id, id != 0, nil
 }
 
 // AttachmentsShownSince lists attachment posts still showing that were posted
