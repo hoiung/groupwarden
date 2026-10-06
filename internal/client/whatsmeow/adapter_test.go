@@ -25,6 +25,7 @@ import (
 
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
+	"github.com/hoiung/groupwarden/internal/config/configtest"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	gwstore "github.com/hoiung/groupwarden/internal/store"
 )
@@ -306,8 +307,9 @@ func TestMissingParentSecretCountedNotAlerted(t *testing.T) {
 		t.Fatal("undecryptable reply not acknowledged")
 	}
 	rec := &alert.Recorder{}
-	w := &pipeline.Worker{Store: st, Inbox: inbox, MaxReplayAge: 47 * time.Hour, Log: a.log,
-		Decider: &pipeline.Moderator{Store: st, Alerter: rec, Log: a.log}}
+	holder := configtest.Static("")
+	w := &pipeline.Worker{Store: st, Inbox: inbox, Config: holder, Log: a.log,
+		Decider: &pipeline.Moderator{Store: st, Alerter: rec, Config: holder, Directory: &pipeline.Directory{}, Log: a.log}}
 	if err := w.Drain(ctx); err != nil {
 		t.Fatal(err)
 	}
