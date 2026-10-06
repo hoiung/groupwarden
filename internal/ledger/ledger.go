@@ -1,8 +1,8 @@
 // Package ledger records every moderation action before it can fire: one
 // transaction writes the action rows (intended), queues the enforce ones in
 // the outbox, adds the ban, keeps the evidence copy and stores the admin
-// report. It also delivers reports, recovers after a crash and purges by
-// retention.
+// report. It also recovers after a crash and purges by retention; the admin
+// chat (internal/telegram) delivers the reports.
 package ledger
 
 import (
@@ -40,6 +40,7 @@ const (
 	ButtonAddToBanList   = "Add to ban list"
 	ButtonNo             = "No"
 	ButtonShowAttachment = "Show attachment"
+	ButtonDone           = "Done"
 )
 
 // Intent is one action on the plan's target.
