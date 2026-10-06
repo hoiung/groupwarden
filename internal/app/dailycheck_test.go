@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -61,8 +62,11 @@ func TestDailyCheckOncePerDay(t *testing.T) {
 		t.Fatalf("daily_check_day = %q", got)
 	}
 
-	// A restarted bot reads the day posted from the store (checkDaily keeps
-	// nothing in memory), and later ticks the same day post nothing.
+	// A restarted bot (nothing marked in memory) reads the day posted from
+	// the store, and later ticks the same day post nothing.
+	h.app.marksMu.Lock()
+	h.app.marks = nil
+	h.app.marksMu.Unlock()
 	h.app.checkDaily(ctx, h.clock.Now())
 	h.clock.step(6*time.Hour, time.Hour)
 	settle()
@@ -227,5 +231,90 @@ func TestDailyCheckReachesTheAdminChat(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("%d daily checks posted: %q", n, texts())
+	}
+}
+
+// TestOncePostsWhileTheStoreCannotWrite: with groupwarden.db unwritable (a
+// full disk) the daily check and the day-10 phone escalation still reach the
+// admin chat, sent around the store, and each exactly once however many
+// ticks pass: the day and the episode are marked in memory when the store
+// cannot keep them. Each alert is in the journal as it is raised.
+func TestOncePostsWhileTheStoreCannotWrite(t *testing.T) {
+	api := telegramtest.New(t, nil)
+	holder, _ := configtest.Holder(t, modtest.Config)
+	cfg := holder.Current().Config
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakeClock{now: time.Date(2026, 10, 6, 11, 59, 30, 0, time.UTC)}
+	var logs lockedBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	st, err := store.Open(context.Background(), cfg.StoreDB(), store.Options{Now: clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	// The phone was last confirmed opened 10 days ago: the escalation is due.
+	if err := st.SetStatus(context.Background(), map[string]string{store.StatusPhoneDone: strconv.FormatInt(
+		clock.Now().Add(-10*24*time.Hour-time.Hour).UnixMilli(), 10)}); err != nil {
+		t.Fatal(err)
+	}
+	fake := &clienttest.Fake{Groups: modtest.Groups(), SelfIDs: client.Self{Phone: modtest.BotPhone, LID: modtest.Bot}}
+	a, err := Build(Parts{Adapter: fake, Store: st, Inbox: pipeline.NewInbox(st), Config: holder,
+		Telegram: telegram.Options{Token: api.Token, ChatID: telegramtest.ChatID, ServerURL: api.URL}, // secret-allow (the fake API's run-time token)
+		Alerts:   NewAlertSink(alert.Log{Logger: log}), Log: log})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.Clock, a.Zone = clock, time.UTC
+	a.AdminChat.(*telegram.Chat).Sleep = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	texts := func() []string {
+		var out []string
+		for _, p := range api.Posted() {
+			out = append(out, p.Params["text"])
+		}
+		return out
+	}
+	count := func(prefix string) int {
+		n := 0
+		for _, s := range texts() {
+			if strings.HasPrefix(s, prefix) {
+				n++
+			}
+		}
+		return n
+	}
+	waitFor(t, "connected and the started message posted", func() bool {
+		s, err := st.Status(context.Background())
+		return err == nil && s[store.StatusConnected].Value == "1" && s[store.StatusTelegramOK].Value == "1" &&
+			a.Directory.IsLoaded()
+	}, func() string { return fmt.Sprintf("posts %q", texts()) })
+	// Every write fails from here on, as on a full or read-only disk.
+	readOnly(t, st)
+	const daily, escalation = "Daily check, Tuesday 6 October 2026: ", "Day 10 without [Done]"
+	for i := 0; i < 4; i++ { // 12:00:00, 12:00:30, 12:01:00, 12:01:30
+		waitFor(t, "the next tick armed", func() bool {
+			return clock.hasWaiter(clock.Now().Add(monitorEvery), monitorEvery)
+		}, func() string { return "" })
+		clock.Advance(monitorEvery)
+		waitFor(t, "the daily check and the escalation in the admin chat", func() bool {
+			return count(daily) >= 1 && count(escalation) >= 1
+		}, func() string { return fmt.Sprintf("posts %q\nlog:\n%s", texts(), logs.String()) })
+	}
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if d, e := count(daily), count(escalation); d != 1 || e != 1 {
+		t.Fatalf("%d daily checks and %d escalations over 4 ticks, want 1 each: %q", d, e, texts())
+	}
+	for _, kind := range []alert.Kind{alert.DailyCheck, alert.PhoneEscalation} {
+		if !strings.Contains(logs.String(), "msg=\"alert raised\" kind="+string(kind)) {
+			t.Fatalf("no \"alert raised\" log line for %s:\n%s", kind, logs.String())
+		}
 	}
 }
