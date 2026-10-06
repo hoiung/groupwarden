@@ -100,7 +100,7 @@ func (w *Worker) decide(ctx context.Context, row store.InboxRow) error {
 		// it, log it loudly and remove it.
 		w.Log.Error("dropping unreadable inbox row", "row", row.ID, "kind", row.Kind, "err", err)
 		return w.Store.Decide(ctx, row, store.Seen{}, func(tx *sql.Tx) error {
-			return store.IncrCounter(ctx, tx, day(w.Store.Now()), "inbox_unreadable")
+			return store.IncrCounter(ctx, tx, day(w.Store.Now()), CounterInboxUnreadable)
 		})
 	}
 	reportOnly, target, err := w.age(ctx, ev)
