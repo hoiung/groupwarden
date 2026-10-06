@@ -37,7 +37,7 @@ Whoever deploys groupwarden is the **data controller** for the members' data it 
 2. Each message is saved to a local inbox before it is acknowledged, so a crash never loses one.
 3. Your rules decide whether it is spam. If it is, the bot saves an evidence copy (text and any attachment, kept 30 days), deletes the message for everyone, removes the sender and adds them to the ban list.
 4. A banned person who rejoins — by link, join request or community join — is removed or rejected. Only an admin can unban them: **[Undo]** in Telegram, `/unban`, or re-adding them by hand.
-5. Every action, with the rule and config version that caused it, goes to the Telegram admin chat and the local ledger.
+5. Every action, with the rule and config version that caused it, goes to the Telegram admin chat and the local ledger. Make the bot an admin of that chat with the **Pin messages** right: it pins a list of its commands there.
 
 Rules live in a separate private config repo. Paste a new spam message into Claude Code and the `spam-intake` skill saves it to your private corpus, tests every rule against the whole corpus, proposes the smallest rule change with before/after counts, and commits it on your yes; the running bot picks it up within minutes.
 
