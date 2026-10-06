@@ -104,11 +104,13 @@ func hangups() (<-chan struct{}, func()) {
 
 const usage = `usage: groupwarden <command> [flags]
 
-WhatsApp commands (take the data-dir lock; only one at a time):
+Commands that take the data-dir lock (only one at a time):
   pair [--phone <digits>]      link the bot phone (QR code, or a pairing code with --phone)
   run                          moderate (SIGHUP reloads the config)
   groups                       list joined communities and groups with their IDs
   resolve-link <invite link>   show the group and community a link points to, without joining
+  restore --identity <age key file> <backup file>
+                               put a backup back as groupwarden.db (stop run first); it starts paused
 
 Store commands (work beside run):
   check [--secrets]            validate the config; --secrets lists each input as OK or MISSING
@@ -125,7 +127,10 @@ Store commands (work beside run):
   sync-config --repo <dir>     pull the config repo clone, check it, swap it in, ask run to reload
                                (--config is the live config file; run by the sync timer)
   schedule sync                print the sync timer's OnCalendar value (the install script uses it)
-  fatal-exit-code              print the exit code that means "a human must act"
+  backup                       write an encrypted backup of groupwarden.db to backup.target_dir
+                               and keep the newest backup.keep (run nightly by the backup timer)
+  backup-dir                   print backup.target_dir (the install script lets the backup unit write there)
+  fatal-exit-code             print the exit code that means "a human must act"
 
 Every command except fatal-exit-code and corpus add takes --config <file> (default: $GROUPWARDEN_CONFIG).
 `
@@ -140,7 +145,8 @@ func (e *env) run(args []string) int {
 	case "fatal-exit-code":
 		fmt.Fprintln(e.stdout, app.ExitFatal)
 		return exitOK
-	case "pair", "run", "groups", "resolve-link", "check", "healthcheck", "sync-config", "schedule":
+	case "pair", "run", "groups", "resolve-link", "check", "healthcheck", "sync-config", "schedule", "backup",
+		"backup-dir", "restore":
 	case "corpus", "ledger", "ban", "member":
 		subs := map[string][]string{"corpus": {"test", "add"}, "ledger": {"summary"}, "ban": {"add", "remove", "list"},
 			"member": {"show", "forget"}}[cmd]
@@ -169,6 +175,7 @@ func (e *env) run(args []string) int {
 	note := fs.String("note", "", "corpus add: why it is spam or legit")
 	public := fs.Bool("public", false, "corpus add: full redaction, for the public tests/corpus")
 	repo := fs.String("repo", "", "sync-config: the staging clone of the private config repo")
+	identity := fs.String("identity", "", "restore: the file holding the age private key the backups are encrypted to")
 	args, err := parseInterspersed(fs, rest)
 	if err != nil {
 		return exitUsage
@@ -204,6 +211,13 @@ func (e *env) run(args []string) int {
 	switch cmd {
 	case "healthcheck":
 		return e.healthcheck(ctx, cfg)
+	case "backup":
+		return e.backup(ctx, cfg, log)
+	case "backup-dir":
+		fmt.Fprintln(e.stdout, cfg.Backup.TargetDir)
+		return exitOK
+	case "restore":
+		return e.restore(ctx, cfg, *identity, args)
 	case "schedule":
 		if len(args) != 1 {
 			fmt.Fprintln(e.stderr, "usage: groupwarden schedule sync")
