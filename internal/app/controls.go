@@ -94,7 +94,7 @@ func banReply(res pipeline.Banned, reportID int64, by telegram.Actor, message bo
 	if res.Shadow {
 		text += " The community is in shadow mode: this is recorded only, nothing is sent."
 	}
-	return text + fmt.Sprintf(" To undo: /unban %d", reportID)
+	return text + fmt.Sprintf(" To undo: /unban #%d", reportID)
 }
 
 func (c controls) Resume(ctx context.Context, by telegram.Actor) (string, error) {
