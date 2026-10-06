@@ -41,6 +41,9 @@ type Fake struct {
 	// Linked answers SubGroups for a community (default: the Groups whose
 	// parent it is), so a community can list a group the bot is not in.
 	Linked map[client.JID][]client.GroupRef
+	// JoinPending lists the linked groups whose JoinLinkedGroup waits for an
+	// admin's approval (default: joined at once).
+	JoinPending map[client.JID]bool
 
 	errs  map[string][]error
 	calls []string
@@ -163,11 +166,36 @@ func (f *Fake) Self() client.Self { return f.SelfIDs }
 
 func (f *Fake) JoinedGroups(context.Context) ([]client.Group, error) {
 	f.record("JoinedGroups")
+	if err := f.nextErr("JoinedGroups"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.Groups, nil
+}
+
+// SetLinked replaces what SubGroups lists for community (safe while the fake
+// is in use).
+func (f *Fake) SetLinked(community client.JID, refs []client.GroupRef) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Linked == nil {
+		f.Linked = map[client.JID][]client.GroupRef{}
+	}
+	f.Linked[community] = refs
+}
+
+// SetGroups replaces what JoinedGroups lists (safe while the fake is in use).
+func (f *Fake) SetGroups(groups []client.Group) {
+	f.mu.Lock()
+	f.Groups = groups
+	f.mu.Unlock()
 }
 
 func (f *Fake) GroupInfo(_ context.Context, g client.JID) (client.Group, error) {
 	f.record("GroupInfo " + string(g))
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, x := range f.Groups {
 		if x.JID == g {
 			return x, nil
@@ -178,6 +206,11 @@ func (f *Fake) GroupInfo(_ context.Context, g client.JID) (client.Group, error) 
 
 func (f *Fake) SubGroups(_ context.Context, community client.JID) ([]client.GroupRef, error) {
 	f.record("SubGroups " + string(community))
+	if err := f.nextErr("SubGroups"); err != nil {
+		return nil, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if refs, ok := f.Linked[community]; ok {
 		return refs, nil
 	}
@@ -236,6 +269,14 @@ func (f *Fake) JoinWithLink(_ context.Context, code string) (client.JID, bool, e
 
 func (f *Fake) JoinLinkedGroup(_ context.Context, community, g client.JID) (bool, bool, error) {
 	f.record("JoinLinkedGroup " + string(community) + " " + string(g))
+	if err := f.nextErr("JoinLinkedGroup"); err != nil {
+		return false, false, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.JoinPending[g] {
+		return false, true, nil
+	}
 	return true, false, nil
 }
 
