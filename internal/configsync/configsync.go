@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/config"
+	"github.com/hoiung/groupwarden/internal/mask"
 )
 
 // Status words: the first word of every result line.
@@ -69,7 +70,9 @@ type Sync struct {
 type Outcome struct {
 	Status string // OK, Failed or Rejected
 	Commit string // the staging clone's HEAD, short ("-" when unknown)
-	// Result is the line /status shows: "<status> <commit>: <what happened>".
+	// Result is the line /status shows and the sync service prints to its
+	// journal: "<status> <commit>: <what happened>", identifiers masked (a
+	// rejected config names its community by group ID).
 	Result   string
 	Swapped  bool
 	Reloaded bool
@@ -84,7 +87,7 @@ func (o *Outcome) set(status, detail string, err error) Outcome {
 	if o.Commit == "" {
 		o.Commit = "-"
 	}
-	o.Result = status + " " + o.Commit + ": " + detail
+	o.Result = status + " " + o.Commit + ": " + mask.IDs(detail)
 	return *o
 }
 
