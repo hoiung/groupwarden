@@ -46,6 +46,9 @@ type env struct {
 	hangups func() (<-chan struct{}, func())
 	// connectTimeout bounds the wait for a one-off connection.
 	connectTimeout time.Duration
+	// telegramURL replaces api.telegram.org ("" = the real one; tests run a
+	// fake Bot API).
+	telegramURL string
 }
 
 func main() {
