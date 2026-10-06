@@ -442,7 +442,7 @@ func (a *Adapter) JoinLinkedGroup(ctx context.Context, community, g client.JID) 
 	}
 	resp, err := a.cli.sendGroupIQ(ctx, c, waBinary.Node{Tag: "join_linked_group", Attrs: waBinary.Attrs{"jid": j}})
 	if err != nil {
-		return false, false, err
+		return false, false, callError(err)
 	}
 	if resp != nil {
 		if _, pending := resp.GetOptionalChildByTag("membership_approval_request"); pending {
