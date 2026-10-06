@@ -91,6 +91,11 @@ type Chat struct {
 	setupWake chan struct{}
 	pinRetry  time.Duration
 
+	// owed: store writes recording posts the store would not take; settle
+	// makes them before anything else is posted (see record).
+	owedMu sync.Mutex
+	owed   []owedWrite
+
 	mu     sync.Mutex // guards the fields below
 	chatID int64
 	// blockedUntil: Telegram said retry_after; nothing is sent before it.
