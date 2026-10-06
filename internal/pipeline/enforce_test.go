@@ -1,6 +1,7 @@
 package pipeline_test
 
 import (
+	"database/sql"
 	"fmt"
 	"slices"
 	"strings"
@@ -294,6 +295,45 @@ func TestPhoneToLIDFailureReported(t *testing.T) {
 	}
 	if n := k.Fake.Count("ResolvePhoneToLID " + string(unknown.Phone)); n != 1 {
 		t.Fatalf("looked up %d times", n)
+	}
+}
+
+// TestLIDFailureReportedOncePerPhone: a phone number banned in two scopes is
+// looked up once and reported once; a ban lifted while its lookup runs is not
+// reported (there is nothing left to keep on the phone number).
+func TestLIDFailureReportedOncePerPhone(t *testing.T) {
+	k := modtest.New(t, "")
+	phone := client.JID("447700900456@s.whatsapp.net")
+	for _, scope := range []string{store.BanEverywhere, string(modtest.Community)} {
+		if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
+			return store.AddBan(k.Ctx, tx, store.Ban{Member: string(phone), Scope: scope, Phone: string(phone),
+				Reason: "manual"}, k.Clock.Now())
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := k.Fake.Count("ResolvePhoneToLID " + string(phone)); n != 1 {
+		t.Fatalf("looked up %d times, want once for both bans", n)
+	}
+	if n := len(k.Reports(ledger.KindLIDUnresolved)); n != 1 {
+		t.Fatalf("%d reports, want one for the phone number", n)
+	}
+
+	lifted := client.Member{Phone: "447700900789@s.whatsapp.net"}
+	k.Ban(lifted)
+	k.Fake.OnCall = func(call string) {
+		if call == "ResolvePhoneToLID "+string(lifted.Phone) {
+			k.Unban(lifted)
+		}
+	}
+	if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(k.Reports(ledger.KindLIDUnresolved)); n != 1 {
+		t.Fatalf("%d reports after a ban lifted during its lookup, want still 1", n)
 	}
 }
 
