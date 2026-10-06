@@ -413,6 +413,12 @@ func TestJoinPendingDerived(t *testing.T) {
 	if err != nil || joined || !pending {
 		t.Fatalf("approval child: joined=%v pending=%v err=%v", joined, pending, err)
 	}
+	// WhatsApp's rate limit reaches the sweep as client.ErrRateLimited, so it
+	// backs off instead of giving up on the group.
+	f.iqResp, f.iqErr = nil, &wm.IQError{Code: 429, Text: "rate-overlimit"}
+	if _, _, err = a.JoinLinkedGroup(ctx, "99999000000333@g.us", client.JID(group2JID.String())); !errors.Is(err, client.ErrRateLimited) {
+		t.Fatalf("429: err=%v, want client.ErrRateLimited", err)
+	}
 }
 
 func TestDownloadMediaAttachment(t *testing.T) {
