@@ -79,6 +79,37 @@ func TestSchemelessLinks(t *testing.T) {
 	if s := sig(body("email me at someone@example.com")); s[AnyLink] {
 		t.Error("an email address counted as a link")
 	}
+	// An "@" in a link's path, or a link the URL parser refuses (a bad
+	// %-escape or port), is still a link: never invisible to a rule.
+	for _, text := range []string{
+		"cheap crypto signals youtube.com/@cryptoguru", "tiktok.com/@spammer/video/123", "example.org/join?u=a@b",
+		"https://promo.example/get-100%free-bonus", "promo.example/get-100%free-bonus", "http://example.com:abc/x",
+	} {
+		if !sig(body(text))[AnyLink] {
+			t.Errorf("%q: no any_link", text)
+		}
+	}
+	// The host of a refused link still decides allowed and shortener.
+	if s := sig(body("https://www.eventbrite.co.uk/e/100%off"), "eventbrite.co.uk"); s[AnyLink] {
+		t.Error("a refused link on an allowed domain counted as a link")
+	}
+	if s := sig(body("bit.ly/100%x")); !s[AnyLink] || !s[Shortener] {
+		t.Errorf("a refused shortener link: %v", s)
+	}
+	if _, ok := RegistrableDomain("someone@example.com"); ok {
+		t.Error("an email address accepted as an allowed domain")
+	}
+}
+
+// TestCryptoLinkRuleMatchesRefusedLinks: the shipped "keyword + any_link"
+// shape acts on a link with an "@" path or a refused %-escape.
+func TestCryptoLinkRuleMatchesRefusedLinks(t *testing.T) {
+	rs := compile(t, testSpec())
+	for _, text := range []string{"cheap crypto signals youtube.com/@cryptoguru", "cheap crypto signals https://promo.example/get-100%free-bonus"} {
+		if d := rs.Decide(Input{Community: communityA, Fields: body(text)}); d.Action != DeleteRemoveBan {
+			t.Errorf("%q: decision %+v", text, d)
+		}
+	}
 }
 
 func TestIdeographicDot(t *testing.T) {
@@ -134,6 +165,19 @@ func TestUsernameHandle(t *testing.T) {
 	for _, text := range []string{client.MentionMarker + " thanks for the crypto talk", "write to a@example.com", "meet @ 7pm"} {
 		if sig(body(text))[Handle] {
 			t.Errorf("%q: handle", text)
+		}
+	}
+	// A mention ending a sentence is still a mention, whatever follows it.
+	for _, after := range []string{".", "..", ". See you", ".See you", ",", "!", "?", ")"} {
+		text := "great crypto talk, thanks " + client.MentionMarker + after
+		if sig(body(text))[Handle] {
+			t.Errorf("%q: handle", text)
+		}
+	}
+	// A real handle ending a sentence is still a handle.
+	for _, text := range []string{"message @profit_mentor.", "ask @anna.trader."} {
+		if !sig(body(text))[Handle] {
+			t.Errorf("%q: no handle", text)
 		}
 	}
 	// A mentioned phone number is masked before matching, so it is not a
@@ -292,6 +336,39 @@ func TestWatchOnlyRuleOnlyReports(t *testing.T) {
 	d = rs.Decide(Input{Community: communityA, Fields: body("crypto signals t.me/+AbCd")})
 	if d.Action != Log || !d.WouldHaveActed {
 		t.Fatalf("shadow decision = %+v", d)
+	}
+}
+
+// TestWatchOnlyMatchExempt: an admin or Meta AI is exempt from a watch-only
+// match too (unconfirmed rule, or shadow mode): reported as exempt, never as a
+// post the bot would have acted on.
+func TestWatchOnlyMatchExempt(t *testing.T) {
+	unconfirmed := testSpec()
+	unconfirmed.Rules[0].Confirmed = false
+	unconfirmed.Rules = unconfirmed.Rules[:1]
+	shadow := testSpec()
+	shadow.Communities[0].Mode = Shadow
+	for _, tc := range []struct {
+		name string
+		spec Spec
+		in   Input
+		want Exemption
+	}{
+		{"meta ai, unconfirmed", unconfirmed, Input{FromMetaAI: true}, ExemptMetaAI},
+		{"meta ai, shadow", shadow, Input{FromMetaAI: true}, ExemptMetaAI},
+		{"admin, unconfirmed", unconfirmed, Input{SenderIsAdmin: true}, ExemptAdmin},
+		{"admin, shadow", shadow, Input{SenderIsAdmin: true}, ExemptAdmin},
+	} {
+		rs := compile(t, tc.spec)
+		tc.in.Community, tc.in.Fields = communityA, body("crypto signals t.me/+AbCd")
+		d := rs.Decide(tc.in)
+		if d.Action != Log || d.WouldHaveActed || d.Exempt != tc.want || d.Rule == "" || len(d.BanIn) != 0 {
+			t.Errorf("%s: decision = %+v", tc.name, d)
+		}
+	}
+	// Control: the same post from a member is one the bot would have acted on.
+	if d := compile(t, shadow).Decide(Input{Community: communityA, Fields: body("crypto signals t.me/+AbCd")}); !d.WouldHaveActed || d.Exempt != "" {
+		t.Fatalf("member decision = %+v", d)
 	}
 }
 
