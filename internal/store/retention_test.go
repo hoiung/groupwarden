@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +132,80 @@ func TestMessageSecretsPurge(t *testing.T) {
 	}
 }
 
+// TestSecretPurgePlans: the purge holds whatsmeow.db's write lock, during
+// which the library cannot decrypt incoming messages, so none of its
+// statements may scan a table once per row of another (a correlated subquery
+// that scans). That shape made the purge quadratic: 20,000 secrets held the
+// lock for 102s here, past the 10s busy timeout. The checker must flag that
+// old statement, so it is known to see a per-row scan.
+func TestSecretPurgePlans(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "whatsmeow.db")
+	sessiontest.Create(t, path)
+	sess, err := OpenSession(context.Background(), path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	perRowScans := func(query string, args ...any) []string {
+		t.Helper()
+		rows, err := sess.db.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+query, args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		detail, parent := map[int]string{}, map[int]int{}
+		var order []int
+		for rows.Next() {
+			var id, par, unused int
+			var d string
+			if err := rows.Scan(&id, &par, &unused, &d); err != nil {
+				t.Fatal(err)
+			}
+			detail[id], parent[id] = d, par
+			order = append(order, id)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if len(order) == 0 {
+			t.Fatalf("no query plan for %s", query)
+		}
+		var bad []string
+		for _, id := range order {
+			if !strings.HasPrefix(detail[id], "SCAN ") {
+				continue
+			}
+			// The nearest enclosing subquery decides: a scan in a correlated
+			// one runs once per row of the outer query.
+			for p := parent[id]; p != 0; p = parent[p] {
+				if strings.Contains(detail[p], "SUBQUERY") {
+					if strings.HasPrefix(detail[p], "CORRELATED ") {
+						bad = append(bad, detail[p]+" > "+detail[id])
+					}
+					break
+				}
+			}
+		}
+		return bad
+	}
+	ages := []any{`["99999000000222@g.us"]`, int64(1), int64(2)}
+	for name, c := range map[string]struct {
+		query string
+		args  []any
+	}{"stampSecrets": {stampSecrets, []any{int64(1)}}, "purgeSecrets": {purgeSecrets, ages},
+		"purgeStamps": {purgeStamps, ages}} {
+		if bad := perRowScans(c.query, c.args...); len(bad) != 0 {
+			t.Errorf("%s scans a table once per row: %v", name, bad)
+		}
+	}
+	old := `DELETE FROM groupwarden_secret_seen WHERE NOT EXISTS (
+	SELECT 1 FROM whatsmeow_message_secrets m WHERE m.chat_jid = groupwarden_secret_seen.chat_jid
+		AND m.sender_jid = groupwarden_secret_seen.sender_jid AND m.message_id = groupwarden_secret_seen.message_id)`
+	if bad := perRowScans(old); len(bad) == 0 {
+		t.Fatal("the checker did not flag the old per-row scan of the library's message secrets")
+	}
+}
+
 // TestAnnouncementSecretKeptLonger: an announcement group's message secrets
 // are kept for retention.announcement_secret_days, so replies to older
 // announcements still decrypt.
@@ -204,5 +279,71 @@ func TestStripsDuePerCommunity(t *testing.T) {
 	}
 	if again, _ := s.StripsDue(ctx, ago(5), nil, 10); len(again) != 3 {
 		t.Fatalf("%d due after one strip, want 3", len(again))
+	}
+}
+
+// TestReportPurgeTakesPressesAndUnlinkedPosts: purging a report also deletes
+// the button presses on it (the admin's Telegram ID and name) and its posts;
+// posts tied to no report (summaries, plain replies) go once older than the
+// cutoff. A newer report keeps its press and posts.
+func TestReportPurgeTakesPressesAndUnlinkedPosts(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	s := openAt(t, &now)
+	post := func(report int64, role string, msg int) {
+		t.Helper()
+		if err := s.AddTGMessage(ctx, TGMessage{ReportID: report, Role: role, ChatID: -1, MessageID: msg, SentAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	report := func(msg int) int64 {
+		t.Helper()
+		id, err := s.AddReport(ctx, Report{Kind: "action", Text: "r"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkReportSent(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+		post(id, RoleReport, msg)
+		if _, _, err := s.ClaimPress(ctx, Press{ReportID: id, Button: "Undo", UserID: 501, UserName: "Ann"}); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	old := report(1)
+	post(0, RoleSummary, 2)
+	post(0, RoleReply, 3)
+	now = now.AddDate(0, 7, 0)
+	cutoff := now
+	now = now.AddDate(0, 0, 1)
+	fresh := report(4)
+	post(0, RoleReply, 5)
+	n, err := s.PurgeReports(ctx, cutoff)
+	if err != nil || n != 1 {
+		t.Fatalf("purged %d reports (%v), want 1", n, err)
+	}
+	ids := func(query string) []int64 {
+		t.Helper()
+		rows, err := s.db.QueryContext(ctx, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		var out []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, id)
+		}
+		return out
+	}
+	if got := ids(`SELECT report_id FROM tg_presses`); len(got) != 1 || got[0] != fresh {
+		t.Errorf("presses left for reports %v, want only %d (not %d)", got, fresh, old)
+	}
+	if got := ids(`SELECT message_id FROM tg_messages ORDER BY message_id`); len(got) != 2 || got[0] != 4 || got[1] != 5 {
+		t.Errorf("posts left %v, want 4 (the newer report) and 5 (the newer reply)", got)
 	}
 }
