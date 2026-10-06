@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -277,5 +278,89 @@ func TestWorkerWaitsForGroupList(t *testing.T) {
 	cancel2()
 	if err := w2.Run(ctx2); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// failOn fails the decision of message bad every time, and of message flaky
+// the first flakyFails times; everything else is recorded.
+type failOn struct {
+	recorder
+	bad, flaky string
+	flakyFails int
+}
+
+func (f *failOn) Decide(ctx context.Context, tx *sql.Tx, item Item) error {
+	if m, ok := item.Event.(*client.Message); ok {
+		switch {
+		case m.ID == f.bad:
+			return errors.New("this decision always fails")
+		case m.ID == f.flaky && f.flakyFails > 0:
+			f.flakyFails--
+			return errors.New("this decision fails for now")
+		}
+	}
+	return f.recorder.Decide(ctx, tx, item)
+}
+
+// TestStuckRowSetAside: a row whose decision always fails is set aside after
+// maxDecideTries failures in a row, with a priority report, so the rows behind
+// it are decided; a redelivery of it is ignored. A row that fails fewer times
+// than that is decided normally and reported nowhere.
+func TestStuckRowSetAside(t *testing.T) {
+	ctx := context.Background()
+	s := open(t, filepath.Join(t.TempDir(), "g.db"), t0)
+	dec := &failOn{bad: "BAD", flaky: "FLAKY", flakyFails: maxDecideTries - 1}
+	w := worker(s, dec)
+	woken := 0
+	w.Wake = func() { woken++ }
+	for _, id := range []string{"FLAKY", "BAD", "GOOD"} {
+		if err := w.Inbox.Persist(msg(id, "hello", t0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for try := 1; try < maxDecideTries; try++ {
+		if err := w.Drain(ctx); err == nil {
+			t.Fatalf("drain %d hid FLAKY's failure", try)
+		}
+	}
+	// FLAKY succeeds on its next try; BAD then fails on this drain and the
+	// next ones until its last allowed try.
+	for try := 1; try < maxDecideTries; try++ {
+		if err := w.Drain(ctx); err == nil {
+			t.Fatalf("BAD's failure %d was hidden", try)
+		}
+		if n, _ := s.InboxLen(ctx); n != 2 {
+			t.Fatalf("after BAD's failure %d the inbox holds %d rows, want BAD and GOOD", try, n)
+		}
+	}
+	if err := w.Drain(ctx); err != nil {
+		t.Fatalf("drain after BAD's last try: %v", err)
+	}
+	var decided []string
+	for _, it := range dec.got() {
+		decided = append(decided, it.Event.(*client.Message).ID)
+	}
+	if len(decided) != 2 || decided[0] != "FLAKY" || decided[1] != "GOOD" {
+		t.Fatalf("decided %v, want FLAKY then GOOD", decided)
+	}
+	if n, _ := s.InboxLen(ctx); n != 0 {
+		t.Fatalf("inbox holds %d rows, want 0", n)
+	}
+	reps, err := s.UnsentReports(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reps) != 1 || reps[0].Kind != "undecided" || !reps[0].Priority || woken != 1 {
+		t.Fatalf("reports %+v (woken %d), want one priority undecided report", reps, woken)
+	}
+	if strings.Contains(reps[0].Text, "99999000000111") {
+		t.Fatalf("report names the group unmasked: %q", reps[0].Text)
+	}
+	// A redelivery of the set-aside message is ignored.
+	if err := w.Inbox.Persist(msg("BAD", "hello", t0)); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.InboxLen(ctx); n != 0 {
+		t.Fatalf("the set-aside message came back (%d rows)", n)
 	}
 }
