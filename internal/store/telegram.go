@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -87,18 +88,36 @@ func (s *Store) AttachmentsShownSince(ctx context.Context, cutoff time.Time) ([]
 WHERE role = 'attachment' AND gone_at IS NULL AND sent_at <= ? ORDER BY id`, cutoff.UnixMilli())
 }
 
-// StripsDue lists posted messages that still carry a member's message text
-// and belong to a report created before cutoff.
-func (s *Store) StripsDue(ctx context.Context, cutoff time.Time) ([]TGMessage, error) {
+// StripsDue lists up to limit posted messages that still carry a member's
+// message text and belong to a report created before its community's cutoff
+// (cutoffs by community; def for any other), oldest first.
+func (s *Store) StripsDue(ctx context.Context, def time.Time, cutoffs map[string]time.Time, limit int) ([]TGMessage, error) {
+	ids := make([]string, 0, len(cutoffs))
+	for id := range cutoffs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	cutoff, args := "?", []any{}
+	if len(ids) > 0 {
+		cutoff = "CASE community"
+		for _, id := range ids {
+			cutoff += " WHEN ? THEN ?"
+			args = append(args, id, cutoffs[id].UnixMilli())
+		}
+		cutoff += " ELSE ? END"
+	}
+	args = append(args, def.UnixMilli(), limit)
 	return s.tgMessages(ctx, `SELECT `+tgCols+` FROM tg_messages
 WHERE stripped != '' AND stripped_at IS NULL AND gone_at IS NULL
-	AND report_id IN (SELECT id FROM reports WHERE created_at < ?) ORDER BY id`, cutoff.UnixMilli())
+	AND report_id IN (SELECT id FROM reports WHERE created_at < `+cutoff+`) ORDER BY id LIMIT ?`, args...)
 }
 
-// MarkTGStripped records that a message's member text was removed.
+// MarkTGStripped records that a message's member text was removed, and drops
+// the stripped copy (the chat now shows it; the database keeps none).
 func (s *Store) MarkTGStripped(ctx context.Context, id int64) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE tg_messages SET stripped_at = ? WHERE id = ?`, s.now().UnixMilli(), id)
+		_, err := tx.ExecContext(ctx, `UPDATE tg_messages SET stripped_at = ?, stripped = '' WHERE id = ?`,
+			s.now().UnixMilli(), id)
 		return err
 	})
 }
