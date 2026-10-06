@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -142,10 +143,11 @@ func digestible(r store.Report) bool {
 // then any follow-ups the member's text did not fit in, as replies. Parts
 // already posted by an earlier attempt are not posted again.
 func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
-	if err := c.lock(ctx); err != nil {
+	ctx, err := c.lock(ctx)
+	if err != nil {
 		return false, err
 	}
-	defer c.unlock()
+	defer c.unlock(ctx)
 	r, ok, err := c.Store.Report(ctx, id)
 	if err != nil || !ok || !r.SentAt.IsZero() {
 		return false, err
@@ -185,8 +187,17 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 		if i == 0 {
 			role, markup, replyTo = store.RoleReport, keyboard(r), 0
 		}
-		msg, err := c.sendText(ctx, r.Priority, out.parts[i], replyTo, markup)
+		msg, err := c.sendText(ctx, r.Priority, out.parts[i], out.quotes[i], replyTo, markup)
 		if err != nil {
+			if badRequest(err) && i > 0 {
+				// One follow-up refused: the parts after it still go. (A
+				// refused part is not recorded, so a retry after a crash
+				// before the report is marked sent posts one part again per
+				// refused part; it never loses one.)
+				c.Log.Error("telegram refused a follow-up part; skipping it", "report", r.ID, "kind", r.Kind,
+					"part", i, "err", err.Error())
+				continue
+			}
 			if badRequest(err) {
 				// Telegram will never take this message: record why and go
 				// on, so one bad report never holds up the rest.
@@ -211,24 +222,32 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 	return true, nil
 }
 
-// digest posts several routine reports as one message.
+// digest posts several routine reports as one message. When fewer than two
+// fit (the first is too long to share a message), the first goes on its own,
+// split into parts like any report.
 func (c *Chat) digest(ctx context.Context, reps []store.Report) (bool, error) {
-	if err := c.lock(ctx); err != nil {
-		return false, err
-	}
-	defer c.unlock()
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d reports while the chat was busy:", len(reps))
+	var lines []string
 	ids := make([]int64, 0, len(reps))
+	used := units(fmt.Sprintf("%d reports while the chat was busy:", len(reps)))
 	for _, r := range reps {
 		line := fmt.Sprintf("\n\n#%d %s", r.ID, c.labelText(r.Text))
-		if units(b.String()+line) > maxUnits {
+		if used+units(line) > maxUnits {
 			break // the rest go in the next digest
 		}
-		b.WriteString(line)
+		used += units(line)
+		lines = append(lines, line)
 		ids = append(ids, r.ID)
 	}
-	msg, err := c.sendText(ctx, false, b.String(), 0, nil)
+	if len(ids) < 2 {
+		return c.deliverReport(ctx, reps[0].ID)
+	}
+	ctx, err := c.lock(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer c.unlock(ctx)
+	text := fmt.Sprintf("%d reports while the chat was busy:", len(ids)) + strings.Join(lines, "")
+	msg, err := c.sendText(ctx, false, text, quote{}, 0, nil)
 	if err != nil {
 		return false, err
 	}
@@ -256,6 +275,11 @@ func (c *Chat) reportEdit(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	ctx, err = c.lock(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer c.unlock(ctx)
 	for _, m := range msgs {
 		if !m.GoneAt.IsZero() {
 			continue
@@ -285,16 +309,23 @@ func (c *Chat) postAttachment(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	_, err = c.showAttachment(ctx, due[0].Report, due[0].Evidence)
+	if errors.Is(err, errFileRefused) {
+		return true, nil // settled and logged: the rest of the work goes on
+	}
 	return true, err
 }
+
+// errFileRefused: Telegram will never take the file; it is marked failed.
+var errFileRefused = errors.New("refused by Telegram")
 
 // showAttachment posts ev's saved file as a reply to report r. ok is false
 // when the file is no longer there (the evidence copy was purged).
 func (c *Chat) showAttachment(ctx context.Context, r store.Report, ev store.Evidence) (bool, error) {
-	if err := c.lock(ctx); err != nil {
+	ctx, err := c.lock(ctx)
+	if err != nil {
 		return false, err
 	}
-	defer c.unlock()
+	defer c.unlock(ctx)
 	f, err := os.Open(ev.MediaPath) // #nosec G304 -- a path the attachment fetcher wrote under data_dir
 	if err != nil {
 		c.Log.Error("the saved attachment is missing", "report", r.ID, "evidence", ev.ID, "err", err)
@@ -320,6 +351,18 @@ func (c *Chat) showAttachment(ctx context.Context, r store.Report, ev store.Evid
 			ReplyParameters: replyToParams(head)})
 		return err
 	})
+	if err != nil && fileRefused(err) {
+		// Telegram will never take this file (empty, or over its limit):
+		// settle it, so it does not block the take-downs, text removals
+		// and the daily summary behind it. The path stays, so purge and
+		// `member forget` still delete the file.
+		c.Log.Error("telegram refused an attachment", "report", r.ID, "evidence", ev.ID, "err", err.Error())
+		if err := c.Store.SetMedia(ctx, ev.ID, store.MediaFailed, ev.MediaPath, "Telegram refused the file: "+
+			err.Error()); err != nil {
+			return false, err
+		}
+		return false, fmt.Errorf("%w: %s", errFileRefused, err.Error())
+	}
 	if err != nil {
 		return false, err
 	}
@@ -346,10 +389,11 @@ func (c *Chat) takeDownDue(ctx context.Context) (bool, error) {
 	if err != nil || len(due) == 0 {
 		return false, err
 	}
-	if err := c.lock(ctx); err != nil {
+	ctx, err = c.lock(ctx)
+	if err != nil {
 		return false, err
 	}
-	defer c.unlock()
+	defer c.unlock(ctx)
 	return true, c.takeDown(ctx, due[0])
 }
 
@@ -393,31 +437,21 @@ func (c *Chat) takeDown(ctx context.Context, m store.TGMessage) error {
 // older than its community's retention.evidence_days.
 func (c *Chat) stripDue(ctx context.Context) (bool, error) {
 	cfg := c.Config.Current().Config
-	shortest := cfg.Retention.EvidenceDays
-	for id := range cfg.Communities {
-		shortest = min(shortest, cfg.RetentionFor(id).EvidenceDays)
-	}
 	now := c.Now()
-	due, err := c.Store.StripsDue(ctx, now.AddDate(0, 0, -shortest))
+	cutoffs := map[string]time.Time{}
+	for id := range cfg.Communities {
+		cutoffs[id] = now.AddDate(0, 0, -cfg.RetentionFor(id).EvidenceDays)
+	}
+	due, err := c.Store.StripsDue(ctx, now.AddDate(0, 0, -cfg.Retention.EvidenceDays), cutoffs, 1)
+	if err != nil || len(due) == 0 {
+		return false, err
+	}
+	ctx, err = c.lock(ctx)
 	if err != nil {
 		return false, err
 	}
-	for _, m := range due {
-		r, ok, err := c.Store.Report(ctx, m.ReportID)
-		if err != nil {
-			return false, err
-		}
-		if ok && r.CreatedAt.After(now.AddDate(0, 0, -cfg.RetentionFor(r.Community).EvidenceDays)) {
-			continue // this community keeps evidence longer
-		}
-		if err := c.lock(ctx); err != nil {
-			return false, err
-		}
-		err = c.strip(ctx, m)
-		c.unlock()
-		return true, err
-	}
-	return false, nil
+	defer c.unlock(ctx)
+	return true, c.strip(ctx, due[0])
 }
 
 // strip edits a posted message to its text without the member's message,
@@ -492,22 +526,9 @@ func (c *Chat) summary(ctx context.Context) (bool, error) {
 	}
 	sent := false
 	if text := strings.TrimSpace(b.String()); text != "" {
-		if err := c.lock(ctx); err != nil {
+		if err := c.sendSummary(ctx, text); err != nil {
 			return false, err
 		}
-		for _, part := range split(text, "") {
-			msg, err := c.sendText(ctx, false, part, 0, nil)
-			if err != nil {
-				c.unlock()
-				return false, err
-			}
-			if err := c.Store.AddTGMessage(ctx, store.TGMessage{Role: store.RoleSummary, ChatID: msg.Chat.ID,
-				MessageID: msg.ID, SentAt: c.Now()}); err != nil {
-				c.unlock()
-				return false, err
-			}
-		}
-		c.unlock()
 		sent = true
 	}
 	if err := c.Store.MarkReportsSent(ctx, ids); err != nil {
@@ -574,12 +595,40 @@ func (c *Chat) reportMessage(ctx context.Context, reportID int64) (int, error) {
 	return 0, nil
 }
 
+// sendSummary posts the daily summary, in parts when it is long.
+func (c *Chat) sendSummary(ctx context.Context, text string) error {
+	ctx, err := c.lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.unlock(ctx)
+	parts, _ := split(text, "")
+	for _, part := range parts {
+		msg, err := c.sendText(ctx, false, part, quote{}, 0, nil)
+		if err != nil {
+			return err
+		}
+		if err := c.Store.AddTGMessage(ctx, store.TGMessage{Role: store.RoleSummary, ChatID: msg.Chat.ID,
+			MessageID: msg.ID, SentAt: c.Now()}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // sendText posts text (link previews off), as a reply when replyTo is set.
-func (c *Chat) sendText(ctx context.Context, priority bool, text string, replyTo int, markup models.ReplyMarkup) (*models.Message, error) {
+// The member's text (q) goes as a pre entity, so Telegram links none of it:
+// a "/resume" or a link a spammer wrote is not one tap away for an admin.
+func (c *Chat) sendText(ctx context.Context, priority bool, text string, q quote, replyTo int,
+	markup models.ReplyMarkup) (*models.Message, error) {
+	var entities []models.MessageEntity
+	if q.length > 0 {
+		entities = []models.MessageEntity{{Type: models.MessageEntityTypePre, Offset: q.offset, Length: q.length}}
+	}
 	var msg *models.Message
 	err := c.call(ctx, priority, func(ctx context.Context, chatID int64) error {
 		var err error
-		msg, err = c.api.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: text,
+		msg, err = c.api.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: text, Entities: entities,
 			LinkPreviewOptions: noPreview(), ReplyParameters: replyToParams(replyTo), ReplyMarkup: markup})
 		return err
 	})
