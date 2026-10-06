@@ -187,15 +187,28 @@ type ClassResult struct {
 	Hits    int
 }
 
+// Miss is a spam sample no acting rule caught, with the acting rule that came
+// closest and the conditions it failed (NoRule: no acting rule is enabled).
+type Miss struct {
+	Sample  Sample
+	Closest rules.RuleCheck
+	NoRule  bool
+}
+
+// FalseHit is a legit sample the named acting rules would delete.
+type FalseHit struct {
+	Sample Sample
+	Rules  []string
+}
+
 // Result is a corpus test: every rule evaluated as if confirmed and enforced.
 type Result struct {
 	Spam, Legit, LegitHits, SpamMissed int
 	Classes                            []ClassResult
 	// RuleHits counts matches per rule across every sample.
-	RuleHits map[string]int
-	// Missed are spam samples no acting rule caught; FalseHits are legit
-	// samples an acting rule would have deleted.
-	Missed, FalseHits []Sample
+	RuleHits  map[string]int
+	Missed    []Miss
+	FalseHits []FalseHit
 }
 
 // Run tests rs against every sample in dir.
@@ -207,15 +220,17 @@ func Run(rs *rules.Ruleset, dir string) (*Result, error) {
 	r := &Result{RuleHits: map[string]int{}}
 	classes := map[string]*ClassResult{}
 	for _, s := range samples {
-		acts, matched := rs.ActsOn(rules.Input{Fields: s.Fields(), PushName: s.PushName})
+		in := rules.Input{Fields: s.Fields(), PushName: s.PushName}
+		acting, matched := rs.ActsOn(in)
 		for _, m := range matched {
 			r.RuleHits[m]++
 		}
 		if s.Label == Spam {
 			r.Spam++
-			if !acts {
+			if len(acting) == 0 {
 				r.SpamMissed++
-				r.Missed = append(r.Missed, s)
+				c, ok := rs.Closest(in)
+				r.Missed = append(r.Missed, Miss{Sample: s, Closest: c, NoRule: !ok})
 			}
 			continue
 		}
@@ -226,10 +241,10 @@ func Run(rs *rules.Ruleset, dir string) (*Result, error) {
 			classes[s.Class] = c
 		}
 		c.Samples++
-		if acts {
+		if len(acting) > 0 {
 			c.Hits++
 			r.LegitHits++
-			r.FalseHits = append(r.FalseHits, s)
+			r.FalseHits = append(r.FalseHits, FalseHit{Sample: s, Rules: acting})
 		}
 	}
 	for _, c := range classes {
