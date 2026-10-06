@@ -417,11 +417,3 @@ func (rs *Ruleset) CommunityOf(group, parent string) string {
 
 // Communities lists every configured community, sorted.
 func (rs *Ruleset) Communities() []string { return sortedKeys(rs.scopes) }
-
-// ModeOf returns a community's effective mode ("" when not configured).
-func (rs *Ruleset) ModeOf(community string) Mode {
-	if sc, ok := rs.scopes[community]; ok {
-		return sc.mode
-	}
-	return ""
-}
