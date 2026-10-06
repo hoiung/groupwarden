@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,27 +28,38 @@ func TestReadHealth(t *testing.T) {
 	}
 	h := ReadHealth(healthy(), now)
 	if !h.OK() || !h.Running || h.BeatAge != 30*time.Second || h.ConfigHash != "55786e8be51a" ||
-		!h.TelegramSince.Equal(now.Add(-time.Hour)) {
-		t.Fatalf("healthy status read as %+v", h)
+		!h.TelegramSince.Equal(now.Add(-time.Hour)) || len(h.Problems()) != 0 {
+		t.Fatalf("healthy status read as %+v (problems %q)", h, h.Problems())
 	}
+	// Each part failing alone is unhealthy and named as exactly that problem
+	// (the daily check quotes Problems).
 	for _, tc := range []struct {
-		name   string
-		break_ func(map[string]store.StatusValue)
+		name, problem string
+		break_        func(map[string]store.StatusValue)
 	}{
-		{"no status write yet", func(m map[string]store.StatusValue) { delete(m, store.StatusHeartbeat) }},
-		{"status write too old", func(m map[string]store.StatusValue) {
+		{"no status write yet", "status has not been written for over 2 minutes",
+			func(m map[string]store.StatusValue) { delete(m, store.StatusHeartbeat) }},
+		{"status write too old", "status has not been written for over 2 minutes", func(m map[string]store.StatusValue) {
 			m[store.StatusHeartbeat] = at("", BeatFresh+time.Second)
 		}},
-		{"disconnected", func(m map[string]store.StatusValue) { m[store.StatusConnected] = at("0", 0) }},
-		{"deaf", func(m map[string]store.StatusValue) { m[store.StatusDeaf] = at("1", 0) }},
-		{"no config", func(m map[string]store.StatusValue) { delete(m, store.StatusConfigHash) }},
-		{"Telegram refusing", func(m map[string]store.StatusValue) { m[store.StatusTelegramOK] = at("0", 0) }},
-		{"Telegram not reached yet", func(m map[string]store.StatusValue) { delete(m, store.StatusTelegramOK) }},
+		{"disconnected", "WhatsApp is not connected", func(m map[string]store.StatusValue) { m[store.StatusConnected] = at("0", 0) }},
+		{"deaf", "no message has arrived from any moderated group", func(m map[string]store.StatusValue) { m[store.StatusDeaf] = at("1", 0) }},
+		{"no config", "no config is loaded", func(m map[string]store.StatusValue) { delete(m, store.StatusConfigHash) }},
+		{"Telegram refusing", "Telegram refused the bot's last message", func(m map[string]store.StatusValue) {
+			m[store.StatusTelegramOK] = at("0", 0)
+		}},
+		{"Telegram not reached yet", "the admin chat has not taken a message yet", func(m map[string]store.StatusValue) {
+			delete(m, store.StatusTelegramOK)
+		}},
 	} {
 		st := healthy()
 		tc.break_(st)
-		if h := ReadHealth(st, now); h.OK() {
+		h := ReadHealth(st, now)
+		if h.OK() {
 			t.Errorf("%s: read as healthy (%+v)", tc.name, h)
+		}
+		if p := h.Problems(); len(p) != 1 || !strings.Contains(p[0], tc.problem) {
+			t.Errorf("%s: problems %q, want only %q", tc.name, p, tc.problem)
 		}
 	}
 	// Exactly BeatFresh old still counts as running.
