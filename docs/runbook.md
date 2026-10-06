@@ -101,7 +101,7 @@ The nightly backup is an age-encrypted copy of `groupwarden.db` only, never the 
 5. Delete the key: `sudo rm /var/lib/groupwarden/restore.key`
 6. `sudo systemctl start groupwarden`. Check `/status`: it shows the restore pause. Press **[Resume]** once you have checked coverage and the config version; queued actions are checked again before they run.
 
-`restore` refuses to run while the bot runs, over an existing database, with the wrong key, and on a file that is not a groupwarden backup.
+`restore` refuses to run while the bot runs, over an existing database or beside a leftover `-wal` or `-shm` file, with the wrong key, and on a file that is not a groupwarden backup.
 
 ## The database cannot be written
 
