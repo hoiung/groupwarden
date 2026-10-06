@@ -40,13 +40,23 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                (internal/configsync): git pull the private config repo ► the
                same checks as a reload ► swap the live config directory to a
                copy of that commit ► SIGHUP to run ► "config v<hash> loaded"
+
+           deploy/groupwarden-backup.timer ► groupwarden backup (internal/backup):
+               snapshot of groupwarden.db ► age-encrypted to backup.target_dir
+               (another disk) ► keep the newest backup.keep; `restore` puts one
+               back with every action paused
+
+           internal/app health rule (running, connected, not deaf, config
+               loaded, admin chat reached) ► `healthcheck` (install script,
+               Docker) and the heartbeat_url ping every 5 minutes
 ```
 
 | Package | Job |
 |---|---|
-| `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test\|add`, `ledger summary`, `ban add\|remove\|list`, `member show\|forget`, `sync-config`, `schedule sync`, `fatal-exit-code` |
+| `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test\|add`, `ledger summary`, `ban add\|remove\|list`, `member show\|forget`, `sync-config`, `schedule sync`, `backup`, `backup-dir`, `restore`, `fatal-exit-code` |
 | `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation |
-| `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders; the admin chat's controls; the data-dir lock (it names the holding process and command, so the config sync signals only `run`) |
+| `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders; the admin chat's controls; the data-dir lock (it names the holding process and command, so the config sync signals only `run`); `Build`, the one wiring of the bot's parts (`run` and the log test both use it); the health rule `healthcheck` and the heartbeat ping share |
+| `internal/backup` | The nightly backup (snapshot, age encryption, keep the newest `backup.keep`, crash leftovers removed) and `restore` (refuses an existing database, a wrong key or a file that is not a groupwarden backup) |
 | `internal/pipeline` | Inbox worker (it decides nothing until the group directory has loaded once), the group directory (communities, members, admins), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
 | `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction; crash recovery; retention purge |
 | `internal/telegram` | The admin chat: report and alert delivery from the store (rate limit, priority, digests, attachments, text removed after the evidence window), buttons and commands from admins of that chat only, the command list pinned there and set as its "/" menu |
@@ -62,7 +72,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | `internal/mask` | Masks phone numbers, LIDs and group IDs in logs and reports (a digit run touching a letter, such as a config hash, is left alone) |
 | `schema` | The config schema (embedded in the binary) |
 
-The config keys and the code that reads each one are in [config.md](config.md).
+The config keys and the code that reads each one are in [config.md](config.md). How it runs on a node (systemd units, the install script, WSL2, Docker) is in [deploy.md](deploy.md), and what to do when it needs a human in [runbook.md](runbook.md).
 
 ## Libraries
 
@@ -79,7 +89,7 @@ Maintained libraries are used instead of hand-written code wherever one fits. Ev
 | `github.com/eskriett/confusables` | Unicode UTS #39 confusable skeletons | `v0.0.0-20250910043846-220432c5bd73` | 2025-09-10 | MIT |
 | `mvdan.cc/xurls/v2` | Finding links with or without `https://` | `v2.6.0` | 2025-01-02 | BSD-3-Clause |
 | `golang.org/x/net/publicsuffix` | Registrable domain for `allowed_domains` | `v0.59.0` | 2026-09-08 | BSD-3-Clause |
-| `filippo.io/age` | Checking the backup recipient key (and encrypting backups) | `v1.3.2` | 2026-08-29 | BSD-3-Clause |
+| `filippo.io/age` | Checking the backup recipient key, encrypting backups and decrypting them on restore | `v1.3.2` | 2026-08-29 | BSD-3-Clause |
 | `github.com/mdp/qrterminal/v3` | Pairing QR code in the terminal | `v3.2.1` | 2025-03-19 | MIT |
 | `google.golang.org/protobuf` | WhatsApp message types | `v1.36.12` | 2026-08-10 | BSD-3-Clause |
 | `golang.org/x/time/rate` | The token bucket on outbound WhatsApp actions and on admin-chat posts | `v0.16.0` | 2026-08-19 | BSD-3-Clause |
