@@ -31,6 +31,7 @@ var actionLine = map[string]string{
 	ledger.KindAction:         "deleted for everyone; sender removed and banned",
 	ledger.KindWouldHaveActed: "none (watch-only rule, or the message was too old to act on)",
 	ledger.KindExempt:         "none (an admin or Meta AI posted it)",
+	ledger.KindUnaddressable:  "none (the bot cannot act on the sender's address)",
 	ledger.KindLog:            "none (log rule)",
 }
 
