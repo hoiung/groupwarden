@@ -22,6 +22,10 @@ const (
 	ExtraCompanion      Kind = "extra_companion"
 	DecryptError        Kind = "decrypt_error"
 	StorageFailure      Kind = "storage_failure"
+	// ConfigLoaded: "config v<hash> loaded" (routine).
+	ConfigLoaded Kind = "config_loaded"
+	// ConfigRejected: "REJECTED: <reason>, still running v<hash>" (priority).
+	ConfigRejected Kind = "config_rejected"
 )
 
 // Alert is one message for the admins. Priority alerts jump any queue.
