@@ -76,7 +76,7 @@ func seed(t *testing.T, te *testEnv) seeded {
 	}
 	for _, r := range rows {
 		if r.Status == store.Intended {
-			if err := st.Finish(ctx, r.ID, store.Requested, "", 0, time.Now()); err != nil {
+			if _, err := st.Finish(ctx, r.ID, store.Requested, "", 0, time.Now()); err != nil {
 				t.Fatal(err)
 			}
 		}
