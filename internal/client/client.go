@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,66 @@ func (j JID) Server() string {
 	_, s, _ := strings.Cut(string(j), "@")
 	return s
 }
+
+// Bare drops any ":device" suffix ("user:3@lid" → "user@lid").
+func (j JID) Bare() JID {
+	if j == "" {
+		return ""
+	}
+	return JID(j.User() + "@" + j.Server())
+}
+
+// Member is one person by both of their addresses.
+type Member struct {
+	LID   JID // "…@lid", when known
+	Phone JID // "…@s.whatsapp.net", when known
+}
+
+// MemberOf sorts a person's addresses (as addressed, and the alternate one)
+// into LID and phone number, dropping device suffixes.
+func MemberOf(addrs ...JID) Member {
+	var m Member
+	for _, a := range addrs {
+		switch a.Server() {
+		case "lid":
+			if m.LID == "" {
+				m.LID = a.Bare()
+			}
+		case "s.whatsapp.net":
+			if m.Phone == "" {
+				m.Phone = a.Bare()
+			}
+		}
+	}
+	return m
+}
+
+// Key is the ban-list key: the LID, or the phone number while no LID is known.
+func (m Member) Key() string {
+	if m.LID != "" {
+		return string(m.LID)
+	}
+	return string(m.Phone)
+}
+
+// IDs lists the known addresses.
+func (m Member) IDs() []string {
+	var out []string
+	for _, j := range []JID{m.LID, m.Phone} {
+		if j != "" {
+			out = append(out, string(j))
+		}
+	}
+	return out
+}
+
+// ErrRateLimited is returned (wrapped) when WhatsApp refuses a call for going
+// over its rate limit; the caller backs off.
+var ErrRateLimited = errors.New("WhatsApp rate limit")
+
+// ErrNotAdmin is returned (wrapped) when WhatsApp refuses a call because the
+// bot is not an admin there.
+var ErrNotAdmin = errors.New("the bot is not an admin there")
 
 // MentionMarker replaces every @-mention of a listed member in a field's
 // matching view, so a mention is never read as a phone number or a handle.
