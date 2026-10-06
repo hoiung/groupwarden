@@ -106,7 +106,7 @@ func detect(fields []client.Field, allowed map[string]bool) signals {
 			s[AnyLink], s[InviteLink] = true, true
 		}
 		for _, m := range handleRe.FindAllStringSubmatch(rest, -1) {
-			if "@"+m[1] != client.MentionMarker {
+			if !isMention(m[1]) {
 				s[Handle] = true
 			}
 		}
@@ -122,11 +122,25 @@ func detect(fields []client.Field, allowed map[string]bool) signals {
 	return s
 }
 
-// linkSignals classifies one found link.
+// isMention reports whether a handle match is the mention marker, perhaps
+// followed by a full stop ("thanks @mention.", "@mention.See you"):
+// handleRe's class takes a dot, and a sentence ending after a mention is not
+// a handle.
+func isMention(handle string) bool {
+	rest, ok := strings.CutPrefix("@"+handle, client.MentionMarker)
+	return ok && (rest == "" || rest[0] == '.')
+}
+
+// linkSignals classifies one found link. A link the URL parser rejects (a bad
+// %-escape or port) still counts, by the host written before its path: the
+// matcher found it, so it is never invisible.
 func linkSignals(raw string, allowed map[string]bool, s signals) {
+	if isEmail(raw) {
+		return
+	}
 	host, path, ok := hostOf(raw)
 	if !ok {
-		return
+		host, path = textHost(raw)
 	}
 	reg := registrable(host)
 	// whatsapp.net hosts serve media downloads, never a link a person posted.
@@ -149,12 +163,22 @@ func allowedText(v string, allowed map[string]bool) bool {
 	return ok && allowed[registrable(host)]
 }
 
-// hostOf parses a found link; email addresses are not links.
+// isEmail reports whether a found link is an email address: no scheme, and
+// an "@" before any path ("name@example.com"). An "@" in a path
+// ("youtube.com/@channel", "example.org/join?u=a@b") is part of a link.
+func isEmail(raw string) bool {
+	if strings.Contains(raw, "://") {
+		return false
+	}
+	authority, _, _ := strings.Cut(raw, "/")
+	authority, _, _ = strings.Cut(authority, "?")
+	authority, _, _ = strings.Cut(authority, "#")
+	return strings.Contains(authority, "@")
+}
+
+// hostOf parses a link with the URL parser (ok false when it refuses).
 func hostOf(raw string) (host, path string, ok bool) {
 	if !strings.Contains(raw, "://") {
-		if strings.Contains(raw, "@") {
-			return "", "", false
-		}
 		raw = "http://" + raw
 	}
 	u, err := url.Parse(raw)
@@ -162,6 +186,23 @@ func hostOf(raw string) (host, path string, ok bool) {
 		return "", "", false
 	}
 	return strings.ToLower(strings.TrimSuffix(u.Hostname(), ".")), u.EscapedPath(), true
+}
+
+// textHost reads the host of a link the URL parser refused from its text:
+// what follows any scheme and user name, up to the port or path.
+func textHost(raw string) (host, path string) {
+	s := raw
+	if _, after, ok := strings.Cut(s, "://"); ok {
+		s = after
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s, path = s[:i], s[i:]
+	}
+	if i := strings.LastIndex(s, "@"); i >= 0 {
+		s = s[i+1:]
+	}
+	s, _, _ = strings.Cut(s, ":")
+	return strings.ToLower(strings.TrimSuffix(s, ".")), path
 }
 
 // registrable is the domain a person registers ("evil.example.co.uk" →
@@ -193,7 +234,11 @@ func IsPhone(s string) bool {
 
 // RegistrableDomain is the Public Suffix List view of an allowed_domains entry.
 func RegistrableDomain(entry string) (string, bool) {
-	host, _, ok := hostOf(strings.ToLower(strings.TrimSpace(entry)))
+	e := strings.ToLower(strings.TrimSpace(entry))
+	if strings.Contains(e, "@") {
+		return "", false
+	}
+	host, _, ok := hostOf(e)
 	if !ok || !strings.Contains(host, ".") {
 		return "", false
 	}
