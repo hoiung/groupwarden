@@ -160,8 +160,10 @@ func (s *Store) ReportEdits(ctx context.Context) ([]ReportEdit, error) {
 	return out, rows.Err()
 }
 
-// PurgeReports deletes delivered reports created before cutoff (their ledger
-// links go with them).
+// PurgeReports deletes delivered reports created before cutoff. Their ledger
+// links and admin-chat messages go with them (ON DELETE CASCADE); the button
+// presses on them (who pressed) and the admin-chat messages tied to no report
+// (summaries, plain replies) posted before cutoff are deleted here.
 func (s *Store) PurgeReports(ctx context.Context, cutoff time.Time) (int64, error) {
 	var n int64
 	err := s.Write(ctx, func(tx *sql.Tx) error {
@@ -170,7 +172,11 @@ func (s *Store) PurgeReports(ctx context.Context, cutoff time.Time) (int64, erro
 			return err
 		}
 		n, _ = res.RowsAffected()
-		return nil
+		if _, err := tx.ExecContext(ctx, `DELETE FROM tg_presses WHERE report_id NOT IN (SELECT id FROM reports)`); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM tg_messages WHERE report_id IS NULL AND sent_at < ?`, cutoff.UnixMilli())
+		return err
 	})
 	return n, err
 }
