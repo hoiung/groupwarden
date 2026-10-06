@@ -20,6 +20,8 @@ import (
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/whatsmeow"
 	"github.com/hoiung/groupwarden/internal/config"
+	"github.com/hoiung/groupwarden/internal/configsync"
+	"github.com/hoiung/groupwarden/internal/corpus"
 )
 
 // Exit codes. ExitFatal (app.ExitFatal) means a human must act; systemd does
@@ -32,6 +34,7 @@ const (
 
 // env is everything a command touches outside its own logic; tests replace it.
 type env struct {
+	stdin          io.Reader
 	stdout, stderr io.Writer
 	getenv         func(string) string
 	now            func() time.Time
@@ -49,11 +52,20 @@ type env struct {
 	// telegramURL replaces api.telegram.org ("" = the real one; tests run a
 	// fake Bot API).
 	telegramURL string
+	// git runs git for the config sync; signal asks the running bot to
+	// reload (SIGHUP).
+	git    configsync.Git
+	signal func(pid int) error
 }
 
 func main() {
-	e := &env{
-		stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, now: time.Now,
+	os.Exit(productionEnv().run(os.Args[1:]))
+}
+
+// productionEnv wires the real process, WhatsApp, git and signals.
+func productionEnv() *env {
+	return &env{
+		stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr, getenv: os.Getenv, now: time.Now,
 		openAdapter: func(ctx context.Context, cfg *config.Config, log *slog.Logger) (client.Adapter, error) {
 			return whatsmeow.Open(ctx, whatsmeow.Options{DataDir: cfg.DataDir, Log: log})
 		},
@@ -63,8 +75,9 @@ func main() {
 		},
 		hangups:        hangups,
 		connectTimeout: 90 * time.Second,
+		git:            runGit,
+		signal:         hangup,
 	}
-	os.Exit(e.run(os.Args[1:]))
 }
 
 // hangups turns SIGHUP into reload requests (one pending at most).
@@ -101,14 +114,20 @@ Store commands (work beside run):
   check [--secrets]            validate the config; --secrets lists each input as OK or MISSING
   healthcheck                  exit 0 only when run is connected, not deaf and has its config
   corpus test --corpus <dir>   test every rule, as if enforced, against labelled samples
+  corpus add --label spam|legit --corpus <dir> [--type <type>] [--push-name <text>] [--note <text>] [--public]
+                               save the message on stdin as one sample (no --config needed);
+                               --public redacts fully, for tests/corpus
   ledger summary               count shadow and enforce actions per community
   ban add|remove <lid|phone>   add to or lift from the ban list [--community <id>]
   ban list                     print the ban list
   member show <lid|phone>      print everything held about one person (JSON)
   member forget <lid|phone>    delete it (an active ban is kept)
+  sync-config --repo <dir>     pull the config repo clone, check it, swap it in, ask run to reload
+                               (--config is the live config file; run by the sync timer)
+  schedule sync                print the sync timer's OnCalendar value (the install script uses it)
   fatal-exit-code              print the exit code that means "a human must act"
 
-Every command except fatal-exit-code takes --config <file> (default: $GROUPWARDEN_CONFIG).
+Every command except fatal-exit-code and corpus add takes --config <file> (default: $GROUPWARDEN_CONFIG).
 `
 
 func (e *env) run(args []string) int {
@@ -121,9 +140,9 @@ func (e *env) run(args []string) int {
 	case "fatal-exit-code":
 		fmt.Fprintln(e.stdout, app.ExitFatal)
 		return exitOK
-	case "pair", "run", "groups", "resolve-link", "check", "healthcheck":
+	case "pair", "run", "groups", "resolve-link", "check", "healthcheck", "sync-config", "schedule":
 	case "corpus", "ledger", "ban", "member":
-		subs := map[string][]string{"corpus": {"test"}, "ledger": {"summary"}, "ban": {"add", "remove", "list"},
+		subs := map[string][]string{"corpus": {"test", "add"}, "ledger": {"summary"}, "ban": {"add", "remove", "list"},
 			"member": {"show", "forget"}}[cmd]
 		if len(rest) == 0 || !slices.Contains(subs, rest[0]) {
 			fmt.Fprintf(e.stderr, "usage: groupwarden %s %s ...\n", cmd, strings.Join(subs, "|"))
@@ -144,9 +163,18 @@ func (e *env) run(args []string) int {
 	secrets := fs.Bool("secrets", false, "check every provisioning input")
 	corpusDir := fs.String("corpus", "", "corpus directory (spam/ and legit/<class>/)")
 	community := fs.String("community", "", "the community a ban applies to (bans.scope per_community)")
+	label := fs.String("label", "", "corpus add: spam or legit")
+	sampleType := fs.String("type", "", "corpus add: text, image-caption, poll, contact, invite or event")
+	pushName := fs.String("push-name", "", "corpus add: the sender's display name")
+	note := fs.String("note", "", "corpus add: why it is spam or legit")
+	public := fs.Bool("public", false, "corpus add: full redaction, for the public tests/corpus")
+	repo := fs.String("repo", "", "sync-config: the staging clone of the private config repo")
 	args, err := parseInterspersed(fs, rest)
 	if err != nil {
 		return exitUsage
+	}
+	if cmd == "corpus add" {
+		return e.corpusAdd(*corpusDir, *label, corpus.Sample{Type: *sampleType, PushName: *pushName, Note: *note}, *public)
 	}
 	if *cfgPath == "" {
 		fmt.Fprintln(e.stderr, "no config: pass --config <file> or set GROUPWARDEN_CONFIG")
@@ -161,8 +189,11 @@ func (e *env) run(args []string) int {
 	log := slog.New(slog.NewJSONHandler(e.stderr, nil))
 	ctx, stop := e.signals()
 	defer stop()
-	if cmd == "run" {
+	switch cmd {
+	case "run":
 		return e.runBot(ctx, *cfgPath, log)
+	case "sync-config": // the live config may not exist yet (the first sync)
+		return e.syncConfig(ctx, *cfgPath, *repo, log)
 	}
 	l, err := config.Load(*cfgPath)
 	if err != nil {
@@ -173,6 +204,12 @@ func (e *env) run(args []string) int {
 	switch cmd {
 	case "healthcheck":
 		return e.healthcheck(ctx, cfg)
+	case "schedule":
+		if len(args) != 1 {
+			fmt.Fprintln(e.stderr, "usage: groupwarden schedule sync")
+			return exitUsage
+		}
+		return e.schedule(cfg, args[0])
 	case "ledger summary":
 		return e.ledgerSummary(ctx, cfg)
 	case "ban add", "ban remove", "ban list":
@@ -180,7 +217,7 @@ func (e *env) run(args []string) int {
 	case "member show", "member forget":
 		return e.member(ctx, cfg, strings.TrimPrefix(cmd, "member "), args)
 	case "pair":
-		return e.withWhatsApp(ctx, cfg, log, func(ctx context.Context, w *whatsApp) error {
+		return e.withWhatsApp(ctx, cmd, cfg, log, func(ctx context.Context, w *whatsApp) error {
 			p, ok := w.adapter.(interface {
 				Pair(ctx context.Context, phone string, out io.Writer) error
 			})
@@ -190,13 +227,13 @@ func (e *env) run(args []string) int {
 			return p.Pair(ctx, *phone, e.stdout)
 		})
 	case "groups":
-		return e.withWhatsApp(ctx, cfg, log, func(ctx context.Context, w *whatsApp) error { return e.groups(ctx, w) })
+		return e.withWhatsApp(ctx, cmd, cfg, log, func(ctx context.Context, w *whatsApp) error { return e.groups(ctx, w) })
 	case "resolve-link":
 		if len(args) != 1 {
 			fmt.Fprintln(e.stderr, "usage: groupwarden resolve-link <invite link>")
 			return exitUsage
 		}
-		return e.withWhatsApp(ctx, cfg, log, func(ctx context.Context, w *whatsApp) error {
+		return e.withWhatsApp(ctx, cmd, cfg, log, func(ctx context.Context, w *whatsApp) error {
 			return e.resolveLink(ctx, w, args[0])
 		})
 	}
