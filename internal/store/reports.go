@@ -44,6 +44,18 @@ ON CONFLICT DO NOTHING`, id, l); err != nil {
 	return id, nil
 }
 
+// Reported reports whether a report of kind about subject in community was
+// written at or after since, inside tx.
+func Reported(ctx context.Context, tx *sql.Tx, kind, community, subject string, since time.Time) (bool, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports WHERE subject = ? AND kind = ? AND community = ?
+	AND created_at >= ?`, subject, kind, community, since.UnixMilli()).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("read reports: %w", err)
+	}
+	return n > 0, nil
+}
+
 // AddReport writes r in its own transaction.
 func (s *Store) AddReport(ctx context.Context, r Report, ledgerIDs []int64) (int64, error) {
 	var id int64
