@@ -19,6 +19,41 @@ env:
   GOVULNCHECK_VERSION: v1.8.0
 
 jobs:
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: docker build
+        run: docker build -f deploy/Dockerfile -t groupwarden:ci .
+
+      - name: The image runs the binary as non-root with its health check
+        run: |
+          test "$(docker run --rm groupwarden:ci fatal-exit-code)" = 78
+          test "$(docker image inspect groupwarden:ci --format '{{.Config.User}}')" = nonroot:nonroot
+          docker image inspect groupwarden:ci --format '{{json .Config.Healthcheck.Test}}' \
+            | grep -F '"CMD","/groupwarden","healthcheck"'
+
+      - name: The bot can write its database to a new /data volume
+        run: |
+          mkdir ci-config
+          printf 'data_dir: /data\nsecrets_file: /config/secrets.env\nbackup:\n  target_dir: /backup\n' > ci-config/config.yaml
+          docker volume create gw-ci-data
+          docker run --rm -v gw-ci-data:/data -v "$PWD/ci-config:/config:ro" groupwarden:ci ban add 447700900123
+          docker run --rm -v gw-ci-data:/data -v "$PWD/ci-config:/config:ro" groupwarden:ci ban list | grep -F 447700900123
+
+  install-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: bash -n and shellcheck
+        run: |
+          bash -n deploy/install.sh
+          shellcheck deploy/install.sh
+
   go:
     runs-on: ubuntu-latest
     steps:
