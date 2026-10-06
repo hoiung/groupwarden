@@ -86,8 +86,9 @@ func (e *Enforcer) Removals(m client.Member, communities []string, inChat client
 	return intents, true
 }
 
-// banScopes is where a new ban applies.
-func banScopes(rs *rules.Ruleset, community string) []string {
+// BanScopes is where a new ban for a post in community applies: the ban
+// list scope of each ban row.
+func BanScopes(rs *rules.Ruleset, community string) []string {
 	if rs.BanScope() == rules.PerCommunity {
 		return []string{community}
 	}
@@ -136,6 +137,8 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 		p := ledger.Plan{Trigger: trigger, Target: m, ConfigHash: cur.Hash, Actor: actor}
 		switch {
 		case humanAdmin && actor != j.Bare() && client.JID(m.Key()) != actor:
+			e.Log.Info("ban lifted: a human admin re-added a banned member", "community", mask.IDs(community),
+				"group", mask.IDs(string(ch.Group)), "member", mask.IDs(m.Key()), "actor", mask.IDs(string(actor)))
 			p.Lift, p.BanCommunity, p.Reason = true, community, "ban lifted by human re-add"
 			p.Reports = []store.Report{{Kind: ledger.KindBanLifted, Community: community, Text: fmt.Sprintf(
 				"A human admin re-added a banned member to a group in %s: the ban is lifted (their next spam post is deleted, removed and banned again).",
@@ -149,10 +152,18 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 			p.Intents, p.Reason = intents, "banned member joined"
 			rep := store.Report{Kind: ledger.KindBannedRejoin, Community: community, Buttons: []string{ledger.ButtonUndo},
 				Text: fmt.Sprintf("A banned member joined a group in %s (%s): removed.", community, joinHow(ch))}
-			if actor == "" {
+			switch {
+			case !enforced(rs, community):
+				rep = store.Report{Kind: ledger.KindWouldRemove, Community: community, Text: fmt.Sprintf(
+					"A banned member joined a group in %s (%s): they would be removed, but it is in shadow mode: not done.",
+					community, joinHow(ch))}
+			case actor == "":
 				rep.Kind, rep.Priority = ledger.KindUnknownActor, true
 				rep.Text = fmt.Sprintf("A banned member joined a group in %s and WhatsApp did not say who added them: removed. If an admin added them on purpose, press [Undo].", community)
 			}
+			e.Log.Info("banned member joined; removal planned", "community", mask.IDs(community),
+				"group", mask.IDs(string(ch.Group)), "member", mask.IDs(m.Key()), "actor_known", actor != "",
+				"enforce", enforced(rs, community))
 			p.Reports = []store.Report{rep}
 		}
 		if _, err := ledger.Write(ctx, tx, p, now); err != nil {
@@ -165,12 +176,20 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 				continue
 			}
 			m := e.Directory.Complete(client.MemberOf(l))
+			if m.Key() == "" {
+				// No LID or phone number: nobody the ban list could hold.
+				e.Log.Warn("a human admin removed an address the bot cannot ban; not offered", "group",
+					mask.IDs(string(ch.Group)), "member", mask.IDs(string(l)))
+				continue
+			}
 			if _, banned, err := store.FindBan(ctx, tx, m.IDs(), community); err != nil || banned {
 				if err != nil {
 					return err
 				}
 				continue
 			}
+			e.Log.Info("a human admin removed a member; offering a ban", "community", mask.IDs(community),
+				"group", mask.IDs(string(ch.Group)), "member", mask.IDs(m.Key()), "actor", mask.IDs(string(actor)))
 			p := ledger.Plan{Trigger: eventID("left:", ch.DedupeKey()+string(l)), Target: m, ConfigHash: cur.Hash, Actor: actor,
 				Reports: []store.Report{{Kind: ledger.KindHumanRemoval, Community: community,
 					Buttons: []string{ledger.ButtonAddToBanList, ledger.ButtonNo},
@@ -292,20 +311,36 @@ func (e *Enforcer) enforceBan(ctx context.Context, m client.Member, group client
 		if m.LID == "" && ban.LID != "" {
 			m.LID = client.JID(ban.LID)
 		}
-		mode, _ := rs.ModeFor(community)
 		p := ledger.Plan{Trigger: "sweep:" + runID, Target: m, ConfigHash: hash, Episode: true, Reason: "banned member present"}
 		if a == store.ActReject {
 			p.Reason = "banned member asked to join"
 		}
 		if e.Directory.IsAdmin(m.LID, m.Phone, rs) {
+			// Once per ban: a sweep finds the same admin every time.
+			told, err := store.Reported(ctx, tx, ledger.KindAdminSpared, community, m.Key(), ban.CreatedAt)
+			if err != nil || told {
+				return err
+			}
+			e.Log.Warn("a banned member is a current admin; not removed", "community", mask.IDs(community),
+				"group", mask.IDs(string(group)), "member", mask.IDs(m.Key()))
 			p.Reports = []store.Report{e.adminSpared(community)}
-			_, err := ledger.Write(ctx, tx, p, e.Store.Now())
+			_, err = ledger.Write(ctx, tx, p, e.Store.Now())
 			return err
 		}
-		p.Intents = []ledger.Intent{{Action: a, Chat: group, Community: community, Enforce: mode == rules.Enforce}}
+		enforce := enforced(rs, community)
+		p.Intents = []ledger.Intent{{Action: a, Chat: group, Community: community, Enforce: enforce}}
 		p.Reports = []store.Report{{Kind: ledger.KindBannedRejoin, Community: community, Buttons: []string{ledger.ButtonUndo},
 			Text: fmt.Sprintf("A banned member was found in a group in %s (%s): %s.", community, p.Reason, verb(a))}}
+		if !enforce {
+			p.Reports = []store.Report{{Kind: ledger.KindWouldRemove, Community: community, Text: fmt.Sprintf(
+				"A banned member was found in a group in %s (%s): %s, but it is in shadow mode: not done.",
+				community, p.Reason, wouldVerb(a))}}
+		}
 		w, err := ledger.Write(ctx, tx, p, e.Store.Now())
+		if err == nil && w.New > 0 {
+			e.Log.Info("sweep found a banned member", "action", string(a), "community", mask.IDs(community),
+				"group", mask.IDs(string(group)), "member", mask.IDs(m.Key()), "enforce", enforce)
+		}
 		queued = w.Queued
 		return err
 	})
@@ -320,6 +355,19 @@ func verb(a store.Action) string {
 		return "request rejected"
 	}
 	return "removed"
+}
+
+func wouldVerb(a store.Action) string {
+	if a == store.ActReject {
+		return "their request would be rejected"
+	}
+	return "they would be removed"
+}
+
+// enforced reports whether community is in enforce mode.
+func enforced(rs *rules.Ruleset, community string) bool {
+	mode, _ := rs.ModeFor(community)
+	return mode == rules.Enforce
 }
 
 // ResolveBans looks up the LID of every ban known only by a phone number. A
