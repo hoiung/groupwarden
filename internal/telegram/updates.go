@@ -116,7 +116,11 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 			return "Send /ban as a reply to a report.", 0
 		}
 		id, ok, err := c.Store.ReportOfTGMessage(ctx, m.Chat.ID, m.ReplyToMessage.ID)
-		if err != nil || !ok {
+		if err != nil {
+			c.Log.Error("read the report a /ban replies to", "message", m.ReplyToMessage.ID, "err", err)
+			return "Could not read the report store; try again.", 0
+		}
+		if !ok {
 			return "That message is not a report I posted.", 0
 		}
 		return c.act(ctx, id, ledger.ButtonBan, by, false), id
