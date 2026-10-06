@@ -109,7 +109,18 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 		"exempt", string(d.Exempt), "community", mask.IDs(community), "chat", mask.IDs(string(ev.Chat)),
 		"sender", mask.IDs(string(ev.Sender)), "edit", ev.IsEdit, "comment", ev.IsComment,
 		"report_only", item.ReportOnly, "config", "v"+hash)
-	p, err := m.messagePlan(ev, item, d, community, cur)
+	// A pause covering removals and bans holds an enforced ban too: the ban is
+	// applied after [Resume] if the post still counts (deletes continue unless
+	// every action is paused).
+	var paused store.Scope
+	if d.Action == rules.DeleteRemoveBan && !item.ReportOnly {
+		if all, _ := m.Store.PausedForTx(ctx, tx, store.ScopeAll); all {
+			paused = store.ScopeAll
+		} else if rb, _ := m.Store.PausedForTx(ctx, tx, store.ScopeRemoveBan); rb {
+			paused = store.ScopeRemoveBan
+		}
+	}
+	p, err := m.messagePlan(ev, item, d, community, cur, paused)
 	if err != nil {
 		return err
 	}
@@ -127,8 +138,10 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 // match deletes the message (by the original's ID for an edit), removes the
 // sender from every group the ban covers and bans them. A watch-only match,
 // or a message too old to act on, records the same rows in shadow. An exempt
-// sender or a log rule is reported only.
-func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision, community string, cur *config.Loaded) (ledger.Plan, error) {
+// sender or a log rule is reported only. paused is the scope of the pause in
+// force ("" none): it holds the ban, and its actions wait for [Resume].
+func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision, community string, cur *config.Loaded,
+	paused store.Scope) (ledger.Plan, error) {
 	member := m.Directory.Complete(client.MemberOf(ev.Sender, ev.SenderAlt))
 	evidence, err := m.evidence(ev, community, cur)
 	if err != nil {
@@ -141,6 +154,19 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 	}
 	act := d.Action == rules.DeleteRemoveBan || d.WouldHaveActed
 	enforce := d.Action == rules.DeleteRemoveBan && !item.ReportOnly
+	if act && member.Key() == "" {
+		// WhatsApp gave the sender an address that is neither a LID nor a
+		// phone number: there is no one to remove or ban, so the admins are
+		// told instead (a plan with actions and no target fails its write
+		// and would hold the inbox).
+		m.Log.Warn("rule matched a sender the bot cannot act on; reported only", "rule", d.Rule,
+			"chat", mask.IDs(string(ev.Chat)), "sender", mask.IDs(string(ev.Sender)))
+		p.Reason = "the sender has no address the bot can act on"
+		p.Reports = []store.Report{{Kind: ledger.KindUnaddressable, Priority: true, Community: community,
+			Text: fmt.Sprintf("Rule %s matched a post in %s, but the sender's address (%s) is not one the bot can "+
+				"remove or ban: reported only. Delete it by hand if it is spam.", d.Rule, community, mask.IDs(string(ev.Sender)))}}
+		return p, nil
+	}
 	if act {
 		banIn := d.BanIn
 		if len(banIn) == 0 { // a watch-only match: the ban it would have made
@@ -162,7 +188,8 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 			r.MsgTime = targetTime
 			p.Intents = append(p.Intents, r)
 		}
-		p.Ban, p.BanEnforce, p.BanCommunity = banScopes(cur.Rules, community), enforce, community
+		p.Ban, p.BanEnforce, p.BanCommunity = BanScopes(cur.Rules, community), enforce, community
+		p.BanHeld = enforce && paused != ""
 	}
 	switch {
 	case enforce:
@@ -171,8 +198,16 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 		if evidence.MediaState == store.MediaPending {
 			buttons = append(buttons, ledger.ButtonShowAttachment)
 		}
-		p.Reports = []store.Report{{Kind: ledger.KindAction, Community: community, Buttons: buttons,
-			Text: fmt.Sprintf("Spam in %s matched rule %s: the post is deleted and the sender removed and banned.", community, d.Rule)}}
+		text := fmt.Sprintf("Spam in %s matched rule %s: the post is deleted and the sender removed and banned.", community, d.Rule)
+		switch paused {
+		case store.ScopeRemoveBan:
+			text = fmt.Sprintf("Spam in %s matched rule %s: the post is deleted. Removals and bans are paused, so the "+
+				"sender is removed and banned after [Resume] if the config then still acts on this post.", community, d.Rule)
+		case store.ScopeAll:
+			text = fmt.Sprintf("Spam in %s matched rule %s. Every action is paused, so after [Resume] the post is "+
+				"deleted and the sender removed and banned if the config then still acts on this post.", community, d.Rule)
+		}
+		p.Reports = []store.Report{{Kind: ledger.KindAction, Community: community, Buttons: buttons, Text: text}}
 	case act && item.ReportOnly:
 		p.Reason = "too old to act on (older than act_on_replay_max_age)"
 		p.Reports = []store.Report{{Kind: ledger.KindWouldHaveActed, Community: community,
