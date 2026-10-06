@@ -64,11 +64,15 @@ func (s *Store) ClearPause(ctx context.Context, source string) error {
 
 // Pauses lists every active pause, the in-memory storage failure included.
 func (s *Store) Pauses(ctx context.Context) ([]Pause, error) {
+	return s.pauses(ctx, s.db)
+}
+
+func (s *Store) pauses(ctx context.Context, q queryer) ([]Pause, error) {
 	var out []Pause
 	if f := s.storageFailure(); f != nil {
 		out = append(out, *f)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT source, scope, reason, since FROM pause ORDER BY since`)
+	rows, err := q.QueryContext(ctx, `SELECT source, scope, reason, since FROM pause ORDER BY since`)
 	if err != nil {
 		return out, fmt.Errorf("read pause state: %w", err)
 	}
@@ -92,7 +96,17 @@ func (s *Store) Pauses(ctx context.Context) ([]Pause, error) {
 // Deletes are stopped only by ScopeAll pauses; removals and bans by either.
 // Pause state that cannot be read counts as paused (fail closed).
 func (s *Store) PausedFor(ctx context.Context, scope Scope) (bool, string) {
-	pauses, err := s.Pauses(ctx)
+	return s.pausedFor(ctx, s.db, scope)
+}
+
+// PausedForTx is PausedFor read inside tx (the store has one connection, so
+// a decision transaction cannot read through the database handle).
+func (s *Store) PausedForTx(ctx context.Context, tx *sql.Tx, scope Scope) (bool, string) {
+	return s.pausedFor(ctx, tx, scope)
+}
+
+func (s *Store) pausedFor(ctx context.Context, q queryer, scope Scope) (bool, string) {
+	pauses, err := s.pauses(ctx, q)
 	if err != nil {
 		return true, "pause state unreadable: " + err.Error()
 	}
