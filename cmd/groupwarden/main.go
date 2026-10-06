@@ -25,6 +25,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/configsync"
 	"github.com/hoiung/groupwarden/internal/corpus"
+	"github.com/hoiung/groupwarden/internal/mask"
 )
 
 // Exit codes. ExitFatal (app.ExitFatal) means a human must act; systemd does
@@ -196,7 +197,7 @@ func (e *env) run(args []string) int {
 	case "corpus test":
 		return e.corpusTest(*cfgPath, *corpusDir)
 	}
-	log := slog.New(slog.NewJSONHandler(e.stderr, nil))
+	log := mask.JSONLogger(e.stderr, nil)
 	ctx, stop := e.signals()
 	defer stop()
 	switch cmd {
