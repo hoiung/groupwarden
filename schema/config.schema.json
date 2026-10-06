@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hoiung/groupwarden/schema/config.schema.json",
+  "title": "groupwarden config",
+  "description": "Every key groupwarden reads. Defaults and bounds live here and nowhere else. A duration is written like \"47h\" or \"90m\"; its bounds use the groupwarden \"duration\" keyword.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["data_dir", "secrets_file", "backup"],
+  "properties": {
+    "data_dir": {
+      "description": "Directory for the WhatsApp session store, groupwarden.db and the last good config copy. Must be on a Linux filesystem.",
+      "type": "string", "minLength": 1
+    },
+    "secrets_file": {
+      "description": "KEY=value file holding TELEGRAM_TOKEN and TELEGRAM_CHAT_ID (mode 0600).",
+      "type": "string", "minLength": 1
+    },
+    "deploy_key_file": {
+      "description": "Read-only deploy key the config sync timer uses to pull the private config repo.",
+      "type": "string", "default": ""
+    },
+    "corpus_dir": {
+      "description": "Labelled spam/legit samples; when set, every load and reload must catch all spam and no legit sample.",
+      "type": "string", "default": ""
+    },
+    "act_on_replay_max_age": {
+      "description": "Messages older than this (by server time) are only reported. WhatsApp's admin delete window is about 2 days.",
+      "type": "string", "default": "47h", "duration": {"minimum": "1m", "maximum": "47h"}
+    },
+    "deafness_alert_hours": {
+      "description": "Alert once when no event arrives from any moderated group for this long while connected.",
+      "type": "integer", "default": 6, "minimum": 1, "maximum": 168
+    },
+    "disconnect_alert_minutes": {
+      "description": "Alert when a transient disconnect lasts longer than this.",
+      "type": "integer", "default": 15, "minimum": 1, "maximum": 1440
+    },
+    "config_sync_minutes": {
+      "description": "How often the sync timer pulls the private config repo (read by deploy/install.sh).",
+      "type": "integer", "default": 5, "minimum": 1, "maximum": 1440
+    },
+    "heartbeat_url": {
+      "description": "Optional URL pinged every 5 minutes while the healthcheck passes. Empty = off.",
+      "type": "string", "default": "", "pattern": "^(https?://\\S+)?$"
+    },
+    "mode": {
+      "description": "Global mode: shadow reports what would happen; enforce acts. Communities may override it.",
+      "enum": ["shadow", "enforce"], "default": "shadow"
+    },
+    "retention": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": {
+        "evidence_days": {"description": "Evidence copies (and their attachments) are purged after this many days.", "type": "integer", "default": 30, "minimum": 1, "maximum": 365},
+        "action_log_months": {"description": "The action log is purged after this many months.", "type": "integer", "default": 12, "minimum": 1, "maximum": 120},
+        "announcement_secret_days": {"description": "Announcement-group message secrets are kept this long so replies still decrypt (at least evidence_days).", "type": "integer", "default": 90, "minimum": 1, "maximum": 3650}
+      }
+    },
+    "rate": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": {
+        "per_minute": {"description": "Outbound WhatsApp actions per minute (token bucket).", "type": "integer", "default": 10, "minimum": 1, "maximum": 60},
+        "burst": {"description": "Token bucket burst.", "type": "integer", "default": 5, "minimum": 1, "maximum": 60}
+      }
+    },
+    "breaker": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": {
+        "max_actions": {"description": "More removals and bans than this within window_minutes pauses removals and bans.", "type": "integer", "default": 30, "minimum": 1, "maximum": 1000},
+        "window_minutes": {"type": "integer", "default": 10, "minimum": 1, "maximum": 1440}
+      }
+    },
+    "reconcile": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": {
+        "interval_minutes": {"description": "How often the coverage and ban sweep runs.", "type": "integer", "default": 60, "minimum": 5, "maximum": 1440}
+      }
+    },
+    "backup": {
+      "type": "object", "additionalProperties": false, "required": ["target_dir"],
+      "properties": {
+        "target_dir": {"description": "Where encrypted nightly backups of groupwarden.db go (a different disk).", "type": "string", "minLength": 1},
+        "age_recipient": {"description": "age public key the backups are encrypted to; checked by age itself (groupwarden check --secrets).", "type": "string", "default": ""},
+        "keep": {"description": "Nightly backups kept.", "type": "integer", "default": 14, "minimum": 1, "maximum": 365}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": {
+        "max_attachment_mb": {"description": "Attachments up to this size are kept with the evidence (Telegram bots can upload 50 MB).", "type": "integer", "default": 50, "minimum": 1, "maximum": 50}
+      }
+    },
+    "report": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": {
+        "attachment_show_hours": {"description": "A deleted post's attachment stays in the admin chat this long (Telegram lets a bot delete its own message within 48 hours).", "type": "integer", "default": 24, "minimum": 1, "maximum": 47}
+      }
+    },
+    "bans": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": {
+        "scope": {"description": "all_communities: one ban list for every configured community; per_community: each keeps its own.", "enum": ["all_communities", "per_community"], "default": "all_communities"}
+      }
+    },
+    "word_lists": {
+      "description": "Named lists of words and phrases, each in quotes. Matching is whole-word and case-insensitive; * only at a word end.",
+      "type": "object", "default": {},
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_-]*$"},
+      "additionalProperties": {"$ref": "#/$defs/words"}
+    },
+    "leet_word_lists": {
+      "description": "Word lists that also match digit and symbol substitutions ($tock$, cryp7o).",
+      "type": "array", "default": [], "items": {"type": "string"}
+    },
+    "never_match": {
+      "description": "Phrases blanked out before any keyword is looked at (\"in stock\").",
+      "$ref": "#/$defs/words", "default": []
+    },
+    "allowed_domains": {
+      "description": "Links to these registrable domains (and their subdomains) never count as links.",
+      "type": "array", "default": [], "items": {"type": "string", "minLength": 1}
+    },
+    "rules": {
+      "type": "object", "additionalProperties": false, "default": {},
+      "properties": {
+        "min_word_length": {"description": "Shortest single word allowed in a word list (phrases are exempt).", "type": "integer", "default": 3, "minimum": 1, "maximum": 20},
+        "list": {"type": "array", "default": [], "items": {"$ref": "#/$defs/rule"}}
+      }
+    },
+    "communities": {
+      "description": "Each configured community: a WhatsApp Community ID (a number ending in @g.us), or a name with a groups: list of standalone groups.",
+      "type": "object", "default": {},
+      "additionalProperties": {"$ref": "#/$defs/community"}
+    }
+  },
+  "$defs": {
+    "words": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "names": {"type": ["string", "array"], "minLength": 1, "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "condition": {
+      "type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 1,
+      "properties": {
+        "all": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/condition"}},
+        "any": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/condition"}},
+        "words": {"$ref": "#/$defs/names"},
+        "has": {"$ref": "#/$defs/names"}
+      }
+    },
+    "rule": {
+      "type": "object", "additionalProperties": false, "required": ["name", "action", "when"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+        "action": {"enum": ["log", "delete_remove_ban"]},
+        "confirmed": {"description": "Until true, the rule only reports what it would have done.", "type": "boolean", "default": false},
+        "on": {"description": "message (every field the sender wrote) or push_name (the sender's display name).", "enum": ["message", "push_name"], "default": "message"},
+        "when": {"$ref": "#/$defs/condition"}
+      }
+    },
+    "community": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "name": {"description": "A label for reports.", "type": "string"},
+        "groups": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[0-9]+@g\\.us$"}},
+        "mode": {"enum": ["shadow", "enforce"]},
+        "disable_rules": {"type": "array", "items": {"type": "string"}},
+        "word_lists": {
+          "description": "Extra entries for global word lists of the same name.",
+          "type": "object", "additionalProperties": {"$ref": "#/$defs/words"}
+        },
+        "retention": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "evidence_days": {"type": "integer", "minimum": 1, "maximum": 365},
+            "action_log_months": {"type": "integer", "minimum": 1, "maximum": 120},
+            "announcement_secret_days": {"type": "integer", "minimum": 1, "maximum": 3650}
+          }
+        }
+      }
+    }
+  }
+}
