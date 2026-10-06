@@ -25,6 +25,8 @@ type Request struct {
 	Params map[string]string // form fields (JSON-encoded for nested values)
 	Files  map[string][]byte // uploaded files, by form field
 	At     time.Time         // the test clock when it arrived
+	// MessageID is the message the fake answered with (posts and edits).
+	MessageID int
 }
 
 // Reply is a failure the fake answers with instead of success.
@@ -163,7 +165,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		reply, failing = s.fail[method][0], true
 		s.fail[method] = s.fail[method][1:]
 	}
+	idx := -1
 	if method != "getUpdates" {
+		idx = len(s.reqs)
 		s.reqs = append(s.reqs, req)
 	}
 	s.mu.Unlock()
@@ -176,8 +180,12 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case "getMe":
 		result = map[string]any{"id": 700000001, "is_bot": true, "first_name": "groupwarden", "username": "groupwarden_test_bot"}
 	case "sendMessage", "sendDocument", "editMessageText", "editMessageMedia":
-		result = s.message(req)
-	case "deleteMessage", "answerCallbackQuery":
+		msg, id := s.message(req)
+		s.mu.Lock()
+		s.reqs[idx].MessageID = id
+		s.mu.Unlock()
+		result = msg
+	case "deleteMessage", "answerCallbackQuery", "pinChatMessage", "setMyCommands":
 		result = true
 	case "getChatMember":
 		uid, _ := strconv.ParseInt(req.Params["user_id"], 10, 64)
@@ -204,7 +212,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": result})
 }
 
-func (s *Server) message(req Request) map[string]any {
+func (s *Server) message(req Request) (map[string]any, int) {
 	s.mu.Lock()
 	s.nextID++
 	id := s.nextID
@@ -214,7 +222,7 @@ func (s *Server) message(req Request) map[string]any {
 	}
 	chat, _ := strconv.ParseInt(req.Params["chat_id"], 10, 64)
 	return map[string]any{"message_id": id, "date": 1, "chat": map[string]any{"id": chat, "type": "supergroup"},
-		"text": req.Params["text"]}
+		"text": req.Params["text"]}, id
 }
 
 func (s *Server) failWith(w http.ResponseWriter, r *http.Request, f Reply) {
