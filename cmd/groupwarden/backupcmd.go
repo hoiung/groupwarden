@@ -44,18 +44,16 @@ func (e *env) backup(ctx context.Context, cfg *config.Config, log *slog.Logger) 
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", serr)
 		return exitFail
 	}
+	var report *store.Report
 	if err != nil && !strings.HasPrefix(status[store.StatusBackupResult].Value, "FAILED") {
-		if _, rerr := st.AddReport(ctx, store.Report{Kind: string(alert.BackupFailed), Priority: true,
+		report = &store.Report{Kind: string(alert.BackupFailed), Priority: true,
 			Text: "The nightly backup FAILED: " + err.Error() + ". Earlier backups in " + cfg.Backup.TargetDir +
-				" are kept; it tries again tomorrow night (docs/runbook.md)."}, nil); rerr != nil {
-			fmt.Fprintf(e.stderr, "groupwarden: %v\n", rerr)
-			return exitFail
-		}
+				" are kept; it tries again tomorrow night (docs/runbook.md)."}
 	}
-	if serr := st.SetStatus(ctx, map[string]string{
+	if serr := st.SetStatusReporting(ctx, map[string]string{
 		store.StatusBackupLastRun: strconv.FormatInt(e.now().UnixMilli(), 10),
 		store.StatusBackupResult:  result,
-	}); serr != nil {
+	}, report); serr != nil {
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", serr)
 		return exitFail
 	}
