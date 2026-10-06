@@ -16,16 +16,16 @@ A reload (SIGHUP) runs the same steps on the new file and swaps the whole result
 | Key | Read by |
 |---|---|
 | `data_dir` | `cmd/groupwarden/whatsapp.go` `runBot` (single-instance lock); `cmd/groupwarden/main.go` (WhatsApp session store); `internal/config/config.go` `StoreDB`, `WhatsmeowDB`; `internal/config/reload.go` (last good copy); `cmd/groupwarden/storecmds.go` `check --secrets` |
-| `secrets_file` | `cmd/groupwarden/storecmds.go` `check --secrets` (`config.ReadSecretsFile`) |
+| `secrets_file` | `cmd/groupwarden/storecmds.go` `check --secrets` (`config.ReadSecretsFile`); `cmd/groupwarden/whatsapp.go` `adminChatOptions` (`run` refuses to start without the admin chat's bot token and chat ID) |
 | `deploy_key_file` | `cmd/groupwarden/storecmds.go` `check --secrets` |
 | `corpus_dir` | `internal/config/reload.go` `checkCorpus` |
-| `act_on_replay_max_age` | `internal/pipeline/worker.go` (replayed messages older than this are only reported) |
+| `act_on_replay_max_age` | `internal/pipeline/worker.go` (replayed messages older than this are only reported); `internal/action/executor.go` `recheck` (a queued delete of an older message is dropped); `internal/pipeline/admin.go` `Ban` ([Ban] on a watch-only report deletes the message only while it is younger) |
 | `deafness_alert_hours` | `internal/app/app.go` `SettingsFrom` → `monitor.go` |
 | `disconnect_alert_minutes` | `internal/app/app.go` `SettingsFrom` → `monitor.go` |
-| `config_sync_minutes` | not read yet: the install script's timer renderer (AC 6.4) |
+| `config_sync_minutes` | `internal/app/app.go` `timers` → `checkOverdue` (a priority alert when the sync has not run for twice this); the install script's timer renderer (AC 6.4) |
 | `heartbeat_url` | not read yet: the heartbeat (AC 7.3) |
 | `mode` | `internal/rules/compile.go` (the global scope's mode) |
-| `retention.evidence_days`, `retention.action_log_months`, `retention.announcement_secret_days` | `internal/config/config.go` `checkRetention`, `RetentionFor`, `LongestRetention`; `internal/ledger/purge.go` `Purge` (evidence copies and files, action log, reports, message secrets) |
+| `retention.evidence_days`, `retention.action_log_months`, `retention.announcement_secret_days` | `internal/config/config.go` `checkRetention`, `RetentionFor`, `LongestRetention`; `internal/ledger/purge.go` `Purge` (evidence copies and files, action log, reports, message secrets); `internal/telegram/deliver.go` `stripDue` (the admin chat's reports lose the message text after `evidence_days`) |
 | `rate.per_minute`, `rate.burst` | `internal/action/executor.go` `takeToken` (the outbox token bucket) |
 | `breaker.max_actions`, `breaker.window_minutes` | `internal/action/executor.go` `breaker` |
 | `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check and the sweep: banned members present, join requests, phone-only bans) |
@@ -33,7 +33,7 @@ A reload (SIGHUP) runs the same steps on the new file and swaps the whole result
 | `backup.age_recipient` | `cmd/groupwarden/storecmds.go` `check --secrets` (parsed by `age`); the backup (AC 7.3) |
 | `backup.keep` | not read yet: the backup (AC 7.3) |
 | `evidence.max_attachment_mb` | `internal/pipeline/moderator.go` `evidence` (an attachment over it is recorded by type, name and size only); `internal/action/media.go` `fetchOne` |
-| `report.attachment_show_hours` | not read yet: Telegram reports (AC 4.1) |
+| `report.attachment_show_hours` | `internal/telegram/deliver.go` `takeDownDue` (an attachment posted to the admin chat is deleted after it), `takeDown` (the placeholder's text); `internal/telegram/updates.go` `show` (the reply says when the repost comes down) |
 | `bans.scope` | `internal/rules/compile.go`, `decide.go` (`Decision.BanIn`) |
 | `word_lists` | `internal/rules/compile.go` `addWords` |
 | `leet_word_lists` | `internal/rules/compile.go` |
