@@ -47,8 +47,8 @@ func TestOutboxPurged(t *testing.T) {
 	if n, _ := s.OutboxLen(ctx); n != 2 {
 		t.Fatalf("outbox %d, want 2", n)
 	}
-	if err := s.Finish(ctx, ids[0], Requested, "", 0, now); err != nil {
-		t.Fatal(err)
+	if settled, err := s.Finish(ctx, ids[0], Requested, "", 0, now); err != nil || !settled {
+		t.Fatalf("finish: settled %v, %v", settled, err)
 	}
 	if n, _ := s.OutboxLen(ctx); n != 1 {
 		t.Fatalf("outbox %d after a final status, want 1", n)
