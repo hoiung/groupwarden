@@ -71,7 +71,7 @@ func (m *Moderator) Decide(ctx context.Context, tx *sql.Tx, item Item) error {
 			"detail", mask.IDs(ev.Detail))
 		// Stored with the decision (the store has one connection: nothing
 		// may write outside this transaction until it ends).
-		_, err := store.InsertReport(ctx, tx, store.Report{Kind: string(alert.DecryptError), Priority: true,
+		_, err := store.InsertReport(ctx, tx, store.Report{Kind: string(alert.DecryptError),
 			Text: "Could not decrypt a message in " + mask.IDs(string(ev.Chat)) + ": " + mask.IDs(ev.Detail)}, nil,
 			m.Store.Now())
 		if err == nil {
