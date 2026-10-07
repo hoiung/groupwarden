@@ -61,7 +61,9 @@ func (t mediaTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // cappedBody fails once more than left bytes would be read (at once when
 // left is below zero). Its error is not a network error, so the library does
-// not fetch the file again.
+// not retry it on the same host; it does try each media host WhatsApp lists
+// once, each attempt capped, so memory stays bounded and only bandwidth
+// grows with the host count.
 type cappedBody struct {
 	io.ReadCloser
 	limit, left int64
