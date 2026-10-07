@@ -190,6 +190,12 @@ CREATE TABLE coverage (
 	updated_at INTEGER NOT NULL
 );
 `,
+	// 5: which part of its report (or of the daily summary) a posted message
+	// is, so a retry resumes after the last part posted even when Telegram
+	// refused one before it.
+	`
+ALTER TABLE tg_messages ADD COLUMN part INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
