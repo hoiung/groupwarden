@@ -234,6 +234,7 @@ func TestEvidencePurge(t *testing.T) {
 	if _, err := k.Media.Fetch(k.Ctx); err != nil {
 		t.Fatal(err)
 	}
+	k.Fire() // its actions settle: an open one keeps the copy (TestHeldBanOutlivesRetention)
 	old, _, _ := k.Store.Evidence(k.Ctx, revokeRow(t, k).EvidenceID)
 	k.Clock.Advance(20 * 24 * time.Hour)
 	k.Deliver(k.Msg("NEW", modtest.GB, modtest.Member, modtest.SpamText))
@@ -256,6 +257,7 @@ func TestEvidencePurge(t *testing.T) {
 	k2 := modtest.NewConfig(t, strings.Replace(modtest.Config, "    name: set b\n",
 		"    name: set b\n    retention:\n      evidence_days: 45\n", 1))
 	k2.Deliver(k2.Spam("A", modtest.G1))
+	k2.Fire()
 	k2.Clock.Advance(15 * 24 * time.Hour)
 	k2.Deliver(k2.Msg("B", modtest.G1, modtest.Member, modtest.SpamText))
 	k2.Clock.Advance(31 * 24 * time.Hour) // A is 46 days old, B 31
