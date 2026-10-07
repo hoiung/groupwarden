@@ -90,7 +90,7 @@ The bot exits (78) and every group is unmoderated until a new number is paired. 
 3. WhatsApp's Terms say someone whose account was banned must not create another account without WhatsApp's permission. Using a new number for the bot is your decision and your risk.
 4. With a new SIM: move `whatsmeow.db` (and its `-wal` and `-shm`) aside, `pair` the new phone, add it to every group and the community, and have a human admin make it an admin everywhere. `/status` lists what is still missing.
 
-A temporary ban is different: the alert says "WhatsApp temporarily banned the bot number" and when it ends. The bot stays disconnected until then and reconnects by itself with removals and bans **paused** (deletes continue) until an admin presses **[Resume]**. Bans usually follow sending too much: look at how many actions it took before the ban.
+A temporary ban is different: the alert says "WhatsApp temporarily banned the bot number" and when it ends. The bot stays disconnected until then and reconnects by itself with removals and bans **paused** (deletes continue) until an admin presses **[Resume]** on that alert. Nothing is sent while it is disconnected: queued deletes wait and go out when it reconnects, unless the post is older than `act_on_replay_max_age` by then, in which case a priority report says to delete it by hand. Bans usually follow sending too much: look at how many actions it took before the ban.
 
 ## Restore a backup
 
