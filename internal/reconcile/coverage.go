@@ -314,7 +314,7 @@ func lostReport(community, cl, label, state string) store.Report {
 		text = fmt.Sprintf("The bot is no longer in %s (%s): that group is not moderated until a human admin adds the "+
 			"bot back and promotes it.", label, cl)
 	}
-	return store.Report{Kind: string(alert.CoverageLost), Priority: true, Community: community, Text: text}
+	return store.Report{Kind: string(alert.CoverageLost), Community: community, Text: text}
 }
 
 // LostAdmin is called when WhatsApp refused the bot an admin-only call in
@@ -345,7 +345,7 @@ func (s *Sweep) LostAdmin(ctx context.Context, group client.JID, cause string) {
 		if err := store.MarkCoverage(ctx, tx, string(group), community, store.CoverageNotAdmin, now); err != nil {
 			return err
 		}
-		_, err = store.InsertReport(ctx, tx, store.Report{Kind: string(alert.CoverageLost), Priority: true,
+		_, err = store.InsertReport(ctx, tx, store.Report{Kind: string(alert.CoverageLost),
 			Community: community, Text: fmt.Sprintf("The bot is not an admin in %s (%s): %s there. It cannot delete or "+
 				"remove in that group until a human admin promotes it again.", label,
 				pipeline.CommunityLabel(cur.Config, community), cause)}, nil, now)
