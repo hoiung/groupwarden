@@ -12,11 +12,14 @@ counts, and applied only on the user's yes.
 
 ## 1. Find the tools and the private config
 
-1. The binary: `command -v groupwarden`. If it is not installed, build it from
-   the clone this skill is linked from (keep that clone at the version the bot
-   runs, so the rules behave the same):
-   `repo=$(dirname "$(dirname "$(dirname "$(readlink -f ~/.claude/skills/spam-intake)")")")`,
-   then `(cd "$repo" && go build -o "$HOME/.cache/groupwarden/groupwarden" ./cmd/groupwarden)`.
+1. The clone this skill is linked from, and the binary. Set both at the start
+   of every shell command that uses them (shell variables do not carry over
+   from one command to the next):
+   `repo=$(dirname "$(dirname "$(dirname "$(readlink -f ~/.claude/skills/spam-intake)")")")`
+   and `gw=$(command -v groupwarden || echo "$HOME/.cache/groupwarden/groupwarden")`.
+   If `$gw` does not exist yet, build it from that clone (keep the clone at the
+   version the bot runs, so the rules behave the same):
+   `(cd "$repo" && go build -o "$HOME/.cache/groupwarden/groupwarden" ./cmd/groupwarden)`.
 2. The config: `$GROUPWARDEN_CONFIG` if set, otherwise ask the user once for the
    path of `config.yaml` in their private config repo clone. Its directory must
    be inside a git repo (`git -C <dir> rev-parse --show-toplevel`).
@@ -37,7 +40,7 @@ has it. Then pipe the pasted text in exactly as given, with a heredoc delimiter
 that does not occur in it:
 
 ```bash
-groupwarden corpus add --label spam --corpus <corpus> --type <type> \
+"$gw" corpus add --label spam --corpus <corpus> --type <type> \
   [--push-name '<display name>'] --note '<one line: why it is spam>' <<'GW_SAMPLE_END'
 <pasted message>
 GW_SAMPLE_END
@@ -58,7 +61,7 @@ step 5 with "false hit" in place of "missed".
 ## 3. Test before
 
 ```bash
-groupwarden corpus test --config <config> --corpus <corpus>
+"$gw" corpus test --config <config> --corpus <corpus>
 ```
 
 Keep the `TOTAL` line and the `RULE` lines as the "before" counts. For the new
@@ -92,7 +95,7 @@ Rules for every candidate:
 - Words are quoted; a `*` only at the start or end of a word (docs/config.md
   "Writing words and rules").
 - Test each candidate:
-  `groupwarden corpus test --config <scratch copy> --corpus <corpus>`. It must
+  `"$gw" corpus test --config <scratch copy> --corpus <corpus>`. It must
   show no `MISSED` line for the new sample and `legit_hits=0`; a candidate with
   any `FALSE-HIT` line is dropped.
 
@@ -112,7 +115,7 @@ config alone and ask whether to keep the sample.
 ## 6. Check, commit, push
 
 ```bash
-groupwarden check --config <config>
+"$gw" check --config <config>
 ```
 
 It must exit 0 (it also re-runs the corpus test against `corpus_dir`). Then in
