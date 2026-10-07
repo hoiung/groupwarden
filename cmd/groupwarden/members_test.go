@@ -273,6 +273,46 @@ func TestBanCLIPerCommunity(t *testing.T) {
 	}
 }
 
+// TestBanCLIHeldBan: a ban a pause holds is listed apart from active bans,
+// survives `member forget`, and `ban remove` lifts it, so it never applies
+// after [Resume].
+func TestBanCLIHeldBan(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Write(ctx, func(tx *sql.Tx) error {
+		_, err := ledger.Write(ctx, tx, ledger.Plan{Trigger: "M1", Target: client.Member{LID: memberLID}, ConfigHash: "h",
+			Ban: []string{store.BanEverywhere}, BanEnforce: true, BanHeld: true, BanCommunity: cmdCommunity, Reason: "pitch"}, time.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.sub("ban", "list"); code != 0 ||
+		!strings.Contains(te.out.String(), memberLID+" scope=* held by a pause (applies after [Resume]) since=") ||
+		!strings.HasSuffix(te.out.String(), "\n0 ban(s)\n1 ban(s) held by a pause\n") {
+		t.Fatalf("ban list: exit %d %q", code, te.out)
+	}
+	// Forgetting the member keeps the held ban, saying so.
+	if code := te.sub("member", "forget", memberLID); code != 0 ||
+		!strings.Contains(te.out.String(), "kept: 1 ban(s) a pause holds") {
+		t.Fatalf("member forget: exit %d %q %q", code, te.out, te.errb)
+	}
+	if code := te.sub("ban", "remove", memberLID); code != 0 || te.out.String() != "unbanned "+memberLID+"\n" {
+		t.Fatalf("ban remove of a held ban: exit %d %q %q", code, te.out, te.errb)
+	}
+	if code := te.sub("ban", "list"); code != 0 || te.out.String() != "0 ban(s)\n" {
+		t.Fatalf("after lifting the held ban: %q", te.out)
+	}
+	if held, err := st.HeldBans(ctx); err != nil || len(held) != 0 {
+		t.Fatalf("held bans left %+v (%v)", held, err)
+	}
+}
+
 type shown struct {
 	Addresses []string
 	Bans      []map[string]any
