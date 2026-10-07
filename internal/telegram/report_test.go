@@ -20,6 +20,52 @@ import (
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
 
+// TestPausedReportSaysWhatWaits: a spam report written during a pause says
+// on its Action line what waits for the pause to end, never that the sender
+// was removed and banned, in the report and in what stays once the member's
+// text is removed.
+func TestPausedReportSaysWhatWaits(t *testing.T) {
+	for scope, want := range map[store.Scope]string{
+		store.ScopeRemoveBan: "Action: deleted for everyone; removal and ban once the pause ends",
+		store.ScopeAll:       "Action: none yet: delete, removal and ban once the pause ends",
+	} {
+		t.Run(string(scope), func(t *testing.T) {
+			h := newHarness(t, "")
+			if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: scope, Reason: "test",
+				Since: h.k.Clock.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			h.spam("M1")
+			h.drain()
+			text := h.srv.Posted()[0].Params["text"]
+			if !strings.Contains(text, want) || strings.Contains(text, "sender removed and banned\n") {
+				t.Fatalf("report text %q, want %q", text, want)
+			}
+			h.k.Clock.Advance(31 * 24 * time.Hour) // past retention.evidence_days: the member's text is removed
+			h.drain()
+			edits := h.srv.Requests("editMessageText")
+			if len(edits) == 0 || !strings.Contains(edits[0].Params["text"], want) {
+				t.Fatalf("the stripped report lost the action line: %+v", edits)
+			}
+		})
+	}
+}
+
+// TestUnaddressableReportActionLine: the report of spam from a sender the
+// ban list cannot hold (an @hosted address) says on its Action line that the
+// post was deleted and the sender cannot be removed or banned.
+func TestUnaddressableReportActionLine(t *testing.T) {
+	h := newHarness(t, "")
+	hosted := client.JID(strings.TrimSuffix(string(modtest.Spammer), "@lid") + "@hosted")
+	h.k.Deliver(h.k.Msg("HOST1", modtest.G1, hosted, modtest.SpamText))
+	h.k.Fire()
+	h.drain()
+	text := h.srv.Posted()[0].Params["text"]
+	if want := "Action: deleted for everyone; the sender cannot be removed or banned"; !strings.Contains(text, want) {
+		t.Fatalf("report text %q lacks %q", text, want)
+	}
+}
+
 // TestReportFormatMasked: a report names the group, the sender's display name
 // and the last 4 digits of their phone number, the rule, the action, the
 // config version and the message; no full phone number, LID or group ID.
