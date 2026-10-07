@@ -133,7 +133,7 @@ func nullID(id int64) any {
 // (inserted false, id of the existing row). An enforce row of a WhatsApp
 // action is queued in the outbox in the same transaction, so a row is always
 // written before it can fire. An intended ban row is a ban a pause holds: it
-// is never queued (ApplyHeldBans settles it).
+// is never queued (the executor settles it once no pause covers bans).
 func InsertLedger(ctx context.Context, tx *sql.Tx, r LedgerRow, now time.Time) (id int64, inserted bool, err error) {
 	if r.Status == "" {
 		r.Status = Intended
@@ -378,13 +378,19 @@ WHERE target = ? AND action = 'revoke' AND chat = ? AND msg_id = ? AND mode = 'e
 	AND status IN ('intended', 'requested') ORDER BY id LIMIT 1`, target, chat, msgID))
 }
 
+// heldBan selects the bans a pause holds: never queued, settled by the
+// executor once no pause covers bans, and kept by every purge until then.
+const heldBan = `(action = 'ban' AND status = 'intended' AND mode = 'enforce')`
+
 // BanRowOf returns the ledger row of target's ban in scope when the ban is in
-// force (its ban list entry) or held by a pause (ok false when neither).
-func BanRowOf(ctx context.Context, tx *sql.Tx, target, scope string) (LedgerRow, bool, error) {
+// force (its ban list entry) or, when orHeld, held by a pause (ok false when
+// neither). A ban meant to apply at once (an admin's) passes orHeld false: a
+// held ban must not swallow it.
+func BanRowOf(ctx context.Context, tx *sql.Tx, target, scope string, orHeld bool) (LedgerRow, bool, error) {
 	return oneRow(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE id = COALESCE(
 	(SELECT ledger_id FROM bans WHERE member = ?1 AND scope = ?2 AND ledger_id IS NOT NULL),
-	(SELECT id FROM ledger WHERE action = 'ban' AND status = 'intended' AND mode = 'enforce' AND target = ?1 AND chat = ?2
-		ORDER BY id LIMIT 1))`, target, scope))
+	(SELECT id FROM ledger WHERE ?3 AND `+heldBan+` AND target = ?1 AND chat = ?2 ORDER BY id LIMIT 1))`,
+		target, scope, orHeld))
 }
 
 func oneRow(row *sql.Row) (LedgerRow, bool, error) {
@@ -414,60 +420,75 @@ func (s *Store) StaleIntended(ctx context.Context) ([]LedgerRow, error) {
 	AND action IN ('revoke', 'remove', 'reject') ORDER BY id`)
 }
 
-// ApplyHeldBans applies every ban a pause held for target in one of scopes
-// (a removal of target passed its fire-time re-check after [Resume]): each is
-// added to the ban list and its row marked requested. It returns how many.
-func (s *Store) ApplyHeldBans(ctx context.Context, target string, scopes []string) (int, error) {
-	n := 0
-	err := s.Write(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT id, chat, address, reason FROM ledger WHERE action = 'ban'
-	AND status = 'intended' AND mode = 'enforce' AND target = ? AND chat IN (SELECT value FROM json_each(?)) ORDER BY id`,
-			target, jsonList(scopes))
+// NextHeldBan returns the oldest ban a pause holds (ok false when none).
+func (s *Store) NextHeldBan(ctx context.Context) (LedgerRow, bool, error) {
+	return oneRow(s.db.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE `+heldBan+` ORDER BY id LIMIT 1`))
+}
+
+// PostsOf lists the evidence copies ledger row id stands for: its own and
+// those of every report linked to it (a later post by the same member that
+// reused the row). Copies already purged or forgotten are not listed.
+func (s *Store) PostsOf(ctx context.Context, id int64) ([]int64, error) {
+	return idList(ctx, s.db, `SELECT e.id FROM evidence e WHERE e.id IN (
+	SELECT evidence_id FROM ledger WHERE id = ?1
+	UNION SELECT r.evidence_id FROM reports r JOIN report_ledger rl ON rl.report_id = r.id WHERE rl.ledger_id = ?1)
+ORDER BY e.id`, id)
+}
+
+// ApplyHeldBan applies a ban a pause held: its target goes on the ban list in
+// each of scopes (the current config's, for the row's community) and the row
+// is marked requested. applied is false when the row was no longer held.
+func (s *Store) ApplyHeldBan(ctx context.Context, row LedgerRow, scopes []string) (applied bool, err error) {
+	err = s.Write(ctx, func(tx *sql.Tx) error {
+		now := s.now()
+		res, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'requested', updated_at = ? WHERE id = ? AND status = 'intended'`,
+			now.UnixMilli(), row.ID)
 		if err != nil {
-			return fmt.Errorf("read held bans: %w", err)
+			return fmt.Errorf("apply held ban: %w", err)
 		}
-		var held []Ban
-		for rows.Next() {
-			var b Ban
-			if err := rows.Scan(&b.LedgerID, &b.Scope, &b.Phone, &b.Reason); err != nil {
-				_ = rows.Close()
-				return fmt.Errorf("read held bans: %w", err)
-			}
-			b.Member = target
-			if strings.HasSuffix(target, "@lid") {
-				b.LID = target
-			} else {
-				b.Phone = target
-			}
-			held = append(held, b)
-		}
-		if err := rows.Close(); err != nil {
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
 			return err
 		}
-		now := s.now()
-		for _, b := range held {
+		for _, scope := range scopes {
+			b := Ban{Member: row.Target, Scope: scope, Phone: row.Address, Reason: row.Reason, LedgerID: row.ID}
+			if strings.HasSuffix(row.Target, "@lid") {
+				b.LID = row.Target
+			} else {
+				b.Phone = row.Target
+			}
 			if err := AddBan(ctx, tx, b, now); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'requested', updated_at = ? WHERE id = ?`,
-				now.UnixMilli(), b.LedgerID); err != nil {
-				return err
-			}
 		}
-		n = len(held)
+		applied = true
 		return nil
 	})
-	return n, err
+	return applied, err
 }
 
-// FailHeldBans fails every ban a pause held for target from trigger (its
-// message no longer counts as spam under the current config).
-func (s *Store) FailHeldBans(ctx context.Context, target, trigger, reason string) error {
+// FailHeldBan fails a ban a pause held: no post it stands for counts any more.
+func (s *Store) FailHeldBan(ctx context.Context, id int64, reason string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'failed', reason = ?, updated_at = ?
-WHERE action = 'ban' AND status = 'intended' AND target = ? AND trigger_id = ?`, reason, s.now().UnixMilli(), target, trigger)
-		return err
+		_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'failed', reason = ?, updated_at = ? WHERE id = ? AND status = 'intended'`,
+			reason, s.now().UnixMilli(), id)
+		if err != nil {
+			return fmt.Errorf("fail held ban: %w", err)
+		}
+		return nil
 	})
+}
+
+// SettleHeldBansIn marks requested every ban a pause holds for target that
+// scope covers: an admin's ban (ledger row id) put the member on the ban list
+// there at once. It runs in tx.
+func SettleHeldBansIn(ctx context.Context, tx *sql.Tx, target, scope string, id int64, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'requested', reason = reason || ?1, updated_at = ?2
+WHERE `+heldBan+` AND target = ?3 AND (?4 = '*' OR chat = ?4)`,
+		fmt.Sprintf(" (in force through ledger row %d)", id), now.UnixMilli(), target, scope)
+	if err != nil {
+		return fmt.Errorf("settle held bans: %w", err)
+	}
+	return nil
 }
 
 // DropHeldBans overturns every ban a pause holds for any of targets that
@@ -484,12 +505,23 @@ WHERE action = 'ban' AND status = 'intended' AND target IN (SELECT value FROM js
 	return nil
 }
 
-// HeldBan reports whether a pause holds a ban for target.
-func (s *Store) HeldBan(ctx context.Context, target string) (bool, error) {
+// HeldBan reports whether a pause holds a ban for any of targets that covers
+// community (as FindBan; "" for any scope).
+func (s *Store) HeldBan(ctx context.Context, targets []string, community string) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE action = 'ban' AND status = 'intended'
-	AND mode = 'enforce' AND target = ?`, target).Scan(&n)
-	return n > 0, err
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+`
+	AND target IN (SELECT value FROM json_each(?1)) AND (?2 = '' OR chat = '*' OR chat = ?2)`,
+		jsonList(targets), community).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("read held bans: %w", err)
+	}
+	return n > 0, nil
+}
+
+// HeldBans lists every ban a pause holds, oldest first (`ban list` shows them
+// beside the ban list: they apply after [Resume]).
+func (s *Store) HeldBans(ctx context.Context) ([]LedgerRow, error) {
+	return s.ledgerRows(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE `+heldBan+` ORDER BY id`)
 }
 
 // LedgerForTargets lists every row about any of the given member keys.
@@ -562,13 +594,13 @@ GROUP BY community, mode, action ORDER BY community, mode, action`)
 	return out, rows.Err()
 }
 
-// PurgeLedger deletes rows created before cutoff that are no longer queued,
-// with their report links.
+// PurgeLedger deletes rows created before cutoff that are neither queued nor
+// a held ban, with their report links.
 func (s *Store) PurgeLedger(ctx context.Context, cutoff time.Time) (int64, error) {
 	var n int64
 	err := s.Write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `DELETE FROM ledger WHERE created_at < ? AND id NOT IN (SELECT ledger_id FROM outbox)`,
-			cutoff.UnixMilli())
+		res, err := tx.ExecContext(ctx, `DELETE FROM ledger WHERE created_at < ? AND id NOT IN (SELECT ledger_id FROM outbox)
+	AND NOT `+heldBan, cutoff.UnixMilli())
 		if err != nil {
 			return err
 		}
