@@ -2,13 +2,17 @@ package telegram_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 	"unicode/utf16"
+
+	"github.com/go-telegram/bot/models"
 
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
@@ -305,5 +309,257 @@ func TestMemberTextNotLinked(t *testing.T) {
 	if !strings.HasPrefix(quoted.String(), "crypto https://example.org/x 🚀 tap /resume") ||
 		!strings.HasSuffix(quoted.String(), "/pause") {
 		t.Fatalf("the quoted spans do not run from the start to the end of the member's text: %.80q…", quoted.String())
+	}
+}
+
+// summaryCounters gives the day the clock is on enough counters for a daily
+// summary in several parts.
+func summaryCounters(t *testing.T, h *harness) {
+	t.Helper()
+	day := h.k.Clock.Now().UTC().Format(time.DateOnly)
+	if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
+		for i := 0; i < 300; i++ {
+			if err := store.IncrCounter(h.k.Ctx, tx, day, fmt.Sprintf("a counter the summary lists by name, number %03d", i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// postedOnce fails when two posts that went through carry the same text, and
+// returns the texts that went through, in order.
+func postedOnce(t *testing.T, posts []telegramtest.Request) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range posts {
+		if p.MessageID == 0 {
+			continue // refused, or told to wait
+		}
+		text := p.Params["text"]
+		if seen[text] {
+			t.Fatalf("a part was posted twice: %.80q…", text)
+		}
+		seen[text] = true
+		out = append(out, text)
+	}
+	return out
+}
+
+// TestLongSummaryPostsEachPartOnce: a daily summary in several parts that
+// Telegram interrupts (one part refused, a later one told to wait) resumes
+// after the last part posted: the refused part does not hold back the rest,
+// no part is posted twice, and the day is marked done.
+func TestLongSummaryPostsEachPartOnce(t *testing.T) {
+	h := newHarness(t, "")
+	h.drain() // the first run starts the summaries with today
+	summaryCounters(t, h)
+	h.k.Clock.Advance(24 * time.Hour)
+	h.srv.Fail("sendMessage", telegramtest.Reply{})
+	h.srv.Fail("sendMessage", telegramtest.Reply{Code: 400, Description: "Bad Request: something odd"})
+	h.srv.Fail("sendMessage", telegramtest.Reply{Code: 429, Description: "Too Many Requests: retry after 1", RetryAfter: 1})
+	if _, err := h.chat.Step(h.k.Ctx); err == nil {
+		t.Fatal("no error from the step Telegram told to wait")
+	}
+	if n := len(h.srv.Requests("sendMessage")); n != 3 {
+		t.Fatalf("%d sends before the wait, want 3: a part, the refused part, the part told to wait", n)
+	}
+	h.drain()
+	texts := postedOnce(t, h.srv.Requests("sendMessage"))
+	if len(texts) < 3 || !strings.HasPrefix(texts[0], "Daily summary for 2026-10-06") ||
+		!strings.Contains(texts[len(texts)-1], "number 299") {
+		t.Fatalf("%d parts posted; want the whole summary, first to last", len(texts))
+	}
+	if got := statusOf(t, h, store.StatusSummaryDay); got != "2026-10-06" {
+		t.Fatalf("summary day %q, want 2026-10-06", got)
+	}
+	n := len(h.srv.Requests("sendMessage"))
+	h.k.Clock.Advance(time.Hour)
+	h.drain()
+	if got := len(h.srv.Requests("sendMessage")); got != n {
+		t.Fatalf("%d more sends after the summary was done", got-n)
+	}
+	// The next day's summary starts from its first part, whatever the day
+	// before had posted.
+	h.k.Deliver(h.k.Msg("K1", modtest.G1, modtest.Member, "anyone into crypto?"))
+	h.drain()
+	h.k.Clock.Advance(24 * time.Hour)
+	h.drain()
+	if got := requests(h, "sendMessage", "Daily summary for 2026-10-07"); got != 1 {
+		t.Fatalf("%d summaries for the next day, want 1", got)
+	}
+}
+
+// TestRetryAfterARefusedFollowupPostsNoPartTwice: Telegram refuses one
+// follow-up, then tells a later part to wait; the retry resumes after the
+// last part posted, so no part goes twice and the message still ends.
+func TestRetryAfterARefusedFollowupPostsNoPartTwice(t *testing.T) {
+	h := newHarness(t, "")
+	var b strings.Builder
+	b.WriteString("crypto https://example.org/x\n")
+	for i := 0; i < 1500; i++ {
+		fmt.Fprintf(&b, "line %04d\n", i)
+	}
+	b.WriteString("THE END")
+	for _, r := range []telegramtest.Reply{{}, {Code: 400, Description: "Bad Request: something odd"}, {},
+		{Code: 429, Description: "Too Many Requests: retry after 1", RetryAfter: 1}} {
+		h.srv.Fail("sendMessage", r)
+	}
+	h.k.Deliver(h.k.Msg("F1", modtest.G1, modtest.Spammer, b.String()))
+	if _, err := h.chat.Step(h.k.Ctx); err == nil {
+		t.Fatal("no error from the step Telegram told to wait")
+	}
+	h.drain()
+	texts := postedOnce(t, h.srv.Posted())
+	if len(texts) < 3 || !strings.Contains(texts[len(texts)-1], "THE END") {
+		t.Fatalf("%d parts posted; want all but the refused one, through THE END", len(texts))
+	}
+	if r, ok, err := h.k.Store.Report(h.k.Ctx, h.only(ledger.KindAction).ID); err != nil || !ok || r.SentAt.IsZero() {
+		t.Fatalf("report not marked sent (%v)", err)
+	}
+}
+
+// TestFailingUploadDoesNotBlock: an attachment upload Telegram keeps failing
+// (a 500, not a refusal) is tried again after a wait, not on every step, so
+// the work behind it (the daily summary) still goes; after
+// report.attachment_show_hours it is given up: marked failed, its file kept
+// for the purge, and not tried again.
+func TestFailingUploadDoesNotBlock(t *testing.T) {
+	h := newHarness(t, "report:\n  attachment_show_hours: 47\n")
+	h.drain() // the first run starts the summaries with today
+	h.k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+	}
+	h.srv.FailAlways("sendDocument", telegramtest.Reply{Code: 500, Description: "Internal Server Error"})
+	h.k.Deliver(image(h.k.Spam("I1", modtest.G1)))
+	h.k.Deliver(h.k.Msg("K1", modtest.G1, modtest.Member, "anyone into crypto?"))
+	h.k.Fire()
+	if _, err := h.k.Media.Fetch(h.k.Ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	h.drain()
+	uploads := func() int { return len(h.srv.Requests("sendDocument")) }
+	if n := uploads(); n != 1 {
+		t.Fatalf("%d uploads, want 1 and then a wait", n)
+	}
+	evidence := func() store.Evidence {
+		t.Helper()
+		r, _, err := h.k.Store.Report(h.k.Ctx, h.only(ledger.KindAction).ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ev, ok, err := h.k.Store.Evidence(h.k.Ctx, r.EvidenceID)
+		if err != nil || !ok {
+			t.Fatalf("evidence of report %d: %v %v", r.ID, ok, err)
+		}
+		return ev
+	}
+	h.k.Clock.Advance(24 * time.Hour)
+	h.drain()
+	if n := requests(h, "sendMessage", "Daily summary for 2026-10-06"); n != 1 {
+		t.Fatalf("%d daily summaries while an upload kept failing, want 1", n)
+	}
+	if n, ev := uploads(), evidence(); n != 2 || ev.MediaState != store.MediaSaved {
+		t.Fatalf("%d uploads, attachment %s; want a second try, still saved", n, ev.MediaState)
+	}
+	h.k.Clock.Advance(24 * time.Hour)
+	h.drain()
+	if ev := evidence(); ev.MediaState != store.MediaFailed || ev.MediaPath == "" ||
+		!strings.Contains(ev.MediaError, "Telegram did not take the file") {
+		t.Fatalf("evidence %+v, want failed with its file kept", ev)
+	}
+	h.srv.Clear()
+	h.k.Clock.Advance(time.Hour)
+	h.drain()
+	if n := uploads(); n != 3 {
+		t.Fatalf("%d uploads, want 3 (none after giving up)", n)
+	}
+}
+
+// TestUploadDoesNotHoldTheSlot: while an attachment uploads (here after a
+// [Show attachment] press), a fatal alert still posts at once.
+func TestUploadDoesNotHoldTheSlot(t *testing.T) {
+	h := newHarness(t, "")
+	r := attachmentReport(t, h)
+	head := h.head(r.ID)
+	arrived, release := h.srv.Hold("sendDocument")
+	defer release()
+	pressed := make(chan struct{})
+	go func() {
+		defer close(pressed)
+		h.chat.Handle(h.k.Ctx, &models.Update{ID: 1, CallbackQuery: &models.CallbackQuery{ID: "q1",
+			From: models.User{ID: adminUser, FirstName: "Ann"},
+			Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: head,
+				Chat: models.Chat{ID: telegramtest.ChatID, Type: "supergroup"}}},
+			Data: "show:" + strconv.FormatInt(r.ID, 10)}})
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the [Show attachment] upload never started")
+	}
+	ctx, cancel := context.WithTimeout(h.k.Ctx, 2*time.Second)
+	defer cancel()
+	if err := h.chat.Alert(ctx, alert.Alert{Kind: alert.FatalDisconnect, Text: "logged out: re-pair"}); err != nil {
+		t.Fatalf("the fatal alert waited behind an upload: %v", err)
+	}
+	release()
+	<-pressed
+	if n := len(h.srv.Requests("sendDocument")); n != 2 {
+		t.Fatalf("%d uploads, want the first and the one shown again", n)
+	}
+}
+
+// TestMovedChatSettlesItsOldMessages: once the admin chat became a supergroup
+// its old messages can be neither edited nor deleted (Telegram answers with
+// the new ID): the text removal and the attachment take-down settle them
+// instead of failing on every step and holding up the work behind them.
+func TestMovedChatSettlesItsOldMessages(t *testing.T) {
+	const moved int64 = -1009999000077
+	upgraded := telegramtest.Reply{Code: 400, Description: "Bad Request: group chat was upgraded to a supergroup chat",
+		MigrateTo: moved}
+	t.Run("text removal", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Deliver(h.k.Spam("E1", modtest.G1))
+		h.drain()
+		h.srv.FailAlways("editMessageText", upgraded)
+		h.k.Clock.Advance(31 * 24 * time.Hour)
+		h.drain()
+		for _, m := range h.messages(h.only(ledger.KindAction).ID) {
+			if m.StrippedAt.IsZero() {
+				t.Fatalf("message %+v: its text removal never settled", m)
+			}
+		}
+		if h.chat.ChatID() != moved {
+			t.Fatalf("chat %d, want the new ID %d", h.chat.ChatID(), moved)
+		}
+	})
+	t.Run("attachment take-down", func(t *testing.T) {
+		h := newHarness(t, "")
+		attachmentReport(t, h)
+		h.srv.FailAlways("deleteMessage", upgraded)
+		h.srv.FailAlways("editMessageMedia", upgraded)
+		h.k.Clock.Advance(25 * time.Hour)
+		h.drain()
+		if attachmentPost(t, h).GoneAt.IsZero() {
+			t.Fatal("the take-down never settled")
+		}
+	})
+}
+
+// TestUploadsGetTheirOwnTimeout: the bot's HTTP client gives a file upload
+// five minutes (the largest attachment kept, at 1.5 Mbit/s) and every other
+// request the minute the library gives it.
+func TestUploadsGetTheirOwnTimeout(t *testing.T) {
+	for method, want := range map[string]time.Duration{"sendDocument": 5 * time.Minute,
+		"editMessageMedia": 5 * time.Minute, "sendMessage": time.Minute, "editMessageText": time.Minute,
+		"getUpdates": time.Minute} {
+		if got := telegram.RequestTimeout(method); got != want {
+			t.Errorf("%s: timeout %s, want %s", method, got, want)
+		}
 	}
 }
