@@ -172,7 +172,8 @@ func (e *env) run(args []string) int {
 	phone := fs.String("phone", "", "pair with a code for this number (digits with country code)")
 	secrets := fs.Bool("secrets", false, "check every provisioning input")
 	corpusDir := fs.String("corpus", "", "corpus directory (spam/ and legit/<class>/)")
-	community := fs.String("community", "", "the community a ban applies to (bans.scope per_community)")
+	community := fs.String("community", "", "the community a ban is added to or lifted in (bans.scope per_community only; "+
+		"ban remove without it lifts every ban)")
 	label := fs.String("label", "", "corpus add: spam or legit")
 	sampleType := fs.String("type", "", "corpus add: text, image-caption, poll, contact, invite or event")
 	pushName := fs.String("push-name", "", "corpus add: the sender's display name")
