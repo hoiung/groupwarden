@@ -311,6 +311,8 @@ func TestStuckRowSetAside(t *testing.T) {
 	s := open(t, filepath.Join(t.TempDir(), "g.db"), t0)
 	dec := &failOn{bad: "BAD", flaky: "FLAKY", flakyFails: maxDecideTries - 1}
 	w := worker(s, dec)
+	var logs bytes.Buffer
+	w.Log = slog.New(slog.NewTextHandler(&logs, nil))
 	woken := 0
 	w.Wake = func() { woken++ }
 	for _, id := range []string{"FLAKY", "BAD", "GOOD"} {
@@ -355,6 +357,13 @@ func TestStuckRowSetAside(t *testing.T) {
 	}
 	if strings.Contains(reps[0].Text, "99999000000111") {
 		t.Fatalf("report names the group unmasked: %q", reps[0].Text)
+	}
+	if n := strings.Count(logs.String(), `msg="setting aside an inbox item whose decision keeps failing"`); n != 1 {
+		t.Fatalf("%d set-aside log lines, want 1:\n%s", n, logs.String())
+	}
+	// Its seen record keeps its time, so a later edit of it is aged by it.
+	if at, ok, err := s.SeenTime(ctx, "99999000000111@g.us", "BAD"); err != nil || !ok || !at.Equal(t0) {
+		t.Fatalf("seen time of the set-aside message = %v, %v, %v; want %v", at, ok, err, t0)
 	}
 	// A redelivery of the set-aside message is ignored.
 	if err := w.Inbox.Persist(msg("BAD", "hello", t0)); err != nil {
