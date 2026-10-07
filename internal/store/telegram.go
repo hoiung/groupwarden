@@ -25,6 +25,9 @@ type TGMessage struct {
 	Role      string
 	ChatID    int64
 	MessageID int
+	// Part is which part of its report (0 the report itself, then its
+	// follow-ups) or of the daily summary the message is.
+	Part int
 	// Stripped is what the message becomes once the member's message text is
 	// removed ("" when it never carried any).
 	Stripped   string
@@ -35,15 +38,23 @@ type TGMessage struct {
 
 // AddTGMessage records a posted message.
 func (s *Store) AddTGMessage(ctx context.Context, m TGMessage) error {
+	return s.AddTGMessageStatus(ctx, m, nil)
+}
+
+// AddTGMessageStatus records a posted message and writes the status keys kv
+// in one transaction (a summary part and the count of parts posted).
+func (s *Store) AddTGMessageStatus(ctx context.Context, m TGMessage, kv map[string]string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `INSERT INTO tg_messages (report_id, role, chat_id, message_id, stripped, sent_at)
-VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
-			nullID(m.ReportID), m.Role, m.ChatID, m.MessageID, m.Stripped, m.SentAt.UnixMilli())
-		return err
+		if _, err := tx.ExecContext(ctx, `INSERT INTO tg_messages (report_id, role, chat_id, message_id, part, stripped,
+	sent_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+			nullID(m.ReportID), m.Role, m.ChatID, m.MessageID, m.Part, m.Stripped, m.SentAt.UnixMilli()); err != nil {
+			return err
+		}
+		return setStatusIn(ctx, tx, kv, s.now())
 	})
 }
 
-const tgCols = `id, COALESCE(report_id, 0), role, chat_id, message_id, stripped, sent_at, COALESCE(stripped_at, 0),
+const tgCols = `id, COALESCE(report_id, 0), role, chat_id, message_id, part, stripped, sent_at, COALESCE(stripped_at, 0),
 	COALESCE(gone_at, 0)`
 
 func (s *Store) tgMessages(ctx context.Context, query string, args ...any) ([]TGMessage, error) {
@@ -56,7 +67,8 @@ func (s *Store) tgMessages(ctx context.Context, query string, args ...any) ([]TG
 	for rows.Next() {
 		var m TGMessage
 		var sent, stripped, gone int64
-		if err := rows.Scan(&m.ID, &m.ReportID, &m.Role, &m.ChatID, &m.MessageID, &m.Stripped, &sent, &stripped, &gone); err != nil {
+		if err := rows.Scan(&m.ID, &m.ReportID, &m.Role, &m.ChatID, &m.MessageID, &m.Part, &m.Stripped, &sent, &stripped,
+			&gone); err != nil {
 			return nil, fmt.Errorf("read admin-chat messages: %w", err)
 		}
 		m.SentAt, m.StrippedAt, m.GoneAt = time.UnixMilli(sent), msTime(stripped), msTime(gone)
@@ -249,6 +261,23 @@ func (s *Store) ReleasePress(ctx context.Context, reportID int64, button string)
 		_, err := tx.ExecContext(ctx, `DELETE FROM tg_presses WHERE report_id = ? AND button = ?`, reportID, button)
 		return err
 	})
+}
+
+// ReleaseUnfinishedPresses forgets every press a run claimed and never
+// recorded a result for (it stopped or crashed in between), so it can be
+// pressed again; every press's action is safe to run twice. Only for the start
+// of a run, before any press is taken. It returns how many it released.
+func (s *Store) ReleaseUnfinishedPresses(ctx context.Context) (int64, error) {
+	var n int64
+	err := s.Write(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `DELETE FROM tg_presses WHERE result = ''`)
+		if err != nil {
+			return err
+		}
+		n, err = res.RowsAffected()
+		return err
+	})
+	return n, err
 }
 
 // UnsentReportsExcept lists undelivered reports of any kind but skip,
