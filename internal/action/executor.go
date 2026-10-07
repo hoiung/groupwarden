@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -129,6 +128,13 @@ func (x *Executor) Run(ctx context.Context) {
 func (x *Executor) Step(ctx context.Context) (bool, error) {
 	x.init()
 	allowDelete, allowRemove := x.allowed(ctx)
+	// Bans a pause held settle first, so a removal after [Resume] finds its
+	// target on the ban list.
+	if allowRemove {
+		if settled, err := x.settleHeldBan(ctx); err != nil || settled {
+			return settled, err
+		}
+	}
 	row, ok, err := x.Store.NextDue(ctx, x.Now(), allowDelete, allowRemove)
 	if err != nil || !ok {
 		return false, err
@@ -310,9 +316,8 @@ type verdict struct {
 // breaker): the target scope must be in enforce mode, no pause may cover the
 // action, the current config must still decide it, the target must still be
 // banned, a delete's message must still be young enough, and the target must
-// not be a current admin. A ban a pause held is applied here by the target's
-// first removal whose message still counts, and failed when the message no
-// longer does.
+// not be a current admin. A ban a pause held is settled before any of this
+// (settleHeldBan), so a removal finds it applied or failed.
 func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, error) {
 	if paused, why := x.Store.PausedFor(ctx, store.ScopeOf(row.Action)); paused {
 		return verdict{outcome: hold, reason: why}, nil
@@ -326,39 +331,8 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 		return verdict{outcome: shadow, reason: row.Community + " is in shadow mode"}, nil
 	}
 	if row.EvidenceID != 0 {
-		ev, ok, err := x.Store.Evidence(ctx, row.EvidenceID)
-		if err != nil {
-			return verdict{}, err
-		}
-		if !ok {
-			return verdict{outcome: fail, reason: "the evidence copy is gone (purged or forgotten)"}, nil
-		}
-		msg, err := evidenceMessage(ev)
-		if err != nil {
-			return verdict{outcome: fail, reason: err.Error()}, nil
-		}
-		d, community, hash := x.Moderator.Evaluate(msg)
-		reason := ""
-		switch {
-		case d.Action != rules.DeleteRemoveBan:
-			reason = "the current config (v" + hash + ") no longer acts on this message"
-		case row.Action != store.ActRevoke && !slices.Contains(d.BanIn, row.Community):
-			reason = "the current ban scope no longer covers " + row.Community
-		}
-		if reason != "" {
-			if err := x.Store.FailHeldBans(ctx, row.Target, row.TriggerID, reason); err != nil {
-				return verdict{}, err
-			}
-			return verdict{outcome: fail, reason: reason}, nil
-		}
-		if row.Action != store.ActRevoke {
-			n, err := x.Store.ApplyHeldBans(ctx, row.Target, pipeline.BanScopes(cur.Rules, community))
-			if err != nil {
-				return verdict{}, err
-			}
-			if n > 0 {
-				x.Log.Info("held ban applied", "target", mask.IDs(row.Target), "bans", n, "config", "v"+hash)
-			}
+		if why, err := x.postsCount(ctx, row); err != nil || why != "" {
+			return verdict{outcome: fail, reason: why}, err
 		}
 	}
 	member := x.Directory.Complete(client.MemberOf(client.JID(row.Target), client.JID(row.Address)))
@@ -367,7 +341,7 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 		return verdict{}, err
 	}
 	if !banned {
-		return verdict{outcome: fail, reason: "the member was unbanned"}, nil
+		return verdict{outcome: fail, reason: "the member is not banned in " + row.Community}, nil
 	}
 	// Only a delete has a deadline: WhatsApp's admin delete window. A removal
 	// is due however long a pause held it.
@@ -384,6 +358,81 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 	return verdict{outcome: proceed}, nil
 }
 
+// postsCount reports why row no longer acts ("" when it still does): a row
+// stands for every post linked to it (a later post by the same member reuses
+// the first one's rows), and it acts while any of them is still a
+// delete-remove-ban match in the community it was posted in. Where the member
+// is banned is the ban list's to say (banned), so the current ban scope is
+// not read here. A row whose post copies are all gone (a member forget) keeps
+// its decision: the admins were told of it and nothing has refuted it.
+func (x *Executor) postsCount(ctx context.Context, row store.LedgerRow) (string, error) {
+	ids, err := x.Store.PostsOf(ctx, row.ID)
+	if err != nil {
+		return "", err
+	}
+	why := ""
+	for _, id := range ids {
+		ev, ok, err := x.Store.Evidence(ctx, id)
+		if err != nil || !ok {
+			if err != nil {
+				return "", err
+			}
+			continue
+		}
+		msg, err := evidenceMessage(ev)
+		if err != nil {
+			why = err.Error()
+			continue
+		}
+		d, hash := x.Moderator.EvaluateIn(msg, ev.Community)
+		if d.Action == rules.DeleteRemoveBan {
+			return "", nil
+		}
+		why = "the current config (v" + hash + ") no longer acts on this message"
+	}
+	return why, nil
+}
+
+// settleHeldBan settles the oldest ban a pause held, once no pause covers
+// bans: applied in the current config's scopes for its community when any
+// post it stands for still counts, failed when none does. settled is false
+// when no ban is held.
+func (x *Executor) settleHeldBan(ctx context.Context) (settled bool, err error) {
+	row, ok, err := x.Store.NextHeldBan(ctx)
+	if err != nil || !ok {
+		return false, err
+	}
+	cur := x.Config.Current()
+	why := ""
+	switch mode, configured := cur.Rules.ModeFor(row.Community); {
+	case !configured:
+		why = row.Community + " is no longer a configured community"
+	case mode != rules.Enforce:
+		why = row.Community + " is in shadow mode"
+	default:
+		if why, err = x.postsCount(ctx, row); err != nil {
+			return false, err
+		}
+	}
+	if why != "" {
+		if err := x.Store.FailHeldBan(ctx, row.ID, why); err != nil {
+			return false, err
+		}
+		x.Log.Info("held ban failed", "target", mask.IDs(row.Target), "ledger", row.ID, "reason", why)
+		return true, nil
+	}
+	scopes := pipeline.BanScopes(cur.Rules, row.Community)
+	applied, err := x.Store.ApplyHeldBan(ctx, row, scopes)
+	if err != nil {
+		return false, err
+	}
+	if applied {
+		x.Log.Info("held ban applied", "target", mask.IDs(row.Target), "ledger", row.ID, "scopes", scopes,
+			"config", "v"+cur.Hash)
+	}
+	return true, nil
+}
+
 // banned reports whether the row's target is still banned: on the ban list
 // for the row's community, or (for a delete, which a remove-and-ban pause
 // does not hold) with a ban a pause holds.
@@ -392,7 +441,7 @@ func (x *Executor) banned(ctx context.Context, row store.LedgerRow, member clien
 	if err != nil || banned || row.Action != store.ActRevoke {
 		return banned, err
 	}
-	return x.Store.HeldBan(ctx, row.Target)
+	return x.Store.HeldBan(ctx, []string{row.Target}, "")
 }
 
 // send makes the WhatsApp call and records its result.
