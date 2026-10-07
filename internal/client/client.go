@@ -107,6 +107,10 @@ var ErrRateLimited = errors.New("WhatsApp rate limit")
 // bot is not an admin there.
 var ErrNotAdmin = errors.New("the bot is not an admin there")
 
+// ErrNotConnected is returned (wrapped) when a call could not be made
+// because the connection to WhatsApp is down; it never reached WhatsApp.
+var ErrNotConnected = errors.New("not connected to WhatsApp")
+
 // ErrMediaTooLarge is returned (wrapped) by DownloadMedia for an attachment
 // over the size it was allowed.
 var ErrMediaTooLarge = errors.New("attachment over the size limit")
