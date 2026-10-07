@@ -155,11 +155,16 @@ func (a *Admin) Ban(ctx context.Context, reportID int64, actor string) (Banned, 
 	m := a.Directory.Complete(client.MemberOf(client.JID(ev.Sender), client.JID(ev.SenderAlt)))
 	cur := a.Config.Current()
 	now := a.Store.Now()
+	// An edit is aged by its original's time: the message the delete targets.
+	sent, err := targetSent(ctx, a.Store, ev.Chat, ev.MsgID, ev.TargetID, ev.MsgTime)
+	if err != nil {
+		return Banned{}, err
+	}
 	var del *ledger.Intent
-	tooOld := now.Sub(ev.MsgTime) > time.Duration(cur.Config.ActOnReplayMaxAge)
+	tooOld := now.Sub(sent) > time.Duration(cur.Config.ActOnReplayMaxAge)
 	if !tooOld {
 		del = &ledger.Intent{Action: store.ActRevoke, Chat: client.JID(ev.Chat), Community: r.Community,
-			Address: client.JID(ev.Sender), MsgID: ev.TargetID, MsgTime: ev.MsgTime}
+			Address: client.JID(ev.Sender), MsgID: ev.TargetID, MsgTime: sent}
 	}
 	out, err := a.banPlan(ctx, ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonBan), Target: m, Rule: ev.Rule,
 		Reason: "banned in the admin chat by " + actor}, r.Community, client.JID(ev.Chat), del, actor)
