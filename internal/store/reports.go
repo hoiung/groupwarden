@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/hoiung/groupwarden/internal/alert"
 )
 
 // Report is one message for the admin chat, mapped to the ledger rows it is
@@ -23,10 +25,12 @@ type Report struct {
 	SentAt     time.Time
 }
 
-// InsertReport writes r and its ledger links inside tx.
+// InsertReport writes r and its ledger links inside tx. A report of an alert
+// kind in the priority set (AC 4.1) is priority whoever wrote it.
 func InsertReport(ctx context.Context, tx *sql.Tx, r Report, ledgerIDs []int64, now time.Time) (int64, error) {
+	priority := r.Priority || alert.Kind(r.Kind).Priority()
 	res, err := tx.ExecContext(ctx, `INSERT INTO reports (kind, priority, community, subject, evidence_id, text, buttons, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, r.Kind, r.Priority, r.Community, r.Subject, nullID(r.EvidenceID), r.Text,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, r.Kind, priority, r.Community, r.Subject, nullID(r.EvidenceID), r.Text,
 		strings.Join(r.Buttons, ","), now.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("report insert: %w", err)
