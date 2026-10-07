@@ -16,7 +16,7 @@ backup:
   target_dir: /srv/backup/groupwarden
   # age_recipient: "age1..."   # public key the nightly backups are encrypted to
 
-# corpus_dir: /etc/groupwarden/corpus   # every load must catch all spam and no legit sample
+# corpus_dir: corpus   # relative to this file, so it moves with each synced copy; every load must catch all spam and no legit sample
 
 # The daily "alive and working" post in the admin chat, in the node's local
 # time zone (HH:MM, 24-hour).
