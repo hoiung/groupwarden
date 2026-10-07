@@ -24,10 +24,15 @@ func exampleConfig(t *testing.T, dataDir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := strings.Replace(string(raw), "data_dir: /var/lib/groupwarden", "data_dir: "+dataDir, 1)
-	s = strings.Replace(s, "# corpus_dir: /etc/groupwarden/corpus", "corpus_dir: corpus", 1)
-	if s == string(raw) || !strings.Contains(s, "corpus_dir: corpus") {
-		t.Fatal("the example config no longer has the lines this test fills in")
+	s := string(raw)
+	for _, r := range [][2]string{
+		{"\ndata_dir: /var/lib/groupwarden\n", "\ndata_dir: " + dataDir + "\n"},
+		{"\n# corpus_dir: corpus ", "\ncorpus_dir: corpus "},
+	} {
+		if strings.Count(s, r[0]) != 1 {
+			t.Fatalf("the example config no longer has the line %q this test fills in", r[0])
+		}
+		s = strings.Replace(s, r[0], r[1], 1)
 	}
 	return s
 }
