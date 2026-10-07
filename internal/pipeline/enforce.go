@@ -103,8 +103,9 @@ func eventID(prefix, key string) string {
 
 // OnGroupChange records what a membership change means, inside the decision
 // transaction: a banned person who joined is removed (or, when a current
-// human admin added them, the ban is lifted); a human admin removing
-// someone offers [Add to ban list] [No]; the directory learns the change.
+// human admin added them, their ban in that community is lifted); a human
+// admin removing someone offers [Add to ban list] [No]; the directory learns
+// the change.
 func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.GroupChange, now time.Time) error {
 	cur := e.Config.Current()
 	rs := cur.Rules
@@ -139,7 +140,7 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 		case humanAdmin && actor != j.Bare() && client.JID(m.Key()) != actor:
 			e.Log.Info("ban lifted: a human admin re-added a banned member", "community", mask.IDs(community),
 				"group", mask.IDs(string(ch.Group)), "member", mask.IDs(m.Key()), "actor", mask.IDs(string(actor)))
-			p.Lift, p.BanCommunity, p.Reason = true, community, "ban lifted by human re-add"
+			p.Lift, p.LiftIn, p.BanCommunity, p.Reason = true, community, community, "ban lifted by human re-add"
 			p.Reports = []store.Report{{Kind: ledger.KindBanLifted, Community: community, Text: fmt.Sprintf(
 				"A human admin re-added a banned member to a group in %s: the ban is lifted (their next spam post is deleted, removed and banned again).",
 				community)}}
