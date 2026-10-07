@@ -133,6 +133,46 @@ func TestKeywordOnlyDailySummary(t *testing.T) {
 	}
 }
 
+// TestCommunityNamedOnlyWhereMeant: a standalone set's key is free text, so it
+// can be a word the reports use ("an admin") or part of a rule name. The
+// admins see the set's name where the text means the set, and every other
+// word and the rule name as written.
+func TestCommunityNamedOnlyWhereMeant(t *testing.T) {
+	cfg := strings.Replace(modtest.Config, "  set-b:\n    name: set b\n", "  admin:\n    name: Admin team groups\n", 1)
+	cfg = strings.Replace(cfg, "    - name: pitch\n", "    - name: admin-pitch\n", 1)
+	h := newHarnessKit(t, modtest.NewConfig(t, cfg))
+	h.drain() // the first run starts the summaries with today
+	h.k.Deliver(h.k.Msg("K1", modtest.GB, modtest.Member, "anyone into crypto?"))
+	h.k.Deliver(h.k.Msg("A1", modtest.GB, modtest.Admin, modtest.SpamText))
+	h.k.Deliver(h.k.Msg("M1", modtest.GB, modtest.Member, modtest.SpamText))
+	h.k.Fire()
+	h.k.Ban(client.Member{LID: modtest.Other1})
+	h.k.Deliver(&client.GroupChange{Group: modtest.GB, Time: h.k.Clock.Now(), Joined: []client.JID{modtest.Other1}})
+	h.drain()
+	h.k.Clock.Advance(24 * time.Hour)
+	h.drain()
+	var all strings.Builder
+	for _, p := range h.srv.Posted() {
+		all.WriteString(p.Params["text"] + "\n")
+	}
+	text := all.String()
+	for _, want := range []string{
+		"Rule admin-pitch matched a post in Admin team groups by an admin: reported only.",
+		"Spam in Admin team groups matched rule admin-pitch: the post is deleted",
+		"A banned member joined a group in Admin team groups and WhatsApp did not say who added them",
+		"Keyword-only posts not acted on in Admin team groups: crypto 1",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the admin chat lacks %q; it got:\n%s", want, text)
+		}
+	}
+	for _, bad := range []string{"an Admin team groups", "Admin team groups-pitch"} {
+		if strings.Contains(text, bad) {
+			t.Errorf("the set's name replaced a word that is not the set: %q in\n%s", bad, text)
+		}
+	}
+}
+
 // TestOutboxPersistedAcrossRestart: a report Telegram never took, and one
 // cut off part-way, go out after a restart, each part exactly once.
 func TestOutboxPersistedAcrossRestart(t *testing.T) {
