@@ -69,8 +69,8 @@ func TestAtomicSwap(t *testing.T) {
 					return
 				default:
 				}
-				d, community, hash := m.Evaluate(msg)
-				ok := community == "test-set" && ((hash == hashA && d.Rule == "rule-a") || (hash == hashB && d.Rule == "rule-b"))
+				d, hash := m.EvaluateIn(msg, "test-set")
+				ok := (hash == hashA && d.Rule == "rule-a") || (hash == hashB && d.Rule == "rule-b")
 				if !ok {
 					t.Errorf("mixed decision: rule %q under config v%s", d.Rule, hash)
 					return
