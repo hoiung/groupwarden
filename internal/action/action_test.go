@@ -167,6 +167,9 @@ func TestFanOutHonoursTargetScopeMode(t *testing.T) {
 	if reps := k.Reports(ledger.KindWouldRemove); len(reps) == 0 {
 		t.Fatal("no would-remove report")
 	}
+	if k.Logged("action moved to shadow") == 0 {
+		t.Fatal("no log line for the actions moved to shadow")
+	}
 	if n, _ := k.Store.OutboxLen(k.Ctx); n != 0 {
 		t.Fatalf("outbox still holds %d rows", n)
 	}
