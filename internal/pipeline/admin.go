@@ -130,6 +130,10 @@ type Banned struct {
 	Deleting, TooOld bool
 	Removals         int
 	Shadow           bool // the community is in shadow mode: recorded only
+	// Paused is the pause in force when the ban was written ("": none): the
+	// ban applies at once, but the removals (and, under store.ScopeAll, the
+	// delete) wait for it to end.
+	Paused store.Scope
 }
 
 // Ban acts on a watch-only ("would have acted") report: it deletes the
@@ -215,8 +219,10 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 	p.ConfigHash, p.Actor = cur.Hash, client.JID(actor)
 	p.Ban, p.BanEnforce, p.BanCommunity = BanScopes(rs, community), enforce, community
 	var w ledger.Written
+	var paused store.Scope
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
 		var err error
+		paused = pausedScope(ctx, tx, a.Store)
 		w, err = ledger.Write(ctx, tx, p, a.Store.Now())
 		return err
 	}); err != nil {
@@ -227,7 +233,8 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 	}
 	a.Log.Info("admin ban", "trigger", p.Trigger, "target", mask.IDs(p.Target.Key()), "delete", del != nil,
 		"removals", len(removals), "queued", w.Queued, "enforce", enforce, "by", actor)
-	return Banned{Member: p.Target, Deleting: del != nil && enforce, Removals: len(removals), Shadow: !enforce}, nil
+	return Banned{Member: p.Target, Deleting: del != nil && enforce, Removals: len(removals), Shadow: !enforce,
+		Paused: paused}, nil
 }
 
 // report reads a report or says it is gone.
