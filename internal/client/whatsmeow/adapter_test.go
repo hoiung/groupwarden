@@ -511,8 +511,10 @@ func TestPermanentDisconnectClassification(t *testing.T) {
 	a.handle(&events.TemporaryBan{Expire: time.Hour})
 	a.handle(&events.Disconnected{})
 	a.handle(&events.Connected{})
+	a.handle(&events.OfflineSyncCompleted{Count: 42})
 	got := sink.lifecycles()
-	want := []client.LifecycleKind{client.StreamReplaced, client.TemporaryBan, client.Disconnected, client.Connected}
+	want := []client.LifecycleKind{client.StreamReplaced, client.TemporaryBan, client.Disconnected, client.Connected,
+		client.CaughtUp}
 	if len(got) != len(want) || len(sink.events()) != 0 {
 		t.Fatalf("lifecycle %+v persisted %d", got, len(sink.events()))
 	}
@@ -520,6 +522,44 @@ func TestPermanentDisconnectClassification(t *testing.T) {
 		if got[i].Kind != want[i] {
 			t.Fatalf("lifecycle %d = %s, want %s", i, got[i].Kind, want[i])
 		}
+	}
+	if d := got[len(got)-1].Detail; d != "42 offline events" {
+		t.Errorf("caught up detail %q", d)
+	}
+}
+
+// TestJoinedGroupCarriesTheGroup: the bot joining (or being added to) a group
+// is persisted with the group as the notification describes it: its
+// community, name, members and admins by both addresses.
+func TestJoinedGroupCarriesTheGroup(t *testing.T) {
+	sink := &fakeSink{}
+	a := newTestAdapter(t, &fakeWA{offline: true}, sink)
+	g := types.NewJID("99999000000111", types.GroupServer)
+	community := types.NewJID("99999000000999", types.GroupServer)
+	adminLID := types.NewJID("99999000000444", types.HiddenUserServer)
+	adminTel := types.NewJID("447700900123", types.DefaultUserServer)
+	member := types.NewJID("99999000000555", types.HiddenUserServer)
+	info := types.GroupInfo{JID: g, GroupName: types.GroupName{Name: "general"},
+		GroupLinkedParent: types.GroupLinkedParent{LinkedParentJID: community},
+		Participants: []types.GroupParticipant{{JID: adminLID, LID: adminLID, PhoneNumber: adminTel, IsAdmin: true},
+			{JID: member, LID: member}}}
+	if !a.handle(&events.JoinedGroup{Reason: "invite", GroupInfo: info}) {
+		t.Fatal("not acknowledged")
+	}
+	evs := sink.events()
+	if len(evs) != 1 {
+		t.Fatalf("persisted %d events", len(evs))
+	}
+	j, ok := evs[0].(*client.JoinedGroup)
+	if !ok {
+		t.Fatalf("persisted %T", evs[0])
+	}
+	want := client.Group{JID: client.JID(g.String()), Name: "general", Parent: client.JID(community.String()),
+		Participants: []client.Participant{
+			{JID: client.JID(adminLID.String()), Phone: client.JID(adminTel.String()), LID: client.JID(adminLID.String()), IsAdmin: true},
+			{JID: client.JID(member.String()), LID: client.JID(member.String())}}}
+	if j.Group != want.JID || j.Reason != "invite" || !reflect.DeepEqual(j.Info, want) {
+		t.Fatalf("joined %+v, want info %+v", j, want)
 	}
 }
 
