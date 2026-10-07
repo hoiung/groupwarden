@@ -215,13 +215,13 @@ func (e *Enforcer) selfChange(ctx context.Context, tx *sql.Tx, ch *client.GroupC
 	state := ""
 	if slices.ContainsFunc(ch.Demoted, e.Directory.IsSelf) {
 		state = store.CoverageNotAdmin
-		reps = append(reps, store.Report{Kind: string(alert.BotDemoted), Priority: true, Community: community,
+		reps = append(reps, store.Report{Kind: string(alert.BotDemoted), Community: community,
 			Text: fmt.Sprintf("The bot is no longer an admin in %s (%s): it cannot delete or remove there "+
 				"until a human admin promotes it again.", label, cname)})
 	}
 	if slices.ContainsFunc(ch.Left, e.Directory.IsSelf) {
 		state = store.CoverageAbsent
-		reps = append(reps, store.Report{Kind: string(alert.BotRemoved), Priority: true, Community: community,
+		reps = append(reps, store.Report{Kind: string(alert.BotRemoved), Community: community,
 			Text: fmt.Sprintf("The bot was removed from %s (%s): that group is not moderated until a "+
 				"human admin adds the bot back and promotes it.", label, cname)})
 	}
