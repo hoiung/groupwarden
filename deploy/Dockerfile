@@ -20,6 +20,9 @@ COPY --from=build /out/groupwarden /groupwarden
 COPY --from=build --chown=nonroot:nonroot /out/data /data
 USER nonroot:nonroot
 ENV GROUPWARDEN_CONFIG=/config/config.yaml
+# No config sync timer runs here (a changed config is reloaded with SIGHUP),
+# so the bot does not alert that the sync is overdue.
+ENV GROUPWARDEN_NO_SYNC_TIMER=1
 VOLUME ["/data"]
 # Healthy = connected, not deaf, config loaded, admin chat reached (the same
 # checks as the systemd install's health check).
