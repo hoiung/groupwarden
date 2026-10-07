@@ -117,6 +117,7 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 	if community == "" {
 		return nil
 	}
+	where := CommunityLabel(cur.Config, community)
 	if err := e.selfChange(ctx, tx, ch, community, name, now); err != nil {
 		return err
 	}
@@ -143,24 +144,24 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 			p.Lift, p.LiftIn, p.BanCommunity, p.Reason = true, community, community, "ban lifted by human re-add"
 			p.Reports = []store.Report{{Kind: ledger.KindBanLifted, Community: community, Text: fmt.Sprintf(
 				"A human admin re-added a banned member to a group in %s: the ban is lifted (their next spam post is deleted, removed and banned again).",
-				community)}}
+				where)}}
 		default:
 			intents, ok := e.Removals(m, []string{community}, ch.Group, rs)
 			if !ok {
-				p.Reports = []store.Report{e.adminSpared(community)}
+				p.Reports = []store.Report{adminSpared(community, where)}
 				break
 			}
 			p.Intents, p.Reason = intents, "banned member joined"
 			rep := store.Report{Kind: ledger.KindBannedRejoin, Community: community, Buttons: []string{ledger.ButtonUndo},
-				Text: fmt.Sprintf("A banned member joined a group in %s (%s): removed.", community, joinHow(ch))}
+				Text: fmt.Sprintf("A banned member joined a group in %s (%s): removed.", where, joinHow(ch))}
 			switch {
 			case !enforced(rs, community):
 				rep = store.Report{Kind: ledger.KindWouldRemove, Community: community, Text: fmt.Sprintf(
 					"A banned member joined a group in %s (%s): they would be removed, but it is in shadow mode: not done.",
-					community, joinHow(ch))}
+					where, joinHow(ch))}
 			case actor == "":
 				rep.Kind, rep.Priority = ledger.KindUnknownActor, true
-				rep.Text = fmt.Sprintf("A banned member joined a group in %s and WhatsApp did not say who added them: removed. If an admin added them on purpose, press [Undo].", community)
+				rep.Text = fmt.Sprintf("A banned member joined a group in %s and WhatsApp did not say who added them: removed. If an admin added them on purpose, press [Undo].", where)
 			}
 			e.Log.Info("banned member joined; removal planned", "community", mask.IDs(community),
 				"group", mask.IDs(string(ch.Group)), "member", mask.IDs(m.Key()), "actor_known", actor != "",
@@ -194,7 +195,7 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 			p := ledger.Plan{Trigger: eventID("left:", ch.DedupeKey()+string(l)), Target: m, ConfigHash: cur.Hash, Actor: actor,
 				Reports: []store.Report{{Kind: ledger.KindHumanRemoval, Community: community,
 					Buttons: []string{ledger.ButtonAddToBanList, ledger.ButtonNo},
-					Text:    fmt.Sprintf("A human admin removed a member from a group in %s. Add them to the ban list?", community)}}}
+					Text:    fmt.Sprintf("A human admin removed a member from a group in %s. Add them to the ban list?", where)}}}
 			if _, err := ledger.Write(ctx, tx, p, now); err != nil {
 				return err
 			}
@@ -241,9 +242,11 @@ func (e *Enforcer) selfChange(ctx context.Context, tx *sql.Tx, ch *client.GroupC
 	return nil
 }
 
-func (e *Enforcer) adminSpared(community string) store.Report {
+// adminSpared is the report about a banned member the bot did not remove
+// because they are a current admin; where names the community.
+func adminSpared(community, where string) store.Report {
 	return store.Report{Kind: ledger.KindAdminSpared, Priority: true, Community: community,
-		Text: fmt.Sprintf("A banned member is a current admin in %s, so the bot did not remove them. An admin must decide.", community)}
+		Text: fmt.Sprintf("A banned member is a current admin in %s, so the bot did not remove them. An admin must decide.", where)}
 }
 
 func joinHow(ch *client.GroupChange) string {
@@ -271,7 +274,7 @@ func (e *Enforcer) CheckPresent(ctx context.Context, group client.JID, runID str
 		if e.Directory.IsSelf(m.LID) || e.Directory.IsSelf(m.Phone) {
 			continue
 		}
-		if err := e.enforceBan(ctx, m, group, community, store.ActRemove, runID, cur.Hash, rs); err != nil {
+		if err := e.enforceBan(ctx, m, group, community, store.ActRemove, runID, cur); err != nil {
 			return err
 		}
 	}
@@ -293,7 +296,7 @@ func (e *Enforcer) CheckJoinRequests(ctx context.Context, group client.JID, runI
 	}
 	for _, r := range reqs {
 		m := e.Directory.Complete(client.MemberOf(r.JID))
-		if err := e.enforceBan(ctx, m, group, community, store.ActReject, runID, cur.Hash, rs); err != nil {
+		if err := e.enforceBan(ctx, m, group, community, store.ActReject, runID, cur); err != nil {
 			return err
 		}
 	}
@@ -302,7 +305,8 @@ func (e *Enforcer) CheckJoinRequests(ctx context.Context, group client.JID, runI
 
 // enforceBan plans removing (or rejecting) m in group when they are banned.
 func (e *Enforcer) enforceBan(ctx context.Context, m client.Member, group client.JID, community string, a store.Action,
-	runID, hash string, rs *rules.Ruleset) error {
+	runID string, cur *config.Loaded) error {
+	rs, where := cur.Rules, CommunityLabel(cur.Config, community)
 	queued := 0
 	err := e.Store.Write(ctx, func(tx *sql.Tx) error {
 		ban, banned, err := store.FindBan(ctx, tx, m.IDs(), community)
@@ -312,7 +316,7 @@ func (e *Enforcer) enforceBan(ctx context.Context, m client.Member, group client
 		if m.LID == "" && ban.LID != "" {
 			m.LID = client.JID(ban.LID)
 		}
-		p := ledger.Plan{Trigger: "sweep:" + runID, Target: m, ConfigHash: hash, Episode: true, Reason: "banned member present"}
+		p := ledger.Plan{Trigger: "sweep:" + runID, Target: m, ConfigHash: cur.Hash, Episode: true, Reason: "banned member present"}
 		if a == store.ActReject {
 			p.Reason = "banned member asked to join"
 		}
@@ -324,18 +328,18 @@ func (e *Enforcer) enforceBan(ctx context.Context, m client.Member, group client
 			}
 			e.Log.Warn("a banned member is a current admin; not removed", "community", mask.IDs(community),
 				"group", mask.IDs(string(group)), "member", mask.IDs(m.Key()))
-			p.Reports = []store.Report{e.adminSpared(community)}
+			p.Reports = []store.Report{adminSpared(community, where)}
 			_, err = ledger.Write(ctx, tx, p, e.Store.Now())
 			return err
 		}
 		enforce := enforced(rs, community)
 		p.Intents = []ledger.Intent{{Action: a, Chat: group, Community: community, Enforce: enforce}}
 		p.Reports = []store.Report{{Kind: ledger.KindBannedRejoin, Community: community, Buttons: []string{ledger.ButtonUndo},
-			Text: fmt.Sprintf("A banned member was found in a group in %s (%s): %s.", community, p.Reason, verb(a))}}
+			Text: fmt.Sprintf("A banned member was found in a group in %s (%s): %s.", where, p.Reason, verb(a))}}
 		if !enforce {
 			p.Reports = []store.Report{{Kind: ledger.KindWouldRemove, Community: community, Text: fmt.Sprintf(
 				"A banned member was found in a group in %s (%s): %s, but it is in shadow mode: not done.",
-				community, p.Reason, wouldVerb(a))}}
+				where, p.Reason, wouldVerb(a))}}
 		}
 		w, err := ledger.Write(ctx, tx, p, e.Store.Now())
 		if err == nil && w.New > 0 {
