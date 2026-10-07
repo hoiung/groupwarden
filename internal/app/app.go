@@ -90,6 +90,10 @@ type App struct {
 	// BootRejected: the config file was refused at boot and the last good
 	// copy runs instead; reported once connected to the supervisor loop.
 	BootRejected *config.Rejected
+	// NoSyncTimer: this deployment has no config sync timer (the Docker
+	// image, where a changed config is reloaded with SIGHUP), so the sync is
+	// not watched for overdue runs. `run` sets it from GROUPWARDEN_NO_SYNC_TIMER.
+	NoSyncTimer bool
 
 	// The moderation workers (each optional: nil is not started).
 	Executor *action.Executor     // fires the outbox
@@ -349,6 +353,11 @@ func (a *App) Run(ctx context.Context) error {
 	zone, offset := a.started.In(a.zone()).Zone()
 	a.Log.Info("daily check time zone", "zone", a.zone().String(), "abbrev", zone, "utc_offset_s", offset,
 		"daily_check_time", a.Config.Current().Config.DailyCheckTime)
+	var watched []string
+	for _, t := range a.watchedTimers() {
+		watched = append(watched, t.name)
+	}
+	a.Log.Info("watching outside timers", "timers", watched)
 	a.alert(ctx, alert.Alert{Kind: alert.Started, Text: fmt.Sprintf("groupwarden %s started (config v%s).", Version(), hash)})
 	workerDone := make(chan struct{})
 	wctx, stopWorker := context.WithCancel(ctx)
@@ -600,27 +609,43 @@ func (a *App) settings() Settings {
 	return a.Settings
 }
 
-// Outside timers the app watches (they write their last run to the store).
-var timers = []struct {
+// outsideTimer is a timer outside the app that writes its last run to the
+// store.
+type outsideTimer struct {
 	key, name string
 	every     func(a *App) time.Duration
-}{
+}
+
+var outsideTimers = []outsideTimer{
 	{store.StatusSyncLastRun, "config sync", func(a *App) time.Duration {
 		return time.Duration(a.Config.Current().Config.ConfigSyncMinutes) * time.Minute
 	}},
 	{store.StatusBackupLastRun, "backup", func(*App) time.Duration { return 24 * time.Hour }},
 }
 
-// checkOverdue raises one priority alert per episode when the config sync or
-// the nightly backup has not run for twice its interval (counted from this
-// start when it never ran).
+// watchedTimers are the outside timers this deployment has: all of them, less
+// the config sync under NoSyncTimer.
+func (a *App) watchedTimers() []outsideTimer {
+	var out []outsideTimer
+	for _, t := range outsideTimers {
+		if a.NoSyncTimer && t.key == store.StatusSyncLastRun {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// checkOverdue raises one priority alert per episode when a watched timer
+// (the config sync, the nightly backup) has not run for twice its interval
+// (counted from this start when it never ran).
 func (a *App) checkOverdue(ctx context.Context, now time.Time) {
 	st, err := a.Store.Status(ctx)
 	if err != nil {
 		a.Log.Error("read status", "err", err)
 		return
 	}
-	for _, t := range timers {
+	for _, t := range a.watchedTimers() {
 		last := st[t.key].Time()
 		since := last
 		if since.IsZero() {
@@ -637,8 +662,8 @@ func (a *App) checkOverdue(ctx context.Context, now time.Time) {
 		a.overdue[t.key] = last
 		a.Log.Error("outside timer overdue", "timer", t.name, "last_run", last, "every", every)
 		a.alert(ctx, alert.Alert{Kind: alert.Overdue, Priority: true, Text: fmt.Sprintf(
-			"The %s timer has not run for %s (it runs every %s; last run %s). Check its systemd timer on the node "+
-				"(docs/runbook.md).", t.name, now.Sub(since).Round(time.Minute), every, ago(now, last))})
+			"The %s timer has not run for %s (it runs every %s; last run %s). Check the timer that runs it on the "+
+				"node (docs/runbook.md).", t.name, now.Sub(since).Round(time.Minute), every, ago(now, last))})
 	}
 }
 
