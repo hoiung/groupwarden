@@ -40,15 +40,21 @@ type Moderator struct {
 	Log       *slog.Logger
 }
 
-// Evaluate decides one message against the config in use and returns the
-// decision with that config's hash. It reads the config once, so a reload
-// in the middle never mixes two configs.
-func (m *Moderator) Evaluate(msg *client.Message) (rules.Decision, string, string) {
-	return m.evaluate(msg, m.Config.Current())
+// EvaluateIn decides msg as a post in community (the one it was decided in,
+// recorded on its evidence copy: the fire-time re-check must not depend on
+// the bot still being in the group) against the config in use, and returns
+// that config's hash. It reads the config once, so a reload in the middle
+// never mixes two configs.
+func (m *Moderator) EvaluateIn(msg *client.Message, community string) (rules.Decision, string) {
+	cur := m.Config.Current()
+	if _, configured := cur.Rules.ModeFor(community); !configured {
+		return rules.Decision{}, cur.Hash
+	}
+	d, _, hash := m.evaluate(msg, community, cur)
+	return d, hash
 }
 
-func (m *Moderator) evaluate(msg *client.Message, cur *config.Loaded) (rules.Decision, string, string) {
-	community := m.Directory.Community(msg.Chat, cur.Rules)
+func (m *Moderator) evaluate(msg *client.Message, community string, cur *config.Loaded) (rules.Decision, string, string) {
 	if community == "" {
 		return rules.Decision{}, "", cur.Hash
 	}
@@ -96,7 +102,7 @@ func (m *Moderator) Decide(ctx context.Context, tx *sql.Tx, item Item) error {
 
 func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Message, item Item) error {
 	cur := m.Config.Current()
-	d, community, hash := m.evaluate(ev, cur)
+	d, community, hash := m.evaluate(ev, m.Directory.Community(ev.Chat, cur.Rules), cur)
 	if community == "" {
 		m.Log.Debug("message in a group that is not moderated", "chat", mask.IDs(string(ev.Chat)))
 		return nil
