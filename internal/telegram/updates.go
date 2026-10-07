@@ -207,7 +207,9 @@ func (c *Chat) act(ctx context.Context, reportID int64, button string, by Actor,
 	result, err := c.do(ctx, r, button, by)
 	if err != nil {
 		c.Log.Error("admin action failed", "report", reportID, "button", button, "by", by.String(), "err", err.Error())
-		if rerr := c.Store.ReleasePress(ctx, reportID, button); rerr != nil {
+		// Released even when ctx was cancelled (a stop mid-action): a press
+		// left claimed would answer "already done" for good.
+		if rerr := c.Store.ReleasePress(context.WithoutCancel(ctx), reportID, button); rerr != nil {
 			c.Log.Error("release the press", "report", reportID, "button", button, "err", rerr)
 		}
 		return "Could not do that: " + err.Error()
