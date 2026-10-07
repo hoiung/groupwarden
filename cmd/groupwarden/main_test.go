@@ -255,11 +255,11 @@ func TestHealthcheckExitCodes(t *testing.T) {
 			t.Fatalf("healthy output lacks %q:\n%s", want, te.out)
 		}
 	}
-	// Paused is shown but does not make the bot unhealthy.
+	// Paused is shown, worded as /status words it, but does not make the bot unhealthy.
 	if err := st.SetPause(context.Background(), store.Pause{Source: store.SourceExtraCompanion, Scope: store.ScopeRemoveBan, Reason: "1 other linked device", Since: now}); err != nil {
 		t.Fatal(err)
 	}
-	if code := te.cmd("healthcheck"); code != 0 || !strings.Contains(te.out.String(), "paused: removals and bans") {
+	if code := te.cmd("healthcheck"); code != 0 || !strings.Contains(te.out.String(), "paused: removals and bans (deletes continue) since") {
 		t.Fatalf("paused: exit %d\n%s", code, te.out)
 	}
 	// Each change makes the bot unhealthy and prints why.
