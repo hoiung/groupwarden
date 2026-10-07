@@ -1,6 +1,7 @@
 package telegram_test
 
 import (
+	"context"
 	"slices"
 	"strconv"
 	"strings"
@@ -256,6 +257,74 @@ func TestButtonIdempotent(t *testing.T) {
 	if !strings.Contains(h.answers()[2], "has no [Ban] button") {
 		t.Fatalf("answer %q", h.answers()[2])
 	}
+}
+
+// stopping is the app's controls with an [Undo] that is cut short by a stop:
+// it cancels the press's context and fails.
+type stopping struct {
+	telegram.Controls
+	cancel func()
+}
+
+func (s stopping) Undo(ctx context.Context, _ int64, _ telegram.Actor) (string, error) {
+	s.cancel()
+	return "", ctx.Err()
+}
+
+// TestUnfinishedPressCanBePressedAgain: a press a run claimed and never
+// finished does not answer "already done" for good. One whose action failed
+// as the run stopped (its context cancelled) is released at once; one the run
+// stopped in the middle of (no result recorded) is released when the next run
+// starts.
+func TestUnfinishedPressCanBePressedAgain(t *testing.T) {
+	t.Run("failed as the run stopped", func(t *testing.T) {
+		h := newHarness(t, "")
+		r := h.spam("I1")
+		h.drain()
+		ctx, cancel := context.WithCancel(h.k.Ctx)
+		controls := h.chat.Controls
+		h.chat.Controls = stopping{Controls: controls, cancel: cancel}
+		h.pressWith(ctx, telegramtest.ChatID, adminUser, "undo", r.ID)
+		h.chat.Controls = controls
+		h.press(adminUser, "undo", r.ID)
+		if h.k.Banned(modtest.SpammerM, "") {
+			t.Fatalf("still banned after [Undo] was pressed again; answers %q", h.answers())
+		}
+	})
+	t.Run("stopped mid-action", func(t *testing.T) {
+		h := newHarness(t, "")
+		r := h.spam("I1")
+		// A press that finished keeps answering "already done" after the restart.
+		finished := h.report(store.Report{Kind: string(alert.PhoneReminder), Text: "Weekly check: open WhatsApp on the bot phone.",
+			Buttons: []string{ledger.ButtonDone}})
+		h.drain()
+		h.press(adminUser, "done", finished)
+		if _, claimed, err := h.k.Store.ClaimPress(h.k.Ctx, store.Press{ReportID: r.ID, Button: ledger.ButtonUndo,
+			UserID: adminUser, UserName: "Ann"}); err != nil || !claimed {
+			t.Fatalf("claim: %v %v", claimed, err)
+		}
+		h.restart()
+		ctx, cancel := context.WithCancel(h.k.Ctx)
+		done := make(chan struct{})
+		go func() {
+			h.chat.Run(ctx)
+			close(done)
+		}()
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline) &&
+			!strings.Contains(h.logs.String(), "released presses"); {
+			time.Sleep(5 * time.Millisecond)
+		}
+		cancel()
+		<-done
+		h.press(adminUser, "undo", r.ID)
+		if h.k.Banned(modtest.SpammerM, "") {
+			t.Fatalf("still banned after [Undo] in the next run; answers %q", h.answers())
+		}
+		h.press(secondAdm, "done", finished)
+		if a := h.answers(); !strings.Contains(a[len(a)-1], "already done by Ann") {
+			t.Fatalf("a finished press after the restart answered %q, want already done", a[len(a)-1])
+		}
+	})
 }
 
 // TestDoneButtonRecordsPhoneOpened: [Done] on the phone reminder records when
