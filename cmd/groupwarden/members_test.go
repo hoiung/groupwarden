@@ -92,7 +92,7 @@ func seed(t *testing.T, te *testEnv) seeded {
 	if err != nil || len(evs) != 1 {
 		t.Fatalf("evidence %d %v", len(evs), err)
 	}
-	if err := st.SetMedia(ctx, evs[0].ID, store.MediaSaved, file, ""); err != nil {
+	if err := st.SetMedia(ctx, evs[0].ID, store.MediaSaved, file, "", 4); err != nil {
 		t.Fatal(err)
 	}
 	write(ledger.Plan{Trigger: "M2", Target: client.Member{LID: memberLID}, Rule: "watch", ConfigHash: "h1",
@@ -226,13 +226,22 @@ type shown struct {
 // included, found by either of their addresses.
 func TestMemberShowIncludesWhatsmeowContact(t *testing.T) {
 	te := newTestEnv(t, &clienttest.Fake{})
-	seed(t, te)
-	if code := te.sub("member", "show", spammerLID); code != 0 {
-		t.Fatalf("exit %d: %s", code, te.errb)
+	s := seed(t, te)
+	show := func() shown {
+		t.Helper()
+		if code := te.sub("member", "show", spammerLID); code != 0 {
+			t.Fatalf("exit %d: %s", code, te.errb)
+		}
+		var rec shown
+		if err := json.Unmarshal([]byte(te.out.String()), &rec); err != nil {
+			t.Fatalf("%v\n%s", err, te.out)
+		}
+		return rec
 	}
-	var rec shown
-	if err := json.Unmarshal([]byte(te.out.String()), &rec); err != nil {
-		t.Fatalf("%v\n%s", err, te.out)
+	rec := show()
+	// An attachment's size is shown when known: the file's, once downloaded.
+	if m, _ := rec.Evidence[0]["Media"].(string); !strings.HasSuffix(m, " 4 bytes (saved)") {
+		t.Fatalf("evidence media %q, want the file's size", m)
 	}
 	if len(rec.Whatsmeow.Contacts) != 1 || rec.Whatsmeow.Contacts[0]["their_jid"] != spammerPhone ||
 		rec.Whatsmeow.Contacts[0]["push_name"] != "Crypto King" {
@@ -250,6 +259,13 @@ func TestMemberShowIncludesWhatsmeowContact(t *testing.T) {
 	// The phone number finds the same person.
 	if code := te.sub("member", "show", "447700900123"); code != 0 || !strings.Contains(te.out.String(), "Crypto King") {
 		t.Fatalf("by phone: exit %d", code)
+	}
+	// A download stopped at the limit leaves the size unknown.
+	if err := s.st.SetMedia(te.ctx, int64(rec.Evidence[0]["ID"].(float64)), store.MediaTooLarge, "", "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := show().Evidence[0]["Media"].(string); !strings.HasSuffix(m, " size unknown (too_large)") {
+		t.Fatalf("evidence media %q, want the size unknown", m)
 	}
 }
 
