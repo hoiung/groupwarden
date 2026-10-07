@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -177,8 +176,8 @@ func (e *env) healthcheck(ctx context.Context, cfg *config.Config) int {
 	default:
 		fmt.Fprintln(e.stdout, "telegram: not reached yet")
 	}
-	if ms, err := strconv.ParseInt(status[store.StatusLastEvent].Value, 10, 64); err == nil {
-		fmt.Fprintf(e.stdout, "last event: %s ago\n", now.Sub(time.UnixMilli(ms)).Round(time.Second))
+	if last := status[store.StatusLastEvent].Time(); !last.IsZero() {
+		fmt.Fprintf(e.stdout, "last event: %s ago\n", now.Sub(last).Round(time.Second))
 	} else {
 		fmt.Fprintln(e.stdout, "last event: none yet")
 	}
