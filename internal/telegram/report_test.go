@@ -481,6 +481,44 @@ func attachmentReport(t *testing.T, h *harness) store.Report {
 	return r
 }
 
+// TestAttachmentSizeIsTheFileSize: the size a post declares for its
+// attachment is the sender's claim. The report shows the size of the file as
+// downloaded, and no size while none is known: before the download when the
+// post declared none, or after a download stopped at the limit.
+func TestAttachmentSizeIsTheFileSize(t *testing.T) {
+	cases := []struct {
+		name     string
+		declared uint64
+		file     []byte // nil: not downloaded before the report is posted
+		want     string
+	}{
+		{"saved", 1, make([]byte, 600<<10), "\nAttachment: image offer.jpg (0.6 MB), posted below"},
+		{"over the limit", 1, make([]byte, 1<<20+1), "\nAttachment: image offer.jpg, too large to keep"},
+		{"no size declared", 0, nil, "\nAttachment: image offer.jpg, being saved"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t, "evidence:\n  max_attachment_mb: 1\n")
+			h.k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+				return c.file, "image/jpeg", "offer.jpg", nil
+			}
+			m := image(h.k.Spam("Z1", modtest.G1))
+			m.Media.Size = c.declared
+			h.k.Deliver(m)
+			h.k.Fire()
+			if c.file != nil {
+				if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != 1 {
+					t.Fatalf("fetched %d (%v)", n, err)
+				}
+			}
+			h.drain()
+			if n := requests(h, "sendMessage", c.want+"\n"); n != 1 {
+				t.Fatalf("%d reports with %q:\n%v", n, c.want, h.srv.Requests("sendMessage"))
+			}
+		})
+	}
+}
+
 // TestAttachmentPostDeletedAfterShowWindow: the saved attachment is posted
 // as a reply and deleted after report.attachment_show_hours.
 func TestAttachmentPostDeletedAfterShowWindow(t *testing.T) {
@@ -543,7 +581,7 @@ func TestShowAttachmentUntilEvidencePurged(t *testing.T) {
 	if err != nil || !ok || full.EvidenceID == 0 {
 		t.Fatalf("report %d: %+v %v %v", r.ID, full, ok, err)
 	}
-	if err := h.k.Store.SetMedia(h.k.Ctx, full.EvidenceID, store.MediaFailed, "", "download failed"); err != nil {
+	if err := h.k.Store.SetMedia(h.k.Ctx, full.EvidenceID, store.MediaFailed, "", "download failed", 0); err != nil {
 		t.Fatal(err)
 	}
 	h.press(adminUser, "show", r.ID)
