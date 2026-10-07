@@ -194,20 +194,30 @@ func (w *Worker) age(ctx context.Context, ev client.Event) (reportOnly bool, tar
 	if !ok {
 		return false, time.Time{}, nil
 	}
-	sent := m.Time
-	if m.TargetID != m.ID {
-		orig, found, err := w.Store.SeenTime(ctx, string(m.Chat), m.TargetID)
-		if err != nil {
-			return false, time.Time{}, err
-		}
-		if found {
-			sent = orig
-		} else {
-			sent = m.Time.Add(-editWindow)
-		}
+	sent, err := targetSent(ctx, w.Store, string(m.Chat), m.ID, m.TargetID, m.Time)
+	if err != nil {
+		return false, time.Time{}, err
 	}
 	maxAge := time.Duration(w.Config.Current().Config.ActOnReplayMaxAge)
 	return w.Store.Now().Sub(sent) > maxAge, sent, nil
+}
+
+// targetSent is the server time of the message an action on message id (sent
+// at t) targets: t itself, or for an edit its original's time as delivered
+// (kept seenRetention, longer than any replay window), else editWindow before
+// the edit. Both the inbox and [Ban] age a message by it.
+func targetSent(ctx context.Context, st *store.Store, chat, id, targetID string, t time.Time) (time.Time, error) {
+	if targetID == id {
+		return t, nil
+	}
+	orig, found, err := st.SeenTime(ctx, chat, targetID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !found {
+		return t.Add(-editWindow), nil
+	}
+	return orig, nil
 }
 
 func (w *Worker) purge(ctx context.Context) {
