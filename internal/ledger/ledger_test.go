@@ -209,6 +209,53 @@ func TestBanRowWithRemoveIntent(t *testing.T) {
 	}
 }
 
+// TestLiftInOneCommunity: a lift narrowed to one community removes only the
+// bans covering it, applied or held by a pause, and its unban row names that
+// community; a lift with no community removes every ban.
+func TestLiftInOneCommunity(t *testing.T) {
+	k := modtest.New(t, "bans:\n  scope: per_community\n")
+	a, b := string(modtest.Community), modtest.SetB
+	write := func(p ledger.Plan) {
+		t.Helper()
+		p.ConfigHash = k.Holder.Current().Hash
+		if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
+			_, err := ledger.Write(k.Ctx, tx, p, k.Clock.Now())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(ledger.Plan{Trigger: "T1", Target: modtest.Other1M, Ban: []string{a, b}, BanEnforce: true, BanCommunity: a, Reason: "spam"})
+	write(ledger.Plan{Trigger: "T2", Target: modtest.Other2M, Ban: []string{a, b}, BanEnforce: true, BanHeld: true, BanCommunity: a,
+		Reason: "spam"})
+	for _, m := range []client.Member{modtest.Other1M, modtest.Other2M} {
+		write(ledger.Plan{Trigger: "L:" + m.Key(), Target: m, Lift: true, LiftIn: a, BanCommunity: a, Reason: "lifted in a"})
+	}
+	if k.Banned(modtest.Other1M, a) || !k.Banned(modtest.Other1M, b) {
+		t.Fatalf("banned in %s: %v, in %s: %v; want only the ban in %s lifted", a, k.Banned(modtest.Other1M, a), b,
+			k.Banned(modtest.Other1M, b), a)
+	}
+	if rows := k.Find(modtest.Other1M, store.ActUnban, modtest.Community); len(rows) != 1 {
+		t.Fatalf("unban rows in %s: %+v", a, rows)
+	}
+	held := map[string]store.Status{}
+	for _, r := range k.Rows(modtest.Other2M) {
+		if r.Action == store.ActBan {
+			held[r.Chat] = r.Status
+		}
+	}
+	if held[a] != store.Overturned || held[b] != store.Intended {
+		t.Fatalf("held bans %v, want the one in %s overturned and the one in %s still held", held, a, b)
+	}
+	write(ledger.Plan{Trigger: "L2", Target: modtest.Other1M, Lift: true, BanCommunity: a, Reason: "lifted everywhere"})
+	if k.Banned(modtest.Other1M, "") {
+		t.Fatal("a lift with no community left a ban")
+	}
+	if rows := k.Find(modtest.Other1M, store.ActUnban, ""); len(rows) != 1 {
+		t.Fatalf("unban rows for every community: %+v", rows)
+	}
+}
+
 // TestLedgerStampsConfigHash: every row carries the hash of the config that
 // decided it; a reload changes the stamp on new rows only.
 func TestLedgerStampsConfigHash(t *testing.T) {
