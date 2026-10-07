@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/alert"
+	"github.com/hoiung/groupwarden/internal/alert/alerttest"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/config"
@@ -278,7 +279,7 @@ func TestPhoneRemindersOnceWhileTheStoreCannotWrite(t *testing.T) {
 	}
 	readOnly(t, st)
 	holder, _ := configtest.Holder(t, testSet)
-	rec := &alert.Recorder{}
+	rec := &alerttest.Recorder{}
 	a := &App{Store: st, Config: holder, Alerter: rec, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	for i := 0; i < 3; i++ {
 		a.checkPhone(ctx, now.Add(time.Duration(i)*monitorEvery))
@@ -314,7 +315,7 @@ func TestPhoneReminderNotMarkedWhenRefused(t *testing.T) {
 	if ref.tries != 2 {
 		t.Fatalf("%d tries over 2 ticks the admin chat refused, want 2", ref.tries)
 	}
-	rec := &alert.Recorder{}
+	rec := &alerttest.Recorder{}
 	a.Alerter = rec
 	a.checkPhone(ctx, now.Add(2*monitorEvery))
 	a.checkPhone(ctx, now.Add(3*monitorEvery))
