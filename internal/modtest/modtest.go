@@ -211,9 +211,17 @@ func NewConfig(t testing.TB, cfg string) *Kit {
 	k.Fake = &clienttest.Fake{Groups: Groups(), SelfIDs: client.Self{Phone: BotPhone, LID: Bot}}
 	k.Dir = &pipeline.Directory{}
 	k.Dir.SetSelf(k.Fake.SelfIDs)
-	k.Dir.Update(k.Fake.Groups)
+	Load(t, k.Dir, k.Fake.Groups)
 	k.open()
 	return k
+}
+
+// Load fills dir from groups, as a group list read from WhatsApp does.
+func Load(t testing.TB, dir *pipeline.Directory, groups []client.Group) {
+	t.Helper()
+	if err := dir.Refresh(func() ([]client.Group, error) { return groups, nil }); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (k *Kit) open() {
