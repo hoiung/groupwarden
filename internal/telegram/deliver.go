@@ -389,7 +389,7 @@ func (c *Chat) showAttachment(ctx context.Context, r store.Report, ev store.Evid
 	f, err := os.Open(ev.MediaPath) // #nosec G304 -- a path the attachment fetcher wrote under data_dir
 	if err != nil {
 		c.Log.Error("the saved attachment is missing", "report", r.ID, "evidence", ev.ID, "err", err)
-		return false, c.Store.SetMedia(ctx, ev.ID, store.MediaFailed, "", "the saved file is missing: "+err.Error())
+		return false, c.Store.SetMedia(ctx, ev.ID, store.MediaFailed, "", "the saved file is missing: "+err.Error(), ev.MediaSize)
 	}
 	defer f.Close()
 	head, err := c.reportMessage(ctx, r.ID)
@@ -418,7 +418,7 @@ func (c *Chat) showAttachment(ctx context.Context, r store.Report, ev store.Evid
 		// `member forget` still delete the file.
 		c.Log.Error("telegram refused an attachment", "report", r.ID, "evidence", ev.ID, "err", err.Error())
 		if err := c.Store.SetMedia(ctx, ev.ID, store.MediaFailed, ev.MediaPath, "Telegram refused the file: "+
-			err.Error()); err != nil {
+			err.Error(), ev.MediaSize); err != nil {
 			return false, err
 		}
 		return false, fmt.Errorf("%w: %s", errFileRefused, err.Error())
