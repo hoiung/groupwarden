@@ -99,6 +99,40 @@ func TestBannedRejoinByLinkRemoved(t *testing.T) {
 	}
 }
 
+// TestBannedMemberReportsSayWhatWaits: under a pause the reports of a banned
+// member who joined, or whose join request a sweep found, say the removal or
+// rejection waits for the pause to end; without one they say it is done.
+func TestBannedMemberReportsSayWhatWaits(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(fmt.Sprintf("paused=%v", paused), func(t *testing.T) {
+			k := modtest.New(t, "")
+			if paused {
+				if err := k.Store.SetPause(k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
+					Reason: "test", Since: k.Clock.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			k.Ban(modtest.Other1M)
+			ev := change(k, modtest.G2, modtest.Other1, []client.JID{modtest.Other1}, nil)
+			ev.JoinReason = "invite"
+			k.Deliver(ev)
+			k.Fake.Requests = map[client.JID][]client.JoinRequest{modtest.G1: {{JID: modtest.Other1}}}
+			if err := k.Enforcer.CheckJoinRequests(k.Ctx, modtest.G1, "run1"); err != nil {
+				t.Fatal(err)
+			}
+			removed, rejected := "removed.", "request rejected."
+			if paused {
+				removed, rejected = "removed once the pause ends.", "request rejected once the pause ends."
+			}
+			reps := k.Reports(ledger.KindBannedRejoin)
+			if len(reps) != 2 || !strings.HasSuffix(reps[0].Text, "(by invite link): "+removed) ||
+				!strings.HasSuffix(reps[1].Text, "(banned member asked to join): "+rejected) {
+				t.Fatalf("reports %+v", reps)
+			}
+		})
+	}
+}
+
 // TestBannedJoinRequestRejected: a banned person's pending join request is
 // rejected when the sweep polls requests; other requests are left alone.
 func TestBannedJoinRequestRejected(t *testing.T) {
@@ -192,8 +226,12 @@ func TestFanOutNeverRemovesHumanAdmin(t *testing.T) {
 	if r := k.Find(modtest.Other1M, store.ActRemove, modtest.G1); r[0].Status != store.Failed || !strings.Contains(r[0].Reason, "admin") {
 		t.Fatalf("row %+v", r[0])
 	}
-	if n := len(k.Reports(ledger.KindAdminSpared)); n <= len(reps) {
-		t.Fatalf("%d admin reports, want more than %d (one per spared removal)", n, len(reps))
+	spared := k.Reports(ledger.KindAdminSpared)
+	if len(spared) <= len(reps) {
+		t.Fatalf("%d admin reports, want more than %d (one per spared removal)", len(spared), len(reps))
+	}
+	if last := spared[len(spared)-1]; !strings.Contains(last.Text, "the member is a current admin in community a.") {
+		t.Fatalf("the fire-time report %q does not name the community", last.Text)
 	}
 }
 
@@ -433,22 +471,34 @@ func TestMetaAIWatchOnlyMatchExempt(t *testing.T) {
 	}
 }
 
-// TestUnaddressableSenderReportedOnly: spam from a sender whose address is
+// TestUnaddressableSenderPostDeleted: spam from a sender whose address is
 // neither a LID nor a phone number (a server the ban list cannot hold) is
-// reported as a priority report with no action rows, and the spam behind it
-// is still decided and actioned.
-func TestUnaddressableSenderReportedOnly(t *testing.T) {
+// deleted, as every spam post is; nobody is removed or banned, and a
+// priority report tells the admins to remove the sender by hand. The spam
+// behind it is still decided and actioned.
+func TestUnaddressableSenderPostDeleted(t *testing.T) {
 	k := modtest.New(t, "")
 	hosted := client.JID(strings.TrimSuffix(string(modtest.Spammer), "@lid") + "@hosted")
 	k.Deliver(k.Msg("HOST1", modtest.G1, hosted, modtest.SpamText))
+	k.Fire()
+	if n := k.Fake.Count("Revoke " + string(modtest.G1) + " " + string(hosted) + " HOST1"); n != 1 {
+		t.Fatalf("revoked the unaddressable post %d times, want 1: calls %v", n, k.Fake.Calls())
+	}
+	if k.Fake.Count("Remove") != 0 || k.Banned(client.Member{LID: hosted}, "") {
+		t.Fatalf("removed or banned an unaddressable sender: calls %v", k.Fake.Calls())
+	}
 	reps := k.Reports(ledger.KindUnaddressable)
-	if len(reps) != 1 || !reps[0].Priority || reps[0].Subject != "" {
-		t.Fatalf("reports %+v, want one priority unaddressable report", reps)
+	if len(reps) != 1 || !reps[0].Priority || !strings.Contains(reps[0].Text, ": the post is deleted, but the sender's "+
+		"address (") || !strings.HasSuffix(reps[0].Text, "is not one the bot can remove or ban. Remove them by hand.") {
+		t.Fatalf("reports %+v, want one priority report that the post is deleted", reps)
 	}
 	if strings.Contains(reps[0].Text, strings.TrimSuffix(string(modtest.Spammer), "@lid")) {
 		t.Fatalf("report names the sender unmasked: %q", reps[0].Text)
 	}
-	if n := k.Logged("rule matched a sender the bot cannot act on; reported only"); n != 1 {
+	if r, _, _ := k.Store.Report(k.Ctx, reps[0].ID); r.Action != "deleted for everyone; the sender cannot be removed or banned" {
+		t.Fatalf("action line %q", r.Action)
+	}
+	if n := k.Logged("rule matched a sender the bot cannot remove or ban"); n != 1 {
 		t.Fatalf("%d log lines for the unaddressable sender, want 1", n)
 	}
 	// A human admin removing that address is not offered for the ban list:
@@ -464,8 +514,5 @@ func TestUnaddressableSenderReportedOnly(t *testing.T) {
 	k.Fire()
 	if !k.Banned(modtest.SpammerM, "") || removed(k, modtest.G1, modtest.Spammer) != 1 {
 		t.Fatalf("the spam behind it was not actioned: calls %v", k.Fake.Calls())
-	}
-	if n := k.Fake.Count("Revoke " + string(modtest.G1) + " " + string(hosted) + " HOST1"); n != 0 {
-		t.Fatalf("revoked the unaddressable post %d times", n)
 	}
 }
