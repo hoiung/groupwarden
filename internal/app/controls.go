@@ -190,11 +190,7 @@ func (a *App) statusText(ctx context.Context) (string, error) {
 		b.WriteString("Paused: no\n")
 	default:
 		for _, p := range pauses {
-			what := "removals and bans (deletes continue)"
-			if p.Scope == store.ScopeAll {
-				what = "every action"
-			}
-			fmt.Fprintf(&b, "Paused: %s since %s (%s): %s\n", what, p.Since.UTC().Format("2006-01-02 15:04 MST"),
+			fmt.Fprintf(&b, "Paused: %s since %s (%s): %s\n", p.Scope.Stops(), p.Since.UTC().Format("2006-01-02 15:04 MST"),
 				p.Source, p.Reason)
 		}
 	}
