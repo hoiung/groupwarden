@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -30,6 +31,9 @@ const (
 	retryMax         = 30 * time.Minute
 	maxAttempts      = 8
 	rateLimitBackoff = 2 * time.Minute
+	// notConnectedWait: an action that found WhatsApp disconnected is tried
+	// again after this, without counting an attempt.
+	notConnectedWait = time.Minute
 )
 
 // Executor fires the outbox.
@@ -48,14 +52,21 @@ type Executor struct {
 	// sweep's LostAdmin, which marks the group not covered and alerts (nil:
 	// the row is only failed).
 	NotAdmin func(ctx context.Context, chat client.JID, cause string)
-	Log      *slog.Logger
-	Now      func() time.Time
+	// Connected reports whether WhatsApp is connected (nil: always). While it
+	// is not, nothing is sent: an attempt spent on a dead connection would be
+	// lost.
+	Connected func() bool
+	Log       *slog.Logger
+	Now       func() time.Time
 	// Sleep waits for d or until ctx ends (tests replace it).
 	Sleep func(ctx context.Context, d time.Duration) error
 
-	wake    chan struct{}
-	limiter *rate.Limiter
-	rate    config.Rate
+	// initOnce: Wake is called from other goroutines (the inbox worker, the
+	// supervisor at connect) while Run starts, so the defaults are set once.
+	initOnce sync.Once
+	wake     chan struct{}
+	limiter  *rate.Limiter
+	rate     config.Rate
 }
 
 // Sleep waits d or until ctx ends: the real sleep of the executor, the sweep
@@ -72,15 +83,15 @@ func Sleep(ctx context.Context, d time.Duration) error {
 }
 
 func (x *Executor) init() {
-	if x.wake == nil {
+	x.initOnce.Do(func() {
 		x.wake = make(chan struct{}, 1)
-	}
-	if x.Now == nil {
-		x.Now = time.Now
-	}
-	if x.Sleep == nil {
-		x.Sleep = Sleep
-	}
+		if x.Now == nil {
+			x.Now = time.Now
+		}
+		if x.Sleep == nil {
+			x.Sleep = Sleep
+		}
+	})
 }
 
 // Wake asks the executor to look at the outbox now.
@@ -134,6 +145,9 @@ func (x *Executor) Step(ctx context.Context) (bool, error) {
 		if settled, err := x.settleHeldBan(ctx); err != nil || settled {
 			return settled, err
 		}
+	}
+	if x.Connected != nil && !x.Connected() {
+		return false, nil
 	}
 	row, ok, err := x.Store.NextDue(ctx, x.Now(), allowDelete, allowRemove)
 	if err != nil || !ok {
@@ -336,18 +350,23 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 		}
 	}
 	member := x.Directory.Complete(client.MemberOf(client.JID(row.Target), client.JID(row.Address)))
-	banned, err := x.banned(ctx, row, member)
-	if err != nil {
-		return verdict{}, err
-	}
-	if !banned {
-		return verdict{outcome: fail, reason: "the member is not banned in " + row.Community}, nil
+	// The post of a sender the ban list cannot hold (no LID or phone number)
+	// is deleted on the post alone: no ban for them can exist.
+	if unaddressable := member.Key() == "" && row.Action == store.ActRevoke; !unaddressable {
+		banned, err := x.banned(ctx, row, member)
+		if err != nil {
+			return verdict{}, err
+		}
+		if !banned {
+			return verdict{outcome: fail, reason: "the member is not banned in " + row.Community}, nil
+		}
 	}
 	// Only a delete has a deadline: WhatsApp's admin delete window. A removal
 	// is due however long a pause held it.
 	maxAge := time.Duration(cur.Config.ActOnReplayMaxAge)
 	if row.Action == store.ActRevoke && !row.MsgTime.IsZero() && x.Now().Sub(row.MsgTime) > maxAge {
-		return verdict{outcome: fail, reason: "the message is older than act_on_replay_max_age (" + maxAge.String() + ")"}, nil
+		why := "the message is older than act_on_replay_max_age (" + maxAge.String() + ")"
+		return verdict{outcome: fail, reason: why, report: x.notDone(row, why+", past WhatsApp's delete window")}, nil
 	}
 	if x.Directory.IsAdmin(member.LID, member.Phone, cur.Rules) {
 		return verdict{outcome: fail, reason: "the member is a current admin", report: &store.Report{
@@ -520,13 +539,17 @@ func memberStatus(results []client.MemberResult) (store.Status, int) {
 	}
 }
 
-// failed handles a call that returned an error: a rate limit waits and
-// retries, a permission refusal fails the row, anything else is retried
-// with backoff up to maxAttempts.
+// failed handles a call that returned an error: not being connected waits
+// without counting an attempt (a temporary ban can outlast every attempt), a
+// rate limit waits and retries, a permission refusal fails the row, anything
+// else is retried with backoff up to maxAttempts and then reported.
 func (x *Executor) failed(ctx context.Context, row store.LedgerRow, err error) error {
 	now := x.Now()
 	msg := mask.IDs(err.Error())
 	switch {
+	case errors.Is(err, client.ErrNotConnected):
+		x.Log.Info("not connected to WhatsApp; the action waits", "action", string(row.Action), "for", notConnectedWait)
+		return x.Store.Hold(ctx, row.ID, now.Add(notConnectedWait), msg)
 	case errors.Is(err, client.ErrRateLimited):
 		x.Log.Warn("WhatsApp rate limit; backing off", "action", string(row.Action), "for", rateLimitBackoff)
 		return x.Store.Retry(ctx, row.ID, now.Add(rateLimitBackoff), msg)
@@ -541,7 +564,9 @@ func (x *Executor) failed(ctx context.Context, row store.LedgerRow, err error) e
 		return nil
 	case row.Attempts+1 >= maxAttempts:
 		x.Log.Error("action failed", "action", string(row.Action), "chat", mask.IDs(row.Chat), "err", msg)
-		_, err := x.Store.Finish(ctx, row.ID, store.Failed, msg, 0, now)
+		_, err := x.settle(ctx, row.ID, func(tx *sql.Tx, now time.Time) (bool, error) {
+			return store.FinishIn(ctx, tx, row.ID, store.Failed, msg, 0, time.Time{}, now)
+		}, x.notDone(row, fmt.Sprintf("it failed %d times (%s)", maxAttempts, msg)))
 		return err
 	}
 	d := min(retryBase<<row.Attempts, retryMax)
@@ -557,6 +582,15 @@ func (x *Executor) report(ctx context.Context, r store.Report, ledgerID int64) {
 	if x.Reported != nil {
 		x.Reported()
 	}
+}
+
+// notDone is the priority report for an action the bot gave up on, linked to
+// its post: an admin was told it would happen, so they are told it did not
+// and why, to do it by hand.
+func (x *Executor) notDone(row store.LedgerRow, why string) *store.Report {
+	return &store.Report{Kind: ledger.KindNotDone, Priority: true, Community: row.Community, Subject: row.Target,
+		EvidenceID: row.EvidenceID, Text: fmt.Sprintf("The bot could not %s in %s: %s. Do it by hand.", what(row.Action),
+			pipeline.CommunityLabel(x.Config.Current().Config, row.Community), why)}
 }
 
 func what(a store.Action) string {
