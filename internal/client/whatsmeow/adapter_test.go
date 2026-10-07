@@ -435,12 +435,13 @@ func TestDownloadMediaAttachment(t *testing.T) {
 		{&waE2E.Message{DocumentMessage: &waE2E.DocumentMessage{Mimetype: ps("application/pdf"), FileName: ps("plan.pdf"), FileLength: proto.Uint64(99), DirectPath: ps("/v/doc")}}, "document", "plan.pdf"},
 		{&waE2E.Message{AudioMessage: &waE2E.AudioMessage{Mimetype: ps("audio/ogg"), FileLength: proto.Uint64(77), DirectPath: ps("/v/aud")}}, "audio", ""},
 	}
+	const limit = int64(len("file-bytes"))
 	for i, c := range cases {
 		m := convert(t, a, sink, groupMsg(fmt.Sprintf("MED%d", i), c.msg)).(*client.Message)
 		if m.Media == nil || m.Media.Kind != c.kind || m.Media.Size == 0 {
-			t.Fatalf("%s: media %+v (size must be known before download)", c.kind, m.Media)
+			t.Fatalf("%s: media %+v (the declared size is kept)", c.kind, m.Media)
 		}
-		data, mime, name, err := a.DownloadMedia(context.Background(), m)
+		data, mime, name, err := a.DownloadMedia(context.Background(), m, limit)
 		if err != nil || string(data) != "file-bytes" || mime != m.Media.MimeType || name != c.fileName {
 			t.Fatalf("%s: download %q %q %q %v", c.kind, data, mime, name, err)
 		}
@@ -448,25 +449,25 @@ func TestDownloadMediaAttachment(t *testing.T) {
 		if !ok || !strings.HasPrefix(dp.GetDirectPath(), "/v/") {
 			t.Fatalf("%s: downloaded %T", c.kind, f.downloaded)
 		}
+		// The download carries the cap the media transport enforces, and a
+		// deadline of its own.
+		if f.downloadMax != limit || !f.downloadDeadline {
+			t.Fatalf("%s: download cap %d (want %d), deadline %v", c.kind, f.downloadMax, limit, f.downloadDeadline)
+		}
 	}
-	if _, _, _, err := a.DownloadMedia(context.Background(), &client.Message{}); err == nil {
+	// The body cap leaves room for the padding, so a file a few bytes over
+	// the limit can still decrypt: it is refused here.
+	over := convert(t, a, sink, groupMsg("MEDOVER", cases[0].msg)).(*client.Message)
+	if _, _, _, err := a.DownloadMedia(context.Background(), over, limit-1); !errors.Is(err, client.ErrMediaTooLarge) {
+		t.Fatalf("a file over the limit: err=%v, want client.ErrMediaTooLarge", err)
+	}
+	if _, _, _, err := a.DownloadMedia(context.Background(), &client.Message{}, limit); err == nil {
 		t.Fatal("download of a message without an attachment succeeded")
 	}
 }
 
 func TestHistorySyncDisabled(t *testing.T) {
-	ctx := context.Background()
-	container, err := sqlstore.New(ctx, "sqlite", gwstore.DSN(filepath.Join(t.TempDir(), "whatsmeow.db")), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer container.Close()
-	device, err := container.GetFirstDevice(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cli := wm.NewClient(device, nil)
-	configure(cli)
+	cli := newConfiguredClient(t)
 	if !cli.ManualHistorySyncDownload {
 		t.Fatal("history sync download is not disabled")
 	}
