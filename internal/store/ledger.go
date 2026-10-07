@@ -470,12 +470,14 @@ WHERE action = 'ban' AND status = 'intended' AND target = ? AND trigger_id = ?`,
 	})
 }
 
-// DropHeldBans overturns every ban a pause holds for any of targets (the
-// member was unbanned before the ban was applied), in tx.
-func DropHeldBans(ctx context.Context, tx *sql.Tx, targets []string, reason string, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'overturned', reason = ?, updated_at = ?
-WHERE action = 'ban' AND status = 'intended' AND target IN (SELECT value FROM json_each(?))`,
-		reason, now.UnixMilli(), jsonList(targets))
+// DropHeldBans overturns every ban a pause holds for any of targets that
+// covers community (as RemoveBans; "" covers every scope): the member was
+// unbanned there before the ban was applied. It runs in tx.
+func DropHeldBans(ctx context.Context, tx *sql.Tx, targets []string, community, reason string, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'overturned', reason = ?1, updated_at = ?2
+WHERE action = 'ban' AND status = 'intended' AND target IN (SELECT value FROM json_each(?3))
+	AND (?4 = '' OR chat = '*' OR chat = ?4)`,
+		reason, now.UnixMilli(), jsonList(targets), community)
 	if err != nil {
 		return fmt.Errorf("drop held bans: %w", err)
 	}
