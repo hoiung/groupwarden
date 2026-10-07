@@ -324,7 +324,11 @@ func (e *env) memberShow(ctx context.Context, st *store.Store, session *store.Se
 	for _, ev := range evs {
 		media := ev.MediaState
 		if ev.MediaKind != "" {
-			media = fmt.Sprintf("%s %s %q %d bytes (%s)", ev.MediaKind, ev.MediaMime, ev.MediaName, ev.MediaSize, ev.MediaState)
+			size := "size unknown"
+			if ev.MediaSize > 0 {
+				size = fmt.Sprintf("%d bytes", ev.MediaSize)
+			}
+			media = fmt.Sprintf("%s %s %q %s (%s)", ev.MediaKind, ev.MediaMime, ev.MediaName, size, ev.MediaState)
 		}
 		rec.Evidence = append(rec.Evidence, evidenceJSON{ev.ID, ev.Chat, ev.Community, ev.Sender, ev.PushName, ev.MsgID, ev.Rule,
 			json.RawMessage(ev.Fields), media, ev.CreatedAt.UTC().Format(time.RFC3339)})
