@@ -250,7 +250,8 @@ func TestHealthcheckExitCodes(t *testing.T) {
 	if code := te.cmd("healthcheck"); code != 0 {
 		t.Fatalf("healthy: exit %d\n%s", code, te.out)
 	}
-	for _, want := range []string{"running: yes", "connected: yes", "deaf: no", "config: vabc123def456", "telegram: ok", "paused: no"} {
+	for _, want := range []string{"running: yes", "connected: yes", "deaf: no", "config: vabc123def456", "telegram: ok",
+		"last event: none yet", "paused: no"} {
 		if !strings.Contains(te.out.String(), want) {
 			t.Fatalf("healthy output lacks %q:\n%s", want, te.out)
 		}
@@ -261,6 +262,13 @@ func TestHealthcheckExitCodes(t *testing.T) {
 	}
 	if code := te.cmd("healthcheck"); code != 0 || !strings.Contains(te.out.String(), "paused: removals and bans (deletes continue) since") {
 		t.Fatalf("paused: exit %d\n%s", code, te.out)
+	}
+	// The last event's age, from the time the bot wrote.
+	te.now = func() time.Time { return now }
+	healthy[store.StatusLastEvent] = store.StatusTime(now.Add(-3 * time.Minute))
+	setStatus(t, te, healthy, now)
+	if code := te.cmd("healthcheck"); code != 0 || !strings.Contains(te.out.String(), "last event: 3m0s ago") {
+		t.Fatalf("last event: exit %d\n%s", code, te.out)
 	}
 	// Each change makes the bot unhealthy and prints why.
 	unhealthy := []struct {
