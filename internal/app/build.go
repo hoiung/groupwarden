@@ -87,7 +87,7 @@ func Build(p Parts) (*App, error) {
 		Executor:  exec,
 		Media:     media,
 		Purger: &ledger.Purger{Store: p.Store, Config: p.Config, Session: p.Session, AnnouncementChats: dir.AnnouncementGroups,
-			Log: p.Log, Now: time.Now},
+			Ready: dir.Loaded(), Log: p.Log, Now: time.Now},
 		Sweep:     &reconcile.Sweep{Enforcer: enforcer, Directory: dir, Config: p.Config, Log: p.Log, Sleep: action.Sleep},
 		AdminChat: chat,
 		Admin:     &pipeline.Admin{Store: p.Store, Config: p.Config, Directory: dir, Enforcer: enforcer, Log: p.Log},
