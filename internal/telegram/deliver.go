@@ -191,8 +191,10 @@ func digestible(r store.Report) bool {
 }
 
 // deliverReport posts one report: the report message (with its buttons),
-// then any follow-ups the member's text did not fit in, as replies. Parts
-// already posted by an earlier attempt are not posted again.
+// then any follow-ups the member's text did not fit in, as replies. An
+// earlier attempt's parts are not posted again: it resumes after the last
+// part posted (each is recorded with its index, so a part Telegram refused
+// before it does not shift the count).
 func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 	ctx, err := c.lock(ctx)
 	if err != nil {
@@ -223,17 +225,16 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	head, done := 0, 0
+	head, next := 0, 0
 	for _, m := range posted {
-		switch m.Role {
-		case store.RoleReport:
+		if m.Role == store.RoleReport {
 			head = m.MessageID
-			done++
-		case store.RoleFollowup:
-			done++
+		}
+		if m.Role == store.RoleReport || m.Role == store.RoleFollowup {
+			next = max(next, m.Part+1)
 		}
 	}
-	for i := done; i < len(out.parts); i++ {
+	for i := next; i < len(out.parts); i++ {
 		role, markup, replyTo := store.RoleFollowup, models.ReplyMarkup(nil), head
 		if i == 0 {
 			role, markup, replyTo = store.RoleReport, keyboard(r), 0
@@ -241,10 +242,8 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 		msg, err := c.sendText(ctx, r.Priority, out.parts[i], out.quotes[i], replyTo, markup)
 		if err != nil {
 			if badRequest(err) && i > 0 {
-				// One follow-up refused: the parts after it still go. (A
-				// refused part is not recorded, so a retry after a crash
-				// before the report is marked sent posts one part again per
-				// refused part; it never loses one.)
+				// One follow-up refused: the parts after it still go. It is
+				// not recorded; a retry resumes after the last part posted.
 				c.Log.Error("telegram refused a follow-up part; skipping it", "report", r.ID, "kind", r.Kind,
 					"part", i, "err", err.Error())
 				continue
@@ -261,7 +260,7 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 		if i == 0 {
 			head = msg.ID
 		}
-		m := store.TGMessage{ReportID: r.ID, Role: role, ChatID: msg.Chat.ID, MessageID: msg.ID,
+		m := store.TGMessage{ReportID: r.ID, Role: role, ChatID: msg.Chat.ID, MessageID: msg.ID, Part: i,
 			Stripped: out.stripped[i], SentAt: c.Now()}
 		if err := c.record(ctx, fmt.Sprintf("report %d part %d", r.ID, i), func(ctx context.Context) error {
 			return c.Store.AddTGMessage(ctx, m)
@@ -361,31 +360,108 @@ func (c *Chat) reportEdit(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// postAttachment posts the saved attachment of a delivered action report as
-// a reply to it.
+// attachmentWindow is how many attachments still to post one step looks at,
+// so one whose upload keeps failing waits its turn without holding up the
+// others.
+const attachmentWindow = 10
+
+// uploadRetry is an attachment whose upload failed: when it first failed,
+// how often, and when to try again.
+type uploadRetry struct {
+	first, next time.Time
+	tries       int
+}
+
+// postAttachment posts the saved attachment of one delivered action report as
+// a reply to it. An upload that fails is logged and tried again later, backing
+// off per attachment (idlePoll, doubling, at most an hour; held in memory), so
+// it never holds up the take-downs, text removals and summary behind it. One
+// still failing after report.attachment_show_hours (as long as it would have
+// been shown) is marked failed, its file kept for the purge.
 func (c *Chat) postAttachment(ctx context.Context) (bool, error) {
-	due, err := c.Store.AttachmentsToPost(ctx, ledger.KindAction, 1)
+	due, err := c.Store.AttachmentsToPost(ctx, ledger.KindAction, attachmentWindow)
 	if err != nil || len(due) == 0 {
 		return false, err
 	}
-	_, err = c.showAttachment(ctx, due[0].Report, due[0].Evidence)
-	if errors.Is(err, errFileRefused) {
-		return true, nil // settled and logged: the rest of the work goes on
+	now := c.Now()
+	giveUp := time.Duration(c.Config.Current().Config.Report.AttachmentShowHours) * time.Hour
+	c.mu.Lock()
+	for id, r := range c.uploads {
+		if now.Sub(r.first) > 2*giveUp {
+			delete(c.uploads, id) // it left the queue another way (purged, forgotten)
+		}
 	}
-	return true, err
+	c.mu.Unlock()
+	for _, a := range due {
+		c.mu.Lock()
+		retry := c.uploads[a.Evidence.ID]
+		c.mu.Unlock()
+		if now.Before(retry.next) {
+			continue
+		}
+		_, err := c.showAttachment(ctx, a.Report, a.Evidence)
+		var up *uploadError
+		if !errors.As(err, &up) || ctx.Err() != nil {
+			c.forgetUpload(a.Evidence.ID)
+			if errors.Is(err, errFileRefused) {
+				return true, nil // settled and logged: the rest of the work goes on
+			}
+			return true, err
+		}
+		return true, c.uploadFailed(ctx, a, retry, giveUp, up)
+	}
+	return false, nil
+}
+
+// uploadFailed records a failed upload of a's file: tried again after a
+// backoff, or marked failed once it has failed for giveUp.
+func (c *Chat) uploadFailed(ctx context.Context, a store.AttachmentToPost, r uploadRetry, giveUp time.Duration,
+	err error) error {
+	now := c.Now()
+	if r.first.IsZero() {
+		r.first = now
+	}
+	r.tries++
+	if now.Sub(r.first) >= giveUp {
+		c.Log.Error("telegram has not taken an attachment for report.attachment_show_hours; giving up",
+			"report", a.Report.ID, "evidence", a.Evidence.ID, "tries", r.tries, "err", err.Error())
+		if err := c.Store.SetMedia(ctx, a.Evidence.ID, store.MediaFailed, a.Evidence.MediaPath, fmt.Sprintf(
+			"Telegram did not take the file in %s: %s", giveUp, err.Error()), a.Evidence.MediaSize); err != nil {
+			return err
+		}
+		c.forgetUpload(a.Evidence.ID)
+		return nil
+	}
+	r.next = now.Add(min(idlePoll<<min(r.tries, 7), time.Hour))
+	c.mu.Lock()
+	c.uploads[a.Evidence.ID] = r
+	c.mu.Unlock()
+	c.Log.Warn("attachment upload failed; trying again later", "report", a.Report.ID, "evidence", a.Evidence.ID,
+		"tries", r.tries, "next", r.next, "err", err.Error())
+	return nil
+}
+
+func (c *Chat) forgetUpload(evidenceID int64) {
+	c.mu.Lock()
+	delete(c.uploads, evidenceID)
+	c.mu.Unlock()
 }
 
 // errFileRefused: Telegram will never take the file; it is marked failed.
 var errFileRefused = errors.New("refused by Telegram")
 
+// uploadError is an upload Telegram did not take this time (a timeout, a 5xx,
+// a retry_after): it may take it later.
+type uploadError struct{ err error }
+
+func (e *uploadError) Error() string { return e.err.Error() }
+func (e *uploadError) Unwrap() error { return e.err }
+
 // showAttachment posts ev's saved file as a reply to report r. ok is false
-// when the file is no longer there (the evidence copy was purged).
+// when the file is no longer there (the evidence copy was purged). It does
+// not take the delivery slot: an upload can run for minutes (uploadTimeout),
+// and posting a file is never a part of a report a retry could send twice.
 func (c *Chat) showAttachment(ctx context.Context, r store.Report, ev store.Evidence) (bool, error) {
-	ctx, err := c.lock(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer c.unlock(ctx)
 	f, err := os.Open(ev.MediaPath) // #nosec G304 -- a path the attachment fetcher wrote under data_dir
 	if err != nil {
 		c.Log.Error("the saved attachment is missing", "report", r.ID, "evidence", ev.ID, "err", err)
@@ -424,7 +500,7 @@ func (c *Chat) showAttachment(ctx context.Context, r store.Report, ev store.Evid
 		return false, fmt.Errorf("%w: %s", errFileRefused, err.Error())
 	}
 	if err != nil {
-		return false, err
+		return false, &uploadError{err: err}
 	}
 	m := store.TGMessage{ReportID: r.ID, Role: store.RoleAttachment, ChatID: msg.Chat.ID, MessageID: msg.ID,
 		SentAt: c.Now()}
@@ -472,7 +548,7 @@ func (c *Chat) takeDown(ctx context.Context, m store.TGMessage) error {
 		c.Log.Info("attachment post deleted", "report", m.ReportID, "message", m.MessageID)
 		return c.markGone(ctx, m)
 	}
-	if !badRequest(err) {
+	if !gone(err) {
 		return err
 	}
 	c.Log.Warn("attachment post could not be deleted; replacing it with a placeholder", "report", m.ReportID,
@@ -486,7 +562,7 @@ func (c *Chat) takeDown(ctx context.Context, m store.TGMessage) error {
 				MediaAttachment: strings.NewReader(note)}})
 		return err
 	})
-	if err != nil && !badRequest(err) {
+	if err != nil && !gone(err) {
 		return err
 	}
 	if err != nil {
@@ -542,11 +618,11 @@ func (c *Chat) strip(ctx context.Context, m store.TGMessage) error {
 			Text: m.Stripped, LinkPreviewOptions: noPreview(), ReplyMarkup: markup})
 		return err
 	})
-	if err != nil && !badRequest(err) {
+	if err != nil && !gone(err) {
 		return err
 	}
 	if err != nil {
-		c.Log.Warn("message text could not be removed (message gone or unchanged)", "report", m.ReportID,
+		c.Log.Warn("message text could not be removed (message gone or unchanged, or the chat moved)", "report", m.ReportID,
 			"message", m.MessageID, "err", err.Error())
 	} else {
 		c.Log.Info("member text removed from a report", "report", m.ReportID, "message", m.MessageID, "role", m.Role)
@@ -596,14 +672,14 @@ func (c *Chat) summary(ctx context.Context) (bool, error) {
 			fmt.Fprintf(&b, "Daily summary for %s (UTC):\n%s\n\n", d.Format(time.DateOnly), strings.Join(lines, "\n"))
 		}
 	}
+	through := today.AddDate(0, 0, -1).Format(time.DateOnly)
 	sent := false
 	if text := strings.TrimSpace(b.String()); text != "" {
-		if err := c.sendSummary(ctx, text); err != nil {
+		if err := c.sendSummary(ctx, text, through, st[store.StatusSummaryParts].Value); err != nil {
 			return false, err
 		}
 		sent = true
 	}
-	through := today.AddDate(0, 0, -1).Format(time.DateOnly)
 	if err := c.record(ctx, "daily summary through "+through, func(ctx context.Context) error {
 		if err := c.Store.MarkReportsSent(ctx, ids); err != nil {
 			return err
@@ -662,21 +738,36 @@ func (c *Chat) reportMessage(ctx context.Context, reportID int64) (int, error) {
 	return 0, nil
 }
 
-// sendSummary posts the daily summary, in parts when it is long.
-func (c *Chat) sendSummary(ctx context.Context, text string) error {
+// sendSummary posts the daily summary through the day `through`, in parts
+// when it is long. Each part is recorded together with the count of parts
+// posted (progress, StatusSummaryParts), so a retry after a failed send or a
+// record the store would not take resumes after the last part posted. A part
+// Telegram refuses is skipped (the rest still go).
+func (c *Chat) sendSummary(ctx context.Context, text, through, progress string) error {
 	ctx, err := c.lock(ctx)
 	if err != nil {
 		return err
 	}
 	defer c.unlock(ctx)
 	parts, _ := split(text, "")
-	for _, part := range parts {
-		msg, err := c.sendText(ctx, false, part, quote{}, 0, nil)
+	next := 0
+	if n, ok := strings.CutPrefix(progress, through+":"); ok {
+		next, _ = strconv.Atoi(n) // unreadable: start again
+	}
+	for i := next; i < len(parts); i++ {
+		msg, err := c.sendText(ctx, false, parts[i], quote{}, 0, nil)
+		if err != nil && badRequest(err) {
+			c.Log.Error("telegram refused a part of the daily summary; skipping it", "through", through, "part", i,
+				"err", err.Error())
+			continue
+		}
 		if err != nil {
 			return err
 		}
-		if err := c.Store.AddTGMessage(ctx, store.TGMessage{Role: store.RoleSummary, ChatID: msg.Chat.ID,
-			MessageID: msg.ID, SentAt: c.Now()}); err != nil {
+		m := store.TGMessage{Role: store.RoleSummary, ChatID: msg.Chat.ID, MessageID: msg.ID, Part: i, SentAt: c.Now()}
+		kv := map[string]string{store.StatusSummaryParts: through + ":" + strconv.Itoa(i+1)}
+		if err := c.record(ctx, fmt.Sprintf("daily summary through %s part %d", through, i),
+			func(ctx context.Context) error { return c.Store.AddTGMessageStatus(ctx, m, kv) }); err != nil {
 			return err
 		}
 	}
