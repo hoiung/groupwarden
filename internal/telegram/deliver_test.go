@@ -19,34 +19,88 @@ import (
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
 
-// TestDigestOfTooLongReport: in a backlog whose oldest digestible report is
-// too long to share a message, that report goes on its own (in parts), the
-// rest are digested, and each digest counts what it holds.
+// TestDigestOfTooLongReport: in a backlog holding reports too long to share
+// a message, a report that cannot share a digest with another goes on its
+// own (a long one in parts), the rest are digested, and each digest counts
+// what it holds, never fewer than two.
 func TestDigestOfTooLongReport(t *testing.T) {
 	h := newHarness(t, "")
-	long := h.report(store.Report{Kind: "would_remove", Text: strings.Repeat("general (group…0111): checked\n", 200)})
+	longText := strings.Repeat("general (group…0111): checked\n", 200)
+	short := func(s string) int64 { return h.report(store.Report{Kind: "would_remove", Text: "info " + s}) }
+	alone := short("alone") // only it fits before the first long report
+	long := h.report(store.Report{Kind: "would_remove", Text: longText})
+	short("a") // these two fit before the second long one
+	short("b")
+	long2 := h.report(store.Report{Kind: "would_remove", Text: longText})
 	for i := 0; i < 15; i++ {
-		h.report(store.Report{Kind: "would_remove", Text: "info " + strconv.Itoa(i)})
+		short(strconv.Itoa(i))
 	}
 	h.drain()
-	if h.head(long) == 0 {
-		t.Fatal("the long report was not posted")
+	for _, id := range []int64{alone, long, long2} {
+		if h.head(id) == 0 {
+			t.Fatalf("report %d was not posted on its own", id)
+		}
 	}
 	digests := 0
 	for _, p := range h.srv.Posted() {
 		text := p.Params["text"]
 		if n, rest, ok := strings.Cut(text, " reports while the chat was busy:"); ok {
 			digests++
-			if want := strconv.Itoa(strings.Count(rest, "\n\n#")); n != want {
-				t.Fatalf("digest says %s reports and holds %s", n, want)
+			holds := strings.Count(rest, "\n\n#")
+			if want := strconv.Itoa(holds); n != want || holds < 2 {
+				t.Fatalf("digest says %s reports and holds %d", n, holds)
 			}
-			if strings.Contains(rest, "#"+strconv.FormatInt(long, 10)+" ") {
-				t.Fatal("the long report went in a digest")
+			for _, id := range []int64{alone, long, long2} {
+				if strings.Contains(rest, "#"+strconv.FormatInt(id, 10)+" ") {
+					t.Fatalf("report %d went in a digest", id)
+				}
 			}
 		}
 	}
-	if digests == 0 {
-		t.Fatal("the short reports were not digested")
+	if digests < 2 {
+		t.Fatalf("%d digests, want the two short ones together and the last 15", digests)
+	}
+}
+
+// TestTextRemovalUsesTheCommunityWindow: a community's own
+// retention.evidence_days decides when the member's text leaves its reports.
+func TestTextRemovalUsesTheCommunityWindow(t *testing.T) {
+	cfg := strings.Replace(modtest.Config, "    name: community a\n",
+		"    name: community a\n    retention:\n      evidence_days: 7\n", 1)
+	h := newHarnessKit(t, modtest.NewConfig(t, cfg))
+	h.k.Deliver(h.k.Spam("W1", modtest.G1))
+	h.drain()
+	h.k.Clock.Advance(6 * 24 * time.Hour)
+	h.drain()
+	if n := len(h.srv.Requests("editMessageText")); n != 0 {
+		t.Fatalf("%d edits before the community's 7 days", n)
+	}
+	h.k.Clock.Advance(2 * 24 * time.Hour)
+	h.drain()
+	if len(h.srv.Requests("editMessageText")) == 0 {
+		t.Fatal("the member's text was not removed after the community's 7 days (the default is 30)")
+	}
+}
+
+// TestLongFileNameClippedInTheHeader: a file name too long for a message is
+// clipped in the report's header, so the header still goes whole in the
+// first message (the name is in full under "Message:").
+func TestLongFileNameClippedInTheHeader(t *testing.T) {
+	h := newHarness(t, "")
+	m := h.k.Spam("N1", modtest.G1)
+	m.Media = &client.Media{Kind: "document", MimeType: "application/pdf",
+		FileName: strings.Repeat("Earn-5000-weekly-", 300) + ".pdf", Size: 7, Raw: []byte("raw")}
+	h.k.Deliver(m)
+	h.drain()
+	first := h.srv.Posted()[0].Params["text"]
+	line := ""
+	for _, l := range strings.Split(first, "\n") {
+		if strings.HasPrefix(l, "Attachment: ") {
+			line = l
+		}
+	}
+	if !strings.Contains(first, "\nMessage:") || line == "" || len(line) > 300 || !strings.Contains(line, "… (") {
+		t.Fatalf("the header did not go whole with the file name clipped; attachment line %.120q…", line)
 	}
 }
 
