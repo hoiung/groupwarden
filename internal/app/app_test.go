@@ -452,3 +452,33 @@ func TestJoinedGroupRefreshesGroups(t *testing.T) {
 	h.eventually("the list read again", func() bool { return h.fake.Count("JoinedGroups") == 2 })
 	h.eventually("the group known", func() bool { return h.app.Directory.Known(testGroup) })
 }
+
+// TestFailedListReadRetriedEveryTick: once the group list has loaded, a
+// later read that fails (the one a join asks for) is tried again at every
+// 30-second tick until it succeeds, not left until the next reconcile
+// interval; after a success, ticks read it no more.
+func TestFailedListReadRetriedEveryTick(t *testing.T) {
+	h := start(t, &clienttest.Fake{}, Settings{})
+	h.eventually("the list at connect", func() bool { return h.fake.Count("JoinedGroups") == 1 })
+	h.fake.FailNext("JoinedGroups", errors.New("rate limited"), errors.New("rate limited"))
+	if err := h.fake.Deliver(&client.JoinedGroup{Group: testGroup, Time: h.clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h.eventually("the failed read after the join", func() bool { return h.fake.Count("JoinedGroups") == 2 })
+	h.fake.SetGroups([]client.Group{{JID: testGroup, Name: "test"}})
+	for want := 3; want <= 4; want++ { // fails once more, then succeeds
+		h.clock.Advance(monitorEvery)
+		h.eventually(fmt.Sprintf("read %d at the next tick", want), func() bool { return h.fake.Count("JoinedGroups") == want })
+	}
+	h.clock.Advance(monitorEvery)
+	settle()
+	if n := h.fake.Count("JoinedGroups"); n != 4 {
+		t.Fatalf("%d list reads: a tick read the list again after it loaded", n)
+	}
+	if h.app.Directory.GroupName(string(testGroup)) != "test" {
+		t.Error("the list read at the retry was not applied")
+	}
+	if n := len(h.rec.OfKind(alert.CoverageLost)); n != 0 {
+		t.Errorf("%d coverage alerts: a failed read after the list loaded is retried, not alerted", n)
+	}
+}
