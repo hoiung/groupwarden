@@ -243,3 +243,57 @@ func TestSeenPurge(t *testing.T) {
 		t.Fatal("a delivery decided within the retention was queued again")
 	}
 }
+
+// TestInboxDecidedThrough: the newest undecided row marks a point in the
+// inbox; it counts as decided through that point once every row up to it is
+// decided, whatever arrived after it. Row IDs are never reused, so a row
+// queued after the inbox emptied lies past every earlier mark.
+func TestInboxDecidedThrough(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t, Options{})
+	check := func(what string, mark int64, want bool) {
+		t.Helper()
+		got, err := s.InboxUndecidedThrough(ctx, mark)
+		if err != nil || got != want {
+			t.Fatalf("%s: undecided through %d = %v (%v), want %v", what, mark, got, err, want)
+		}
+	}
+	put := func(key string) {
+		t.Helper()
+		if _, err := s.InboxPut(ctx, key, "message", []byte("{}")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	decideOldest := func() {
+		t.Helper()
+		rows, err := s.InboxOldest(ctx, 1)
+		if err != nil || len(rows) != 1 {
+			t.Fatal(rows, err)
+		}
+		if err := s.Decide(ctx, rows[0], Seen{Chat: "g", MsgID: rows[0].Key}, func(*sql.Tx) error { return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if last, err := s.InboxLast(ctx); err != nil || last != 0 {
+		t.Fatalf("empty inbox: last %d (%v), want 0", last, err)
+	}
+	check("an empty inbox", 0, false)
+	put("msg|g|1")
+	put("msg|g|2")
+	mark, err := s.InboxLast(ctx)
+	if err != nil || mark == 0 {
+		t.Fatalf("last %d (%v)", mark, err)
+	}
+	put("msg|g|3") // after the mark
+	check("nothing decided", mark, true)
+	decideOldest()
+	check("one of the two decided", mark, true)
+	decideOldest()
+	check("both decided, a later row waiting", mark, false)
+	decideOldest()
+	put("msg|g|4") // the inbox emptied first
+	check("a row queued after the inbox emptied", mark, false)
+	if last, _ := s.InboxLast(ctx); last <= mark {
+		t.Fatalf("row ID %d reused at or below the mark %d", last, mark)
+	}
+}
