@@ -12,7 +12,9 @@ import (
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/app"
 	"github.com/hoiung/groupwarden/internal/client"
+	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/modtest"
+	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/reconcile"
 	"github.com/hoiung/groupwarden/internal/store"
 )
@@ -123,7 +125,7 @@ func TestCoverageAbsentNotAdminCovered(t *testing.T) {
 	groups := modtest.Groups()
 	groups[2].Participants[0].IsAdmin = false // the bot is in "jobs" but not an admin
 	k.Fake.SetGroups(groups)
-	k.Dir.Update(groups)
+	modtest.Load(t, k.Dir, groups)
 	k.Fake.SetLinked(modtest.Community, []client.GroupRef{{JID: Ann, Name: "announcements", IsAnnouncement: true},
 		{JID: modtest.G1, Name: "general"}, {JID: modtest.G2, Name: "jobs"}, {JID: G3, Name: "events"}})
 	s := newSweep(k)
@@ -174,7 +176,7 @@ func TestFewerThanTwoHumanAdminsAlert(t *testing.T) {
 	groups := modtest.Groups()
 	groups[1].Participants[3].IsAdmin = true // "general" has two human admins
 	k.Fake.SetGroups(groups)
-	k.Dir.Update(groups)
+	modtest.Load(t, k.Dir, groups)
 	k.Fake.SetLinked(modtest.Community, []client.GroupRef{{JID: modtest.G1, Name: "general"},
 		{JID: modtest.G2, Name: "jobs"}, {JID: G3, Name: "events"}})
 	s := newSweep(k)
@@ -272,7 +274,7 @@ func TestSweepDetectsNewGroup(t *testing.T) {
 		Participants: []client.Participant{{JID: modtest.Bot, LID: modtest.Bot, Phone: modtest.BotPhone},
 			{JID: modtest.Admin, LID: modtest.Admin, Phone: modtest.AdminPhone, IsAdmin: true}}})
 	k.Fake.SetGroups(groups)
-	k.Dir.Update(groups)
+	modtest.Load(t, k.Dir, groups)
 	s.run(t)
 	reps := k.Reports(string(alert.Coverage))
 	if len(reps) != 3 {
@@ -303,7 +305,7 @@ func TestSweepDetectsNewGroup(t *testing.T) {
 	}
 	// A group unlinked from the community is forgotten.
 	k.Fake.SetGroups(modtest.Groups())
-	k.Dir.Update(modtest.Groups())
+	modtest.Load(t, k.Dir, modtest.Groups())
 	s.run(t)
 	rows, err := k.Store.CoverageRows(k.Ctx)
 	if err != nil {
@@ -322,8 +324,16 @@ func TestSweepAfterRepair(t *testing.T) {
 	s := newSweep(k)
 	stop := startApp(t, k, s, nil)
 	waitFor(t, "the sweep at connect", func() bool { return sweeps(k) == 1 })
+	begun := k.Fake.Count("SubGroups")
 	k.Fake.Emit(client.Lifecycle{Kind: client.Disconnected})
 	k.Fake.Emit(client.Lifecycle{Kind: client.Connected})
+	// The sweep after the reconnect waits for WhatsApp to deliver what it
+	// held meanwhile, as the first one did.
+	time.Sleep(50 * time.Millisecond)
+	if n := k.Fake.Count("SubGroups"); n != begun {
+		t.Fatalf("a sweep began before WhatsApp delivered the offline backlog after the reconnect (%d, was %d)", n, begun)
+	}
+	k.Fake.Emit(client.Lifecycle{Kind: client.CaughtUp})
 	waitFor(t, "the sweep after a reconnect", func() bool { return sweeps(k) == 2 })
 	stop()
 	// `groupwarden pair`, then `run` again: a member banned while the bot was
@@ -339,6 +349,131 @@ func TestSweepAfterRepair(t *testing.T) {
 	if n := k.Fake.Count("Remove " + string(modtest.G1) + " " + string(modtest.Other1)); n != 1 {
 		t.Fatalf("the banned member was not removed after re-pairing: %v", k.Fake.Calls())
 	}
+}
+
+// freshDirectory gives the kit an empty group directory, as `run` has when
+// it starts: nothing is decided until a group list loads.
+func freshDirectory(k *modtest.Kit) {
+	d := &pipeline.Directory{}
+	d.SetSelf(k.Fake.SelfIDs)
+	k.Dir, k.Enforcer.Directory, k.Mod.Directory, k.Exec.Directory = d, d, d, d
+}
+
+// TestConnectSweepWaitsForOfflineBacklog: after a connect the sweep waits
+// until WhatsApp has said it delivered what it held while the bot was
+// offline and the worker has decided all of it. A human admin re-added a
+// banned member meanwhile: the re-add lifts the ban before the sweep looks,
+// so the sweep does not remove them (and the admins are not told "the ban is
+// lifted" about someone already removed).
+func TestConnectSweepWaitsForOfflineBacklog(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Ban(modtest.Other1M)
+	groups := modtest.Groups()
+	groups[1].Participants = append(groups[1].Participants, client.Participant{JID: modtest.Other1, LID: modtest.Other1})
+	k.Fake.SetGroups(groups)
+	k.Fake.OnConnect = func(f *clienttest.Fake) { f.Emit(client.Lifecycle{Kind: client.Connected}) }
+	// The worker cannot record its decisions yet: it is behind on the backlog.
+	lift := modtest.FailWrites(t, k.Store, "seen", "")
+	stop := startApp(t, k, newSweep(k), nil)
+	waitFor(t, "the list at connect", func() bool { return k.Fake.Count("JoinedGroups") == 1 })
+	readd := &client.GroupChange{Group: modtest.G1, Actor: modtest.Admin, Time: k.Clock.Now(),
+		Joined: []client.JID{modtest.Other1}}
+	if err := k.Fake.Deliver(readd); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := k.Fake.Count("SubGroups"); n != 0 {
+		t.Fatalf("the sweep began before WhatsApp delivered the offline backlog: %v", k.Fake.Calls())
+	}
+	k.Fake.Emit(client.Lifecycle{Kind: client.CaughtUp, Detail: "1 offline events"})
+	for range 3 { // the sweep checks the inbox every second
+		time.Sleep(20 * time.Millisecond)
+		k.Clock.Advance(time.Second)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := k.Fake.Count("SubGroups"); n != 0 {
+		t.Fatalf("the sweep began before the worker decided the offline backlog: %v", k.Fake.Calls())
+	}
+	lift()
+	// A new message wakes the worker, which decides the re-add first.
+	if err := k.Fake.Deliver(k.Msg("M1", modtest.G1, modtest.Member, "hello")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the sweep", func() bool {
+		k.Clock.Advance(time.Second)
+		return sweeps(k) >= 1
+	})
+	stop()
+	k.Fire()
+	if n := k.Fake.Count("Remove " + string(modtest.G1) + " " + string(modtest.Other1)); n != 0 {
+		t.Fatalf("the member a human admin re-added was removed: %v", k.Fake.Calls())
+	}
+	if k.Banned(modtest.Other1M, "") || len(k.Reports("ban_lifted")) != 1 {
+		t.Fatalf("the re-add did not lift the ban: banned=%v, reports %d", k.Banned(modtest.Other1M, ""),
+			len(k.Reports("ban_lifted")))
+	}
+}
+
+// TestSweepWaitsForTheGroupList: a sweep never runs before the group list
+// has loaded. Against an empty directory every linked group looks like one
+// the bot is not in: it would try to join them all and report them lost.
+func TestSweepWaitsForTheGroupList(t *testing.T) {
+	k := modtest.New(t, "")
+	freshDirectory(k)
+	k.Fake.FailNext("JoinedGroups", errors.New("rate limited"))
+	stop := startApp(t, k, newSweep(k), nil)
+	defer stop()
+	waitFor(t, "the failed list at connect", func() bool { return k.Fake.Count("JoinedGroups") == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if n := k.Fake.Count("SubGroups") + k.Fake.Count("JoinLinkedGroup"); n != 0 {
+		t.Fatalf("swept before the group list loaded: %v", k.Fake.Calls())
+	}
+	k.Clock.Advance(30 * time.Second) // the next tick loads the list
+	waitFor(t, "the sweep after the list loaded", func() bool { return sweeps(k) >= 1 })
+	if n := k.Fake.Count("JoinLinkedGroup"); n != 0 {
+		t.Fatalf("the sweep tried to join groups the bot is in: %v", k.Fake.Calls())
+	}
+}
+
+// TestJoinSweepAfterTheListReads: the bot joining a group reads the group
+// list again and sweeps; when that read fails the sweep waits for the read
+// the next tick makes, so it never runs on a list that lacks the group.
+func TestJoinSweepAfterTheListReads(t *testing.T) {
+	k := modtest.New(t, "")
+	stop := startApp(t, k, newSweep(k), nil)
+	defer stop()
+	waitFor(t, "the sweep at connect", func() bool { return sweeps(k) == 1 })
+	k.Fake.FailNext("JoinedGroups", errors.New("rate limited"))
+	if err := k.Fake.Deliver(&client.JoinedGroup{Group: G3, Time: k.Clock.Now(),
+		Info: client.Group{JID: G3, Parent: modtest.Community}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the failed read after the join", func() bool { return k.Fake.Count("JoinedGroups") == 2 })
+	time.Sleep(50 * time.Millisecond)
+	if n := sweeps(k); n != 1 {
+		t.Fatalf("%d sweeps: one ran on the list the failed read left", n)
+	}
+	k.Clock.Advance(30 * time.Second) // the next tick reads it again
+	waitFor(t, "the sweep after the read", func() bool { return sweeps(k) == 2 })
+}
+
+// TestSweepRunsWhenWhatsAppNeverSaysCaughtUp: a connection where WhatsApp
+// never says it delivered the offline backlog still gets its sweep, after
+// a bounded wait.
+func TestSweepRunsWhenWhatsAppNeverSaysCaughtUp(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Fake.OnConnect = func(f *clienttest.Fake) { f.Emit(client.Lifecycle{Kind: client.Connected}) }
+	stop := startApp(t, k, newSweep(k), nil)
+	defer stop()
+	waitFor(t, "the list at connect", func() bool { return k.Fake.Count("JoinedGroups") == 1 })
+	time.Sleep(50 * time.Millisecond) // the sweep starts waiting
+	k.Clock.Advance(9 * time.Minute)
+	time.Sleep(50 * time.Millisecond)
+	if n := k.Fake.Count("SubGroups"); n != 0 {
+		t.Fatalf("swept %d times before the wait for the offline backlog ran out", n)
+	}
+	k.Clock.Advance(time.Minute)
+	waitFor(t, "the sweep after the wait", func() bool { return sweeps(k) >= 1 })
 }
 
 // TestBotRemovedDetected: a leave event naming the bot raises a priority
@@ -393,7 +528,7 @@ func TestBotRemovedDetected(t *testing.T) {
 	all := modtest.Groups()
 	groups := []client.Group{all[0], all[3]} // the community and the standalone group
 	k2.Fake.SetGroups(groups)
-	k2.Dir.Update(groups)
+	modtest.Load(t, k2.Dir, groups)
 	s2.run(t)
 	lost := k2.Reports(string(alert.CoverageLost))
 	if len(lost) != 1 || !lost[0].Priority {
