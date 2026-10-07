@@ -54,6 +54,7 @@ type Server struct {
 	nextID  int
 	fail    map[string][]Reply // per method, consumed in order
 	always  map[string]Reply   // per method, until Clear
+	holds   map[string]hold    // per method, the next call only
 	admins  map[int64]bool
 	updates []json.RawMessage
 	updID   int64
@@ -65,7 +66,8 @@ func New(t testing.TB, now func() time.Time) *Server {
 	if now == nil {
 		now = time.Now
 	}
-	s := &Server{now: now, nextID: 100, fail: map[string][]Reply{}, always: map[string]Reply{}, admins: map[int64]bool{}}
+	s := &Server{now: now, nextID: 100, fail: map[string][]Reply{}, always: map[string]Reply{}, holds: map[string]hold{},
+		admins: map[int64]bool{}}
 	s.Token = strconv.Itoa(700000001) + ":" + strings.Repeat("Ab0_", 9) // secret-allow (built at run time; fake)
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 	t.Cleanup(s.Close)
@@ -85,6 +87,20 @@ func (s *Server) FailAlways(method string, r Reply) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.always[method] = r
+}
+
+// hold is a call held until released.
+type hold struct{ arrived, release chan struct{} }
+
+// Hold makes the next call of method wait, once it has arrived (arrived is
+// closed then), until release is called (call it before the test ends).
+func (s *Server) Hold(method string) (arrived <-chan struct{}, release func()) {
+	h := hold{arrived: make(chan struct{}), release: make(chan struct{})}
+	s.mu.Lock()
+	s.holds[method] = h
+	s.mu.Unlock()
+	var once sync.Once
+	return h.arrived, func() { once.Do(func() { close(h.release) }) }
 }
 
 // Clear ends every FailAlways.
@@ -187,7 +203,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		idx = len(s.reqs)
 		s.reqs = append(s.reqs, req)
 	}
+	h, held := s.holds[method]
+	delete(s.holds, method)
 	s.mu.Unlock()
+	if held {
+		close(h.arrived)
+		<-h.release
+	}
 	if failing && (reply.Code != 0 || reply.EchoPath) { // a zero Reply lets that call through
 		s.failWith(w, r, reply)
 		return
