@@ -560,8 +560,8 @@ func (a *App) checkCompanions(ctx context.Context) {
 		}
 	}
 	sort.Strings(current)
-	a.mark(ctx, store.StatusCompanionsSeen, strings.Join(current, ","))
 	if len(fresh) == 0 {
+		a.mark(ctx, store.StatusCompanionsSeen, strings.Join(current, ","))
 		return
 	}
 	now := a.Clock.Now()
@@ -570,6 +570,9 @@ func (a *App) checkCompanions(ctx context.Context) {
 	a.alert(ctx, alert.Alert{Kind: alert.ExtraCompanion, Priority: true, Text: reason +
 		" (new: " + mask.IDs(strings.Join(fresh, ", ")) + "). Removals and bans are PAUSED; deletes continue. " +
 		"If you linked it yourself press [Resume]; if not, unlink it on the bot phone now."})
+	// Marked last: a stop before this repeats the pause and the alert at the
+	// next check instead of losing them.
+	a.mark(ctx, store.StatusCompanionsSeen, strings.Join(current, ","))
 }
 
 // reload swaps in the config file again (whole, or not at all) and applies
