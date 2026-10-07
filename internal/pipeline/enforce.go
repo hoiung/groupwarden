@@ -152,8 +152,9 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 				break
 			}
 			p.Intents, p.Reason = intents, "banned member joined"
+			removed := onceUnpaused(pausedScope(ctx, tx, e.Store), "removed")
 			rep := store.Report{Kind: ledger.KindBannedRejoin, Community: community, Buttons: []string{ledger.ButtonUndo},
-				Text: fmt.Sprintf("A banned member joined a group in %s (%s): removed.", where, joinHow(ch))}
+				Text: fmt.Sprintf("A banned member joined a group in %s (%s): %s.", where, joinHow(ch), removed)}
 			switch {
 			case !enforced(rs, community):
 				rep = store.Report{Kind: ledger.KindWouldRemove, Community: community, Text: fmt.Sprintf(
@@ -161,7 +162,7 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 					where, joinHow(ch))}
 			case actor == "":
 				rep.Kind, rep.Priority = ledger.KindUnknownActor, true
-				rep.Text = fmt.Sprintf("A banned member joined a group in %s and WhatsApp did not say who added them: removed. If an admin added them on purpose, press [Undo].", where)
+				rep.Text = fmt.Sprintf("A banned member joined a group in %s and WhatsApp did not say who added them: %s. If an admin added them on purpose, press [Undo].", where, removed)
 			}
 			e.Log.Info("banned member joined; removal planned", "community", mask.IDs(community),
 				"group", mask.IDs(string(ch.Group)), "member", mask.IDs(m.Key()), "actor_known", actor != "",
@@ -335,7 +336,8 @@ func (e *Enforcer) enforceBan(ctx context.Context, m client.Member, group client
 		enforce := enforced(rs, community)
 		p.Intents = []ledger.Intent{{Action: a, Chat: group, Community: community, Enforce: enforce}}
 		p.Reports = []store.Report{{Kind: ledger.KindBannedRejoin, Community: community, Buttons: []string{ledger.ButtonUndo},
-			Text: fmt.Sprintf("A banned member was found in a group in %s (%s): %s.", where, p.Reason, verb(a))}}
+			Text: fmt.Sprintf("A banned member was found in a group in %s (%s): %s.", where, p.Reason,
+				onceUnpaused(pausedScope(ctx, tx, e.Store), verb(a)))}}
 		if !enforce {
 			p.Reports = []store.Report{{Kind: ledger.KindWouldRemove, Community: community, Text: fmt.Sprintf(
 				"A banned member was found in a group in %s (%s): %s, but it is in shadow mode: not done.",
@@ -353,6 +355,29 @@ func (e *Enforcer) enforceBan(ctx context.Context, m client.Member, group client
 		e.wake()
 	}
 	return err
+}
+
+// pausedScope is which actions a pause holds now: store.ScopeAll (every
+// action), store.ScopeRemoveBan (removals and bans; deletes go on) or ""
+// (none). A report says what waits, so admins are never told a held action
+// was done.
+func pausedScope(ctx context.Context, tx *sql.Tx, st *store.Store) store.Scope {
+	if all, _ := st.PausedForTx(ctx, tx, store.ScopeAll); all {
+		return store.ScopeAll
+	}
+	if rb, _ := st.PausedForTx(ctx, tx, store.ScopeRemoveBan); rb {
+		return store.ScopeRemoveBan
+	}
+	return ""
+}
+
+// onceUnpaused says when a removal (or rejection) happens: at once, or once
+// the pause holding it ends (every pause holds removals).
+func onceUnpaused(paused store.Scope, done string) string {
+	if paused == "" {
+		return done
+	}
+	return done + " once the pause ends"
 }
 
 func verb(a store.Action) string {
