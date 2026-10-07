@@ -473,6 +473,84 @@ func TestHealthcheckRunsBesideRun(t *testing.T) {
 	}
 }
 
+// TestRunWatchesSyncTimerUnlessNone: run watches the config sync timer unless
+// GROUPWARDEN_NO_SYNC_TIMER is true, as the Docker image sets it (no sync
+// timer runs there); the backup is watched either way, and a value that is
+// neither true nor false refuses to start.
+func TestRunWatchesSyncTimerUnlessNone(t *testing.T) {
+	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "deploy", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^ENV ` + envNoSyncTimer + `=1$`).Match(dockerfile) {
+		t.Fatalf("deploy/Dockerfile does not set ENV %s=1", envNoSyncTimer)
+	}
+	getenv := func(value string) func(string) string {
+		return func(k string) string {
+			if k == envNoSyncTimer {
+				return value
+			}
+			return ""
+		}
+	}
+	for _, tc := range []struct{ value, want string }{
+		{"", `"timers":["config sync","backup"]`},
+		{"1", `"timers":["backup"]`},
+	} {
+		te := newTestEnv(t, &clienttest.Fake{})
+		te.provision(t)
+		tg := telegramtest.New(t, nil)
+		te.writeFile(t, "secrets.env", config.KeyTelegramBot+"="+tg.Token+"\n"+
+			config.KeyTelegramChatID+"="+strconv.FormatInt(telegramtest.ChatID, 10)+"\n", 0o600)
+		runEnv := *te.env
+		stderr := &syncBuffer{}
+		runEnv.stdout, runEnv.stderr, runEnv.telegramURL, runEnv.getenv = &syncBuffer{}, stderr, tg.URL, getenv(tc.value)
+		done := make(chan int, 1)
+		go func() { done <- runEnv.run([]string{"run", "--config", te.cfgPath}) }()
+		var line string
+		for deadline := time.Now().Add(10 * time.Second); line == ""; time.Sleep(20 * time.Millisecond) {
+			for _, l := range strings.Split(stderr.String(), "\n") {
+				if strings.Contains(l, `"msg":"watching outside timers"`) {
+					line = l
+				}
+			}
+			if line == "" && time.Now().After(deadline) {
+				t.Fatalf("%s=%q: run logged no watched timers:\n%s", envNoSyncTimer, tc.value, stderr)
+			}
+		}
+		if !strings.Contains(line, tc.want) {
+			t.Fatalf("%s=%q: %s, want %s", envNoSyncTimer, tc.value, line, tc.want)
+		}
+		te.cancel()
+		select {
+		case code := <-done:
+			if code != 0 {
+				t.Fatalf("%s=%q: run exited %d on shutdown", envNoSyncTimer, tc.value, code)
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatalf("%s=%q: run did not stop", envNoSyncTimer, tc.value)
+		}
+	}
+
+	// A fake admin chat and a timeout: a run that wrongly starts must neither
+	// reach the real Bot API nor hang the test.
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	te.env.getenv, te.env.telegramURL = getenv("maybe"), telegramtest.New(t, nil).URL
+	done := make(chan int, 1)
+	go func() { done <- te.cmd("run") }()
+	select {
+	case code := <-done:
+		if code != exitFail || !strings.Contains(te.errb.String(), envNoSyncTimer+`="maybe" is neither true nor false`) ||
+			te.opens.Load() != 0 {
+			t.Fatalf("run with %s=maybe: exit %d, WhatsApp opened %d times\n%s", envNoSyncTimer, code, te.opens.Load(), te.errb)
+		}
+	case <-time.After(10 * time.Second):
+		te.cancel()
+		t.Fatalf("run with %s=maybe started instead of refusing", envNoSyncTimer)
+	}
+}
+
 func TestFatalExitCodePrinted(t *testing.T) {
 	te := newTestEnv(t, &clienttest.Fake{})
 	if code := te.run([]string{"fatal-exit-code"}); code != 0 || strings.TrimSpace(te.out.String()) != "78" {
