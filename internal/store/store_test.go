@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/hoiung/groupwarden/internal/alert"
 )
 
 func openTemp(t *testing.T, opts Options) (*Store, string) {
@@ -182,6 +184,61 @@ func TestWriteFailurePausesActions(t *testing.T) {
 	_ = s.Write(ctx, func(tx *sql.Tx) error { _, err := tx.ExecContext(ctx, `SELECT nope FROM nowhere`); return err })
 	if paused, why := s.PausedFor(ctx, ScopeAll); paused {
 		t.Fatalf("logic error paused the store: %s", why)
+	}
+}
+
+// TestStatusTimeRoundTrip: a time written with StatusTime reads back to the
+// millisecond through the store; an absent, unreadable or zero value reads as
+// the zero time.
+func TestStatusTimeRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t, Options{})
+	at := time.Date(2026, 10, 7, 9, 30, 15, 123_456_789, time.UTC)
+	if err := s.SetStatus(ctx, map[string]string{StatusLastEvent: StatusTime(at), StatusSyncLastRun: "soon",
+		StatusBackupLastRun: "0"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := st[StatusLastEvent].Time(), at.Truncate(time.Millisecond); !got.Equal(want) {
+		t.Fatalf("read back %v, want %v", got, want)
+	}
+	for _, key := range []string{StatusSyncLastRun, StatusBackupLastRun, StatusBreakerReset} {
+		if got := st[key].Time(); !got.IsZero() {
+			t.Fatalf("%s (%q) read as %v, want the zero time", key, st[key].Value, got)
+		}
+	}
+}
+
+// TestPriorityKindStoredPriority: a report of an alert kind in the priority
+// set (AC 4.1) is stored as priority even when its writer did not say so; a
+// routine kind stays routine, and a writer's own priority is kept.
+func TestPriorityKindStoredPriority(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t, Options{})
+	cases := []struct {
+		r    Report
+		want bool
+	}{
+		{Report{Kind: string(alert.CoverageLost), Text: "lost"}, true},
+		{Report{Kind: string(alert.SyncFailed), Text: "sync"}, true},
+		{Report{Kind: string(alert.Coverage), Text: "found"}, false},
+		{Report{Kind: "admin_spared", Priority: true, Text: "spared"}, true},
+	}
+	for _, c := range cases {
+		id, err := s.AddReport(ctx, c.r, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := s.Report(ctx, id)
+		if err != nil || !ok {
+			t.Fatalf("read report %d: ok=%v err=%v", id, ok, err)
+		}
+		if got.Priority != c.want {
+			t.Fatalf("%s report stored with priority %v, want %v", c.r.Kind, got.Priority, c.want)
+		}
 	}
 }
 
