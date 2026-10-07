@@ -32,6 +32,7 @@ const (
 	KindStartup        = "startup"          // actions left at intended by a crash, retried
 	KindUndoRace       = "undo_race"        // a removal went out while [Undo] ran: re-invite by hand (priority)
 	KindBanCLI         = "ban_cli"          // a ban added or removed with the ban command
+	KindNotDone        = "not_done"         // an action the bot gave up on: do it by hand (priority)
 )
 
 // Buttons on reports (Telegram renders them; the names are the contract).
@@ -144,6 +145,20 @@ func existing(ctx context.Context, tx *sql.Tx, p Plan, r store.LedgerRow) (store
 	return open, reuse, nil
 }
 
+// revokesOnly reports whether p only deletes posts, each with its author's
+// address: no removal, ban or lifting needs a ban-list key.
+func revokesOnly(p Plan) bool {
+	if len(p.Intents) == 0 || len(p.Ban) > 0 || p.Lift {
+		return false
+	}
+	for _, in := range p.Intents {
+		if in.Action != store.ActRevoke || in.Address == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // Write stores p inside tx: the evidence copy first, then every action row
 // (intended; enforce rows queued), the ban (in the same transaction as the
 // removal rows, or held by a pause) or its lifting, then the reports linked
@@ -152,6 +167,11 @@ func existing(ctx context.Context, tx *sql.Tx, p Plan, r store.LedgerRow) (store
 func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, error) {
 	var w Written
 	target := p.Target.Key()
+	if target == "" && revokesOnly(p) {
+		// A sender with neither a LID nor a phone number: only their post is
+		// deleted, keyed by the address it came from.
+		target = string(p.Intents[0].Address)
+	}
 	if target == "" && (len(p.Intents) > 0 || len(p.Ban) > 0 || p.Lift) {
 		return w, fmt.Errorf("ledger: plan %s has actions but no target", p.Trigger)
 	}
