@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -622,7 +621,7 @@ func (a *App) checkOverdue(ctx context.Context, now time.Time) {
 		return
 	}
 	for _, t := range timers {
-		last := msStatus(st, t.key)
+		last := st[t.key].Time()
 		since := last
 		if since.IsZero() {
 			since = a.started
@@ -660,11 +659,11 @@ func (a *App) checkPhone(ctx context.Context, now time.Time) {
 		return
 	}
 	key := st[store.StatusPhoneDone].Value
-	done := msStatus(st, store.StatusPhoneDone)
+	done := st[store.StatusPhoneDone].Time()
 	if done.IsZero() {
 		// No [Done] yet: count from this first start.
 		if err := a.Store.SetStatus(ctx, map[string]string{
-			store.StatusPhoneDone: strconv.FormatInt(now.UnixMilli(), 10)}); err != nil {
+			store.StatusPhoneDone: store.StatusTime(now)}); err != nil {
 			a.Log.Error("write status", "err", err)
 		}
 		return
@@ -783,7 +782,7 @@ func (a *App) writeStatus(ctx context.Context) {
 		store.StatusConfigHash: a.Config.Current().Hash,
 	}
 	if !last.IsZero() {
-		kv[store.StatusLastEvent] = strconv.FormatInt(last.UnixMilli(), 10)
+		kv[store.StatusLastEvent] = store.StatusTime(last)
 	}
 	if err := a.Store.SetStatus(ctx, kv); err != nil && !errors.Is(err, context.Canceled) {
 		a.Log.Error("write status", "err", err)
