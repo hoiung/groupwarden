@@ -274,11 +274,13 @@ func nullTime(t time.Time) any {
 	return t.UnixMilli()
 }
 
-// Retry keeps a row queued until notBefore, counting the attempt.
+// Retry keeps a row queued until notBefore, counting the attempt. Only a row
+// still at intended changes: one [Undo] overturned while its call was in
+// flight keeps the reason that says who did.
 func (s *Store) Retry(ctx context.Context, id int64, notBefore time.Time, reason string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE ledger SET attempts = attempts + 1, reason = ?, updated_at = ? WHERE id = ?`,
-			reason, s.now().UnixMilli(), id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE ledger SET attempts = attempts + 1, reason = ?, updated_at = ?
+WHERE id = ? AND status = 'intended'`, reason, s.now().UnixMilli(), id); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE outbox SET not_before = ? WHERE ledger_id = ?`, notBefore.UnixMilli(), id)
