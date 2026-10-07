@@ -222,6 +222,33 @@ func TestHumanAdminAddNotReversed(t *testing.T) {
 	}
 }
 
+// TestHumanAdminAddLiftsOnlyThatCommunity: under bans.scope per_community, a
+// human admin re-adding someone banned in two communities lifts the ban in
+// their own community only.
+func TestHumanAdminAddLiftsOnlyThatCommunity(t *testing.T) {
+	k := modtest.New(t, "bans:\n  scope: per_community\n")
+	a, b := string(modtest.Community), modtest.SetB
+	if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
+		_, err := ledger.Write(k.Ctx, tx, ledger.Plan{Trigger: "T1", Target: modtest.Other1M, ConfigHash: k.Holder.Current().Hash,
+			Ban: []string{a, b}, BanEnforce: true, BanCommunity: a, Reason: "spam"}, k.Clock.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	k.Deliver(change(k, modtest.G1, modtest.Admin, []client.JID{modtest.Other1}, nil))
+	k.Fire()
+	if k.Fake.Count("Remove") != 0 {
+		t.Fatalf("reversed a human admin's add: %v", k.Fake.Calls())
+	}
+	if k.Banned(modtest.Other1M, a) || !k.Banned(modtest.Other1M, b) {
+		t.Fatalf("banned in %s: %v, in %s: %v; want only the ban in %s lifted", a, k.Banned(modtest.Other1M, a), b,
+			k.Banned(modtest.Other1M, b), a)
+	}
+	if rows := k.Find(modtest.Other1M, store.ActUnban, modtest.Community); len(rows) != 1 || rows[0].Actor != string(modtest.Admin) {
+		t.Fatalf("unban rows in %s: %+v", a, rows)
+	}
+}
+
 // TestReaddedNextSpamRemovedAndRebanned: someone re-added by a human admin
 // who then spams is deleted, removed and banned again, like anyone.
 func TestReaddedNextSpamRemovedAndRebanned(t *testing.T) {
