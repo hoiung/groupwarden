@@ -110,6 +110,27 @@ func TestBanFromWatchOnlyReport(t *testing.T) {
 	}
 }
 
+// TestBanDuringPauseSaysWhatWaits: [Ban] during /pause bans at once, and its
+// reply says the delete and the removals wait for the pause to end.
+func TestBanDuringPauseSaysWhatWaits(t *testing.T) {
+	h := newHarness(t, "")
+	r := watchOnly(t, h)
+	if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceAdmin, Scope: store.ScopeAll, Reason: "test",
+		Since: h.k.Clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h.press(adminUser, "ban", r.ID)
+	h.k.Fire()
+	if !h.k.Banned(modtest.SpammerM, "") || h.k.Fake.Count("Revoke")+h.k.Fake.Count("Remove") != 0 {
+		t.Fatalf("banned %v, calls %v: want the ban at once and nothing sent", h.k.Banned(modtest.SpammerM, ""),
+			h.k.Fake.Calls())
+	}
+	if !contains(h.lastReply(), "the message is deleted once the pause ends",
+		"is banned; their removal from 3 group(s) waits for the pause to end") {
+		t.Fatalf("reply %q", h.lastReply())
+	}
+}
+
 // TestWatchOnlyBanDeletesOnlyWithinReplayWindow: past act_on_replay_max_age
 // [Ban] removes and bans but leaves the message alone.
 func TestWatchOnlyBanDeletesOnlyWithinReplayWindow(t *testing.T) {
