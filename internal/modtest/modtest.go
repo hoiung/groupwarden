@@ -4,12 +4,13 @@
 package modtest
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -191,9 +192,33 @@ type Kit struct {
 	Worker   *pipeline.Worker
 	Exec     *action.Executor
 	Media    *action.MediaFetcher
-	Log      *slog.Logger
+	// Log is every component's logger; Logged counts its lines.
+	Log *slog.Logger
 
-	base string // the config the kit was built with
+	base      string // the config the kit was built with
+	logs      *logBuffer
+	banOrders int // Ban calls so far
+}
+
+// logBuffer holds the kit's log lines (the executor and fetcher may log from
+// other goroutines).
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// Logged counts the log lines with message msg (info level and above).
+func (k *Kit) Logged(msg string) int {
+	k.logs.mu.Lock()
+	defer k.logs.mu.Unlock()
+	logs, m := k.logs.buf.String(), " msg="+strconv.Quote(msg)
+	return strings.Count(logs, m+" ") + strings.Count(logs, m+"\n")
 }
 
 // New builds a kit with Config plus extra.
@@ -206,7 +231,8 @@ func New(t testing.TB, extra string) *Kit {
 func NewConfig(t testing.TB, cfg string) *Kit {
 	t.Helper()
 	k := &Kit{T: t, Ctx: context.Background(), Clock: &Clock{now: T0}, Alerts: &alerttest.Recorder{}, base: cfg,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DBPath: filepath.Join(t.TempDir(), "groupwarden.db")}
+		logs: &logBuffer{}, DBPath: filepath.Join(t.TempDir(), "groupwarden.db")}
+	k.Log = slog.New(slog.NewTextHandler(k.logs, nil))
 	k.Holder, k.CfgPath = configtest.Holder(t, cfg)
 	k.Fake = &clienttest.Fake{Groups: Groups(), SelfIDs: client.Self{Phone: BotPhone, LID: Bot}}
 	k.Dir = &pipeline.Directory{}
@@ -311,11 +337,15 @@ func (k *Kit) Spam(id string, chat client.JID) *client.Message {
 	return m
 }
 
-// Ban adds member to the ban list (every community), as an admin would.
+// Ban adds member to the ban list (every community), as an admin would. Each
+// call is its own ban order, so a member unbanned in between is banned again
+// (a member still banned keeps their one ban row).
 func (k *Kit) Ban(member client.Member) {
 	k.T.Helper()
-	k.write(ledger.Plan{Trigger: "test:ban:" + member.Key(), Target: member, ConfigHash: k.Holder.Current().Hash,
-		Ban: []string{store.BanEverywhere}, BanEnforce: true, BanCommunity: string(Community), Reason: "test ban"})
+	k.banOrders++
+	k.write(ledger.Plan{Trigger: "test:ban:" + member.Key() + ":" + strconv.Itoa(k.banOrders), Target: member,
+		ConfigHash: k.Holder.Current().Hash, Ban: []string{store.BanEverywhere}, BanEnforce: true,
+		BanCommunity: string(Community), Reason: "test ban"})
 }
 
 // Unban lifts every ban of member.
