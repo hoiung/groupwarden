@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +37,11 @@ const (
 	monitorEvery   = 30 * time.Second
 	alertTimeout   = 10 * time.Second
 	unknownBanWait = time.Hour // a temporary ban whose length WhatsApp did not say
+	// backlogWait bounds how long a sweep waits for WhatsApp to say it has
+	// delivered what it held while the bot was offline; backlogPoll is how
+	// often the sweep then checks the worker has decided all of it.
+	backlogWait = 10 * time.Minute
+	backlogPoll = time.Second
 )
 
 // Settings are the config values the supervisor reads.
@@ -99,9 +105,16 @@ type App struct {
 	// refreshNow asks the supervisor to relearn the groups (the bot joined
 	// one) and sweep.
 	refreshNow chan struct{}
-	// dirAlerted: the admins were told the group list does not load
-	// (supervisor goroutine only).
-	dirAlerted bool
+	// dirAlerted: the admins were told the group list does not load;
+	// listStale: the last group list read failed, so it is tried again
+	// every tick (supervisor goroutine only, both).
+	dirAlerted, listStale bool
+	// caughtUp is closed once WhatsApp has delivered what it held while the
+	// bot was offline (a fresh one at each connect after that); backlogMark
+	// is the newest inbox row then. Sweeps wait for both (readyToSweep).
+	backlogMu   sync.Mutex
+	caughtUp    chan struct{}
+	backlogMark int64
 
 	mon     *monitor
 	started time.Time
@@ -138,8 +151,9 @@ func (s sink) Persist(ev client.Event) error {
 		s.a.mon.onEvent(s.a.Clock.Now())
 	}
 	if _, ok := ev.(*client.JoinedGroup); ok {
-		// The directory learns the new group (and its community) now, not
-		// at the next reconcile interval.
+		// The worker learns the group from the event itself; the group list
+		// is read again now too, and a sweep follows, not at the next
+		// reconcile interval.
 		select {
 		case s.a.refreshNow <- struct{}{}:
 		default:
@@ -181,6 +195,7 @@ func (a *App) init() {
 	a.lifecycle = make(chan struct{}, 1)
 	a.sweepNow = make(chan struct{}, 1)
 	a.refreshNow = make(chan struct{}, 1)
+	a.caughtUp = make(chan struct{})
 	// Nothing is decided before the bot knows its groups: a message matched
 	// against an empty directory would count as unmoderated and be dropped.
 	a.Worker.Ready = a.Directory.Loaded()
@@ -231,6 +246,9 @@ func (a *App) sweeper(ctx context.Context) {
 			return
 		case <-a.sweepNow:
 		}
+		if !a.readyToSweep(ctx) {
+			return
+		}
 		runID := a.Clock.Now().UTC().Format("20060102T150405.000")
 		res, err := a.Sweep.Run(ctx, runID)
 		if err != nil && ctx.Err() == nil {
@@ -238,6 +256,64 @@ func (a *App) sweeper(ctx context.Context) {
 		}
 		a.Log.Info("sweep", "run", runID, "groups", res.Groups, "joins", res.Joins, "reports", res.Reports,
 			"rate_limited", res.RateLimited, "errors", res.Errors)
+	}
+}
+
+// readyToSweep holds a sweep until the group list has loaded (against an
+// empty directory every group looks like one the bot is not in) and the
+// worker has decided everything WhatsApp delivered from while the bot was
+// offline: a sweep removal must not overtake an offline event that changes it
+// (a human admin who re-added a banned member lifted the ban). It waits at
+// most backlogWait for WhatsApp to say the backlog is delivered. It returns
+// false when ctx ends.
+func (a *App) readyToSweep(ctx context.Context) bool {
+	start := a.Clock.Now()
+	if !a.Directory.IsLoaded() {
+		a.Log.Info("sweep waiting for the group list")
+		select {
+		case <-ctx.Done():
+			return false
+		case <-a.Directory.Loaded():
+		}
+	}
+	a.backlogMu.Lock()
+	delivered := a.caughtUp
+	a.backlogMu.Unlock()
+	select {
+	case <-delivered:
+	default:
+		select {
+		case <-ctx.Done():
+			return false
+		case <-delivered:
+		case <-a.Clock.After(backlogWait):
+			a.Log.Warn("WhatsApp has not said it delivered the offline backlog; sweeping anyway", "waited", backlogWait)
+			return true
+		}
+	}
+	a.backlogMu.Lock()
+	mark := a.backlogMark
+	a.backlogMu.Unlock()
+	for {
+		undecided, err := a.Store.InboxUndecidedThrough(ctx, mark)
+		switch {
+		case ctx.Err() != nil:
+			return false
+		case err != nil:
+			// The sweep's own writes go to the same store and fail loudly.
+			a.Log.Error("could not read the inbox; sweeping without waiting for the offline backlog", "err", err)
+			return true
+		case !undecided:
+			if waited := a.Clock.Now().Sub(start); waited > 0 {
+				a.Log.Info("group list loaded and offline backlog decided; sweeping", "waited", waited)
+			}
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-a.Clock.After(backlogPoll):
+		}
 	}
 }
 
@@ -332,8 +408,9 @@ func (a *App) supervise(ctx context.Context) error {
 		case <-a.Reload:
 			a.reload(ctx, true)
 		case <-a.refreshNow:
-			if connected, _, _ := a.mon.snapshot(); connected {
-				a.refreshDirectory(ctx)
+			// A failed read is tried again at the next tick, which sweeps
+			// once it succeeds.
+			if connected, _, _ := a.mon.snapshot(); connected && a.refreshDirectory(ctx) {
 				a.requestSweep()
 			}
 		case <-retry:
@@ -356,11 +433,14 @@ func (a *App) supervise(ctx context.Context) error {
 				a.refreshDirectory(ctx)
 				a.checkCompanions(ctx)
 				a.requestSweep()
-			case connected && !a.Directory.IsLoaded():
-				// The group list failed at connect: nothing is decided until
-				// it loads, so try again every tick, not every interval.
-				a.refreshDirectory(ctx)
-				a.requestSweep()
+			case connected && (a.listStale || !a.Directory.IsLoaded()):
+				// The last group list read failed: until one loads nothing is
+				// decided, and after that the list may lack what WhatsApp
+				// sent no event for (a group linked to a community), so try
+				// again every tick, not every interval.
+				if a.refreshDirectory(ctx) {
+					a.requestSweep()
+				}
 			}
 			a.writeStatus(ctx)
 			a.checkDaily(ctx, now) // after the status write: it reports the state just recorded
@@ -379,10 +459,13 @@ func (a *App) supervise(ctx context.Context) error {
 					a.Log.Info("connected to WhatsApp")
 					nextCompanionCheck = now.Add(a.settings().CompanionCheckEvery)
 					a.Directory.SetSelf(a.Adapter.Self())
+					a.awaitingBacklog()
 					a.refreshDirectory(ctx)
 					a.checkCompanions(ctx)
 					a.requestSweep()
 					a.writeStatus(ctx)
+				case l.Kind == client.CaughtUp:
+					a.backlogDelivered(ctx, l.Detail)
 				case l.Kind == client.Disconnected:
 					a.mon.onDisconnected(now)
 					if now.Before(bannedUntil) || retry != nil {
@@ -635,23 +718,56 @@ func (a *App) marked(st map[string]store.StatusValue, key string) string {
 	return st[key].Value
 }
 
-// refreshDirectory relearns every group's community and admins. While the
-// list has never loaded nothing is decided, so that failure is a priority
-// alert (once until a list loads).
-func (a *App) refreshDirectory(ctx context.Context) {
-	groups, err := a.Adapter.JoinedGroups(ctx)
+// awaitingBacklog starts holding sweeps at a connect, until WhatsApp says it
+// has delivered what it held meanwhile (a connect before it said so keeps
+// waiting for the same).
+func (a *App) awaitingBacklog() {
+	a.backlogMu.Lock()
+	defer a.backlogMu.Unlock()
+	select {
+	case <-a.caughtUp:
+		a.caughtUp = make(chan struct{})
+	default:
+	}
+}
+
+// backlogDelivered records that WhatsApp has delivered its offline backlog:
+// sweeps may run once the worker has decided every inbox row there is now.
+func (a *App) backlogDelivered(ctx context.Context, detail string) {
+	mark, err := a.Store.InboxLast(ctx)
 	if err != nil {
-		a.Log.Warn("could not list groups", "err", mask.IDs(err.Error()))
+		mark = math.MaxInt64 // not knowing the newest row, wait for every row
+		a.Log.Error("could not read the inbox; sweeps wait until it is empty", "err", err)
+	}
+	a.Log.Info("WhatsApp delivered the offline backlog", "detail", detail, "inbox_through", mark)
+	a.backlogMu.Lock()
+	defer a.backlogMu.Unlock()
+	a.backlogMark = mark
+	select {
+	case <-a.caughtUp:
+	default:
+		close(a.caughtUp)
+	}
+}
+
+// refreshDirectory relearns every group's community and admins and reports
+// whether it could. While the list has never loaded nothing is decided, so
+// that failure is a priority alert (once until a list loads).
+func (a *App) refreshDirectory(ctx context.Context) bool {
+	err := a.Directory.Refresh(func() ([]client.Group, error) { return a.Adapter.JoinedGroups(ctx) })
+	a.listStale = err != nil
+	if err != nil {
+		a.Log.Warn("could not list groups", "retry_in", monitorEvery, "err", mask.IDs(err.Error()))
 		if !a.Directory.IsLoaded() && !a.dirAlerted {
 			a.dirAlerted = true
 			a.alert(ctx, alert.Alert{Kind: alert.CoverageLost, Priority: true, Text: "The bot could not list its " +
 				"WhatsApp groups (" + mask.IDs(err.Error()) + "): no message is checked until it can. It tries again " +
 				"every 30 seconds; messages wait in its inbox meanwhile."})
 		}
-		return
+		return false
 	}
-	a.Directory.Update(groups)
 	a.dirAlerted = false
+	return true
 }
 
 // writeStatus records the run state for `healthcheck` and other commands.
