@@ -14,6 +14,7 @@ type Forgotten struct {
 	ReportEdits int64    // reports queued for text stripping / attachment deletion
 	Files       []string // attachment files to delete (the caller removes them)
 	KeptBans    []Ban    // active bans are kept
+	HeldBans    int64    // bans a pause holds are kept too: they apply after [Resume]
 }
 
 // ForgetMember deletes everything groupwarden.db holds about the member known
@@ -36,10 +37,15 @@ func (s *Store) ForgetMember(ctx context.Context, ids []string) (Forgotten, erro
 			` OR (sender_alt != '' AND sender_alt `+in+`)`, list); err != nil {
 			return err
 		}
-		// Rows still queued stay (their action has not fired yet).
+		// Rows still queued, and bans a pause holds, stay: their action has
+		// not happened yet (a held ban is kept like an active one).
 		if f.Ledger, err = execCount(ctx, tx, `DELETE FROM ledger WHERE target `+in+
-			` AND id NOT IN (SELECT ledger_id FROM outbox)`, list); err != nil {
+			` AND id NOT IN (SELECT ledger_id FROM outbox) AND NOT `+heldBan, list); err != nil {
 			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE target `+in+` AND `+heldBan,
+			list).Scan(&f.HeldBans); err != nil {
+			return fmt.Errorf("count held bans: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM report_ledger WHERE ledger_id NOT IN (SELECT id FROM ledger)`); err != nil {
 			return err
@@ -90,7 +96,7 @@ func execCount(ctx context.Context, tx *sql.Tx, query string, args ...any) (int6
 	return res.RowsAffected()
 }
 
-func idList(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]int64, error) {
+func idList(ctx context.Context, tx queryer, query string, args ...any) ([]int64, error) {
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
