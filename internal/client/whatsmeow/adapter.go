@@ -36,9 +36,13 @@ const CodeNotParticipant = 404
 const localTimeout = 10 * time.Second
 
 // callError marks WhatsApp's rate-limit (429) and permission (401, 403)
-// refusals with client.ErrRateLimited / client.ErrNotAdmin, so callers back
-// off or mark a group uncovered without knowing the library's errors.
+// refusals with client.ErrRateLimited / client.ErrNotAdmin, and a call made
+// while disconnected with client.ErrNotConnected, so callers back off, mark a
+// group uncovered or wait without knowing the library's errors.
 func callError(err error) error {
+	if errors.Is(err, wm.ErrNotConnected) {
+		return fmt.Errorf("%w: %w", client.ErrNotConnected, err)
+	}
 	var iq *wm.IQError
 	if err == nil || !errors.As(err, &iq) {
 		return err
