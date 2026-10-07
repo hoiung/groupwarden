@@ -159,6 +159,7 @@ func configure(cli *wm.Client) {
 	cli.ManualHistorySyncDownload = true
 	// Reconnects are groupwarden's own (capped backoff, alerts).
 	cli.EnableAutoReconnect = false
+	cli.SetMediaHTTPClient(mediaClient())
 }
 
 func fetchLatestVersion(ctx context.Context) error {
@@ -462,8 +463,11 @@ func (a *Adapter) InviteInfo(ctx context.Context, code string) (client.Group, cl
 	return g, g.Parent, nil
 }
 
-// DownloadMedia fetches msg's attachment.
-func (a *Adapter) DownloadMedia(ctx context.Context, msg *client.Message) ([]byte, string, string, error) {
+// DownloadMedia fetches msg's attachment if it is at most maxBytes long. The
+// media transport stops reading the download past maxBytes and the encryption
+// overhead (mediaClient); the file is checked against maxBytes itself once
+// decrypted.
+func (a *Adapter) DownloadMedia(ctx context.Context, msg *client.Message, maxBytes int64) ([]byte, string, string, error) {
 	if msg.Media == nil || len(msg.Media.Raw) == 0 {
 		return nil, "", "", errors.New("message has no downloadable attachment")
 	}
@@ -484,9 +488,14 @@ func (a *Adapter) DownloadMedia(ctx context.Context, msg *client.Message) ([]byt
 	default:
 		return nil, "", "", errors.New("attachment reference holds no media")
 	}
+	ctx, cancel := context.WithTimeout(withMaxBytes(ctx, maxBytes), downloadTimeout)
+	defer cancel()
 	data, err := a.cli.Download(ctx, d)
 	if err != nil {
 		return nil, "", "", err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, "", "", tooLarge(maxBytes)
 	}
 	return data, msg.Media.MimeType, msg.Media.FileName, nil
 }
