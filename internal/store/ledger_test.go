@@ -77,6 +77,35 @@ func TestHeldBanSettlesOnce(t *testing.T) {
 	}
 }
 
+// TestRetryKeepsAnOverturnedRow: a call that fails after [Undo] overturned its
+// row (mid-call) does not overwrite the row: its status, the reason saying who
+// overturned it, and its attempt count stay.
+func TestRetryKeepsAnOverturnedRow(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	s := openAt(t, &now)
+	var id int64
+	if err := s.Write(ctx, func(tx *sql.Tx) error {
+		var err error
+		if id, _, err = InsertLedger(ctx, tx, LedgerRow{Action: ActRemove, Chat: "99999000000111@g.us",
+			Target: "99999000000444@lid", TriggerID: "R1", Community: "c", Mode: ModeEnforce, ConfigHash: "h"}, now); err != nil {
+			return err
+		}
+		_, err = Overturn(ctx, tx, []int64{id}, "undone in the admin chat by Ann", now)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Retry(ctx, id, now.Add(time.Minute), "network timeout"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Ledger(ctx, id)
+	if err != nil || r.Status != Overturned || r.Reason != "undone in the admin chat by Ann" || r.Attempts != 0 {
+		t.Fatalf("row after a failed call: %s %q attempts=%d (%v); want overturned, the undo reason, 0", r.Status,
+			r.Reason, r.Attempts, err)
+	}
+}
+
 // TestRowChangesOnlyFromIntended: moving a queued row to shadow, or
 // finishing it, changes only a row still at intended. A row [Undo] overturned
 // meanwhile keeps its status and mode, and the caller is told nothing changed
