@@ -3,6 +3,7 @@ package ledger_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -79,7 +80,8 @@ func TestAttachmentSavedInEvidence(t *testing.T) {
 		t.Fatalf("fetched %d (%v)", n, err)
 	}
 	e, _, _ := k.Store.Evidence(k.Ctx, revokeRow(t, k).EvidenceID)
-	if e.MediaState != store.MediaSaved || e.MediaKind != "image" || e.MediaName != "offer.jpg" || e.MediaSize != 1000 {
+	// The size recorded is the file's, not the 1000 bytes the post declared.
+	if e.MediaState != store.MediaSaved || e.MediaKind != "image" || e.MediaName != "offer.jpg" || e.MediaSize != uint64(len("JPEGDATA")) {
 		t.Fatalf("media %+v", e)
 	}
 	if b, err := os.ReadFile(e.MediaPath); err != nil || string(b) != "JPEGDATA" || !strings.HasSuffix(e.MediaPath, ".jpg") {
@@ -145,6 +147,32 @@ func TestOversizeAttachmentRecordedNotKept(t *testing.T) {
 	}
 	if k.Fake.Count("DownloadMedia") != 0 {
 		t.Fatal("an oversize attachment was downloaded")
+	}
+	// The declared size is the sender's claim. A file declared small, or with
+	// no size, that turns out over the limit is settled as too large, never
+	// as a failure, and its size is recorded as unknown; the download was
+	// asked to stop at the limit.
+	k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return make([]byte, 5<<20+1), "image/jpeg", "offer.jpg", nil
+	}
+	for i, declared := range []uint64{1, 0} {
+		k.Clock.Advance(time.Minute)
+		k.Deliver(withImage(k.Msg(fmt.Sprintf("LIAR%d", i), modtest.GB, modtest.Member, modtest.SpamText), declared))
+		if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 1 {
+			t.Fatalf("declared %d: fetched %d (%v)", declared, n, err)
+		}
+		if got := k.Fake.LastDownloadMax(); got != 5<<20 {
+			t.Fatalf("declared %d: the download was capped at %d bytes, want %d", declared, got, 5<<20)
+		}
+	}
+	evs, err := k.Store.EvidenceFor(k.Ctx, modtest.MemberM.IDs())
+	if err != nil || len(evs) != 2 {
+		t.Fatalf("evidence %+v (%v)", evs, err)
+	}
+	for _, e := range evs {
+		if e.MediaState != store.MediaTooLarge || e.MediaSize != 0 || e.MediaPath != "" || e.MediaRaw != nil {
+			t.Fatalf("an attachment declared small but over the limit: %+v", e)
+		}
 	}
 }
 
