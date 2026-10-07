@@ -142,7 +142,7 @@ func messageText(ev *store.Evidence) string {
 }
 
 // attachmentNote describes the deleted post's attachment, if it had one, with
-// its file name (clipped) when named.
+// its file name (clipped) when named, and its size when known.
 func attachmentNote(ev *store.Evidence, named bool) string {
 	if ev.MediaKind == "" {
 		return ""
@@ -151,16 +151,18 @@ func attachmentNote(ev *store.Evidence, named bool) string {
 	if name := strings.TrimSpace(ev.MediaName); named && name != "" {
 		desc += " " + clip(name, nameMax)
 	}
-	size := fmt.Sprintf("%.1f MB", float64(ev.MediaSize)/(1<<20))
+	if ev.MediaSize > 0 {
+		desc += fmt.Sprintf(" (%.1f MB)", float64(ev.MediaSize)/(1<<20))
+	}
 	switch ev.MediaState {
 	case store.MediaSaved:
-		return desc + " (" + size + "), posted below"
+		return desc + ", posted below"
 	case store.MediaTooLarge:
-		return desc + " (" + size + "), too large to keep"
+		return desc + ", too large to keep"
 	case store.MediaFailed:
-		return desc + " (" + size + "), not available: " + ev.MediaError
+		return desc + ", not available: " + ev.MediaError
 	}
-	return desc + " (" + size + "), being saved"
+	return desc + ", being saved"
 }
 
 // split cuts s into messages within Telegram's limit, never inside a
