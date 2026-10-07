@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"time"
 
 	"github.com/go-telegram/bot/models"
@@ -25,3 +27,26 @@ func (c *Chat) SetupLoop(ctx context.Context) { c.setupLoop(ctx) }
 func (c *Chat) SetPinRetry(d time.Duration)   { c.pinRetry = d }
 
 const MaxUnits = maxUnits
+
+// RequestTimeout is the timeout of the client the bot's default HTTP client
+// sends a request for method with (a URL shaped as the library makes it).
+func RequestTimeout(method string) time.Duration {
+	h := newHTTPClient()
+	var used time.Duration
+	for _, c := range []*http.Client{h.requests, h.uploads} {
+		c.Transport = roundTrip(func(*http.Request) (*http.Response, error) {
+			used = c.Timeout
+			return nil, errors.New("not sent")
+		})
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://api.telegram.org/bot0:x/"+method, nil)
+	if err != nil {
+		panic(err)
+	}
+	_, _ = h.Do(req)
+	return used
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
