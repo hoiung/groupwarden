@@ -3,6 +3,7 @@ package action_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,6 +15,50 @@ import (
 	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/store"
 )
+
+// TestAttachmentOfAForgottenCopyNotKept: `member forget` (or the evidence
+// purge) can delete an evidence row while its attachment downloads. The row
+// is not brought back and the file is not left in the evidence directory,
+// where no row would name it for retention or forget to delete.
+func TestAttachmentOfAForgottenCopyNotKept(t *testing.T) {
+	for name, fail := range map[string]bool{"saved": false, "download failed": true} {
+		t.Run(name, func(t *testing.T) {
+			k := modtest.New(t, "")
+			var logs bytes.Buffer
+			k.Media.Log = slog.New(slog.NewTextHandler(&logs, nil))
+			k.Fake.Download = func(ctx context.Context, _ *client.Message) ([]byte, string, string, error) {
+				if f, err := k.Store.ForgetMember(ctx, modtest.SpammerM.IDs()); err != nil || f.Evidence == 0 {
+					t.Errorf("forget during the download: %+v, %v", f, err)
+				}
+				if fail {
+					return nil, "", "", errors.New("media host unreachable")
+				}
+				return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+			}
+			m := k.Spam("M1", modtest.G1)
+			m.Media = &client.Media{Kind: "image", MimeType: "image/jpeg", FileName: "offer.jpg", Size: 8, Raw: []byte("raw")}
+			k.Deliver(m)
+			pending, err := k.Store.PendingMedia(k.Ctx, 10)
+			if err != nil || len(pending) != 1 {
+				t.Fatalf("pending attachments %d (%v), want 1", len(pending), err)
+			}
+			if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 1 {
+				t.Fatalf("fetched %d (%v)", n, err)
+			}
+			if _, ok, err := k.Store.Evidence(k.Ctx, pending[0].ID); ok || err != nil {
+				t.Fatalf("the forgotten evidence row is back (%v)", err)
+			}
+			files, _ := os.ReadDir(k.Media.Dir)
+			if len(files) != 0 {
+				t.Fatalf("files left in the evidence directory: %v", files)
+			}
+			if !strings.Contains(logs.String(), `msg="the evidence copy was deleted during its download; nothing kept" evidence=`+
+				strconv.FormatInt(pending[0].ID, 10)+" file="+strconv.FormatBool(!fail)) {
+				t.Fatalf("not logged:\n%s", logs.String())
+			}
+		})
+	}
+}
 
 // TestAttachmentSaveFailureLoggedAndLeavesNoFile: an attachment that
 // downloaded but cannot be written — the evidence directory cannot be made,
