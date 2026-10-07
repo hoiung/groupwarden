@@ -213,7 +213,7 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 			ev = &e
 		}
 	}
-	r.Text = c.labelText(r.Text)
+	r.Text = mask.IDs(r.Text)
 	group := ""
 	if ev != nil && c.Groups != nil {
 		group = c.Groups.GroupName(ev.Chat)
@@ -284,7 +284,7 @@ func (c *Chat) digest(ctx context.Context, reps []store.Report) (bool, error) {
 	ids := make([]int64, 0, len(reps))
 	used := units(fmt.Sprintf("%d reports while the chat was busy:", len(reps)))
 	for _, r := range reps {
-		line := fmt.Sprintf("\n\n#%d %s", r.ID, c.labelText(r.Text))
+		line := fmt.Sprintf("\n\n#%d %s", r.ID, mask.IDs(r.Text))
 		if used+units(line) > maxUnits {
 			break // the rest go in the next digest
 		}
@@ -588,7 +588,7 @@ func (c *Chat) summary(ctx context.Context) (bool, error) {
 		matches := map[string]int{}
 		for _, r := range logs {
 			if !r.CreatedAt.Before(d) && r.CreatedAt.Before(d.AddDate(0, 0, 1)) {
-				matches[c.labelText(r.Text)]++
+				matches[mask.IDs(r.Text)]++
 				ids = append(ids, r.ID)
 			}
 		}
@@ -634,9 +634,10 @@ func (c *Chat) summaryLines(counters map[string]int, matches map[string]int) []s
 			other = append(other, fmt.Sprintf("%s: %d", name, n))
 		}
 	}
+	cfg := c.Config.Current().Config
 	for community, lists := range keyword {
 		sort.Strings(lists)
-		lines = append(lines, fmt.Sprintf("Keyword-only posts not acted on in %s: %s", c.labelText(community),
+		lines = append(lines, fmt.Sprintf("Keyword-only posts not acted on in %s: %s", pipeline.CommunityLabel(cfg, community),
 			strings.Join(lists, ", ")))
 	}
 	for text, n := range matches {
@@ -645,17 +646,6 @@ func (c *Chat) summaryLines(counters map[string]int, matches map[string]int) []s
 	sort.Strings(lines)
 	sort.Strings(other)
 	return append(lines, other...)
-}
-
-// labelText names the configured communities in a report's text and masks
-// any other WhatsApp ID.
-func (c *Chat) labelText(text string) string {
-	for id, cm := range c.Config.Current().Config.Communities {
-		if cm.Name != "" {
-			text = strings.ReplaceAll(text, id, cm.Name)
-		}
-	}
-	return mask.IDs(text)
 }
 
 // reportMessage is the message ID of a report's own post (0 when none).
