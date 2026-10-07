@@ -5,6 +5,7 @@ package clienttest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -45,8 +46,9 @@ type Fake struct {
 	// admin's approval (default: joined at once).
 	JoinPending map[client.JID]bool
 
-	errs  map[string][]error
-	calls []string
+	errs        map[string][]error
+	calls       []string
+	downloadMax int64
 }
 
 var _ client.Adapter = (*Fake)(nil)
@@ -289,12 +291,28 @@ func (f *Fake) InviteInfo(_ context.Context, code string) (client.Group, client.
 	return g, g.Parent, nil
 }
 
-func (f *Fake) DownloadMedia(ctx context.Context, msg *client.Message) ([]byte, string, string, error) {
+// DownloadMedia answers with Download and, as the real adapter does, refuses
+// a file over maxBytes with client.ErrMediaTooLarge.
+func (f *Fake) DownloadMedia(ctx context.Context, msg *client.Message, maxBytes int64) ([]byte, string, string, error) {
 	f.record("DownloadMedia " + msg.ID)
-	if f.Download != nil {
-		return f.Download(ctx, msg)
+	f.mu.Lock()
+	f.downloadMax = maxBytes
+	f.mu.Unlock()
+	if f.Download == nil {
+		return nil, "", "", errors.New("no media in the fake")
 	}
-	return nil, "", "", errors.New("no media in the fake")
+	data, mimeType, name, err := f.Download(ctx, msg)
+	if err == nil && int64(len(data)) > maxBytes {
+		return nil, "", "", fmt.Errorf("%w of %d bytes", client.ErrMediaTooLarge, maxBytes)
+	}
+	return data, mimeType, name, err
+}
+
+// LastDownloadMax is the size limit the last DownloadMedia was given.
+func (f *Fake) LastDownloadMax() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.downloadMax
 }
 
 func (f *Fake) LinkedDevices(context.Context) ([]client.JID, error) {
