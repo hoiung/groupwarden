@@ -131,15 +131,26 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		return exitUsage
 	}
 	scope := store.BanEverywhere
-	if community != "" {
+	perCommunity := l.Rules.BanScope() == rules.PerCommunity
+	switch {
+	case community != "" && !perCommunity:
+		fmt.Fprintln(e.stderr, "groupwarden: bans.scope is all_communities: a ban covers every community, so leave out --community")
+		return exitUsage
+	case community != "":
 		if _, ok := l.Rules.ModeFor(community); !ok {
 			fmt.Fprintf(e.stderr, "groupwarden: %s is not a configured community\n", community)
 			return exitUsage
 		}
 		scope = community
-	} else if l.Rules.BanScope() == rules.PerCommunity && sub == "add" {
+	case perCommunity && sub == "add":
 		fmt.Fprintln(e.stderr, "groupwarden: bans.scope is per_community: name the community with --community <id>")
 		return exitUsage
+	}
+	// Removing with --community lifts the ban in that community only; without
+	// it, every ban of the member.
+	in := ""
+	if community != "" {
+		in = " in " + community
 	}
 	p := ledger.Plan{Trigger: "cli:" + strconv.FormatInt(e.now().UnixMilli(), 10), Target: m, ConfigHash: l.Hash,
 		Actor: "cli", BanCommunity: scope}
@@ -148,15 +159,15 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		p.Ban, p.BanEnforce, p.Reason = []string{scope}, true, "added with the ban command"
 		p.Reports = []store.Report{{Kind: ledger.KindBanCLI, Community: scope, Text: "A ban was added with the ban command."}}
 	case "remove":
-		if _, banned, err := st.FindBan(ctx, m.IDs(), ""); err != nil || !banned {
+		if _, banned, err := st.FindBan(ctx, m.IDs(), community); err != nil || !banned {
 			if err != nil {
 				fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
 				return exitFail
 			}
-			fmt.Fprintf(e.stdout, "%s is not banned\n", m.Key())
+			fmt.Fprintf(e.stdout, "%s is not banned%s\n", m.Key(), in)
 			return exitFail
 		}
-		p.Lift, p.Reason = true, "removed with the ban command"
+		p.Lift, p.LiftIn, p.Reason = true, community, "removed with the ban command"
 		p.Reports = []store.Report{{Kind: ledger.KindBanCLI, Community: scope, Text: "A ban was lifted with the ban command."}}
 	default:
 		fmt.Fprintln(e.stderr, "usage: groupwarden ban add|remove|list [<lid|phone>]")
@@ -176,7 +187,7 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		}
 		return exitOK
 	}
-	fmt.Fprintf(e.stdout, "unbanned %s\n", m.Key())
+	fmt.Fprintf(e.stdout, "unbanned %s%s\n", m.Key(), in)
 	return exitOK
 }
 
