@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/hoiung/groupwarden/internal/alert"
@@ -46,12 +45,12 @@ func (e *env) backup(ctx context.Context, cfg *config.Config, log *slog.Logger) 
 	}
 	var report *store.Report
 	if err != nil && !strings.HasPrefix(status[store.StatusBackupResult].Value, "FAILED") {
-		report = &store.Report{Kind: string(alert.BackupFailed), Priority: true,
+		report = &store.Report{Kind: string(alert.BackupFailed),
 			Text: "The nightly backup FAILED: " + err.Error() + ". Earlier backups in " + cfg.Backup.TargetDir +
 				" are kept; it tries again tomorrow night (docs/runbook.md)."}
 	}
 	if serr := st.SetStatusReporting(ctx, map[string]string{
-		store.StatusBackupLastRun: strconv.FormatInt(e.now().UnixMilli(), 10),
+		store.StatusBackupLastRun: store.StatusTime(e.now()),
 		store.StatusBackupResult:  result,
 	}, report); serr != nil {
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", serr)
