@@ -42,6 +42,17 @@ func TestPostNotRepeatedWhileItsRecordFails(t *testing.T) {
 			h.report(store.Report{Kind: string(alert.Coverage), Text: fmt.Sprintf("busy %d", i)})
 		}
 	}
+	summaryDue := func(t *testing.T, h *harness) {
+		h.drain() // the first run starts the summaries with today
+		h.k.Deliver(h.k.Msg("K1", modtest.G1, modtest.Member, "anyone into crypto?"))
+		h.drain()
+		h.k.Clock.Advance(24 * time.Hour)
+	}
+	summaryRecorded := func(t *testing.T, h *harness) {
+		if got := statusOf(t, h, store.StatusSummaryDay); got != "2026-10-06" {
+			t.Fatalf("summary day %q, want 2026-10-06", got)
+		}
+	}
 	cases := []struct {
 		name        string
 		cfg         string                         // modtest config (default when empty)
@@ -112,18 +123,11 @@ func TestPostNotRepeatedWhileItsRecordFails(t *testing.T) {
 				}
 			}},
 		{name: "daily summary", table: "status", when: "NEW.key = '" + store.StatusSummaryDay + "'", run: step,
-			setup: func(t *testing.T, h *harness) {
-				h.drain() // the first run starts the summaries with today
-				h.k.Deliver(h.k.Msg("K1", modtest.G1, modtest.Member, "anyone into crypto?"))
-				h.drain()
-				h.k.Clock.Advance(24 * time.Hour)
-			},
-			posts: func(h *harness) int { return requests(h, "sendMessage", "Daily summary for ") },
-			recorded: func(t *testing.T, h *harness) {
-				if got := statusOf(t, h, store.StatusSummaryDay); got != "2026-10-06" {
-					t.Fatalf("summary day %q, want 2026-10-06", got)
-				}
-			}},
+			setup: summaryDue, posts: func(h *harness) int { return requests(h, "sendMessage", "Daily summary for ") },
+			recorded: summaryRecorded},
+		{name: "daily summary part", table: "tg_messages", run: step, setup: summaryDue,
+			posts:    func(h *harness) int { return requests(h, "sendMessage", "Daily summary for ") },
+			recorded: summaryRecorded},
 		{name: "daily summary log reports", cfg: logRuleConfig, table: "reports", run: step,
 			setup: func(t *testing.T, h *harness) {
 				h.drain()
