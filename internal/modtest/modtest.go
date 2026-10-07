@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/action"
-	"github.com/hoiung/groupwarden/internal/alert"
+	"github.com/hoiung/groupwarden/internal/alert/alerttest"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/config"
@@ -185,7 +185,7 @@ type Kit struct {
 	Holder   *config.Holder
 	Dir      *pipeline.Directory
 	Fake     *clienttest.Fake
-	Alerts   *alert.Recorder
+	Alerts   *alerttest.Recorder
 	Enforcer *pipeline.Enforcer
 	Mod      *pipeline.Moderator
 	Worker   *pipeline.Worker
@@ -205,7 +205,7 @@ func New(t testing.TB, extra string) *Kit {
 // NewConfig builds a kit with a whole moderation config of its own.
 func NewConfig(t testing.TB, cfg string) *Kit {
 	t.Helper()
-	k := &Kit{T: t, Ctx: context.Background(), Clock: &Clock{now: T0}, Alerts: &alert.Recorder{}, base: cfg,
+	k := &Kit{T: t, Ctx: context.Background(), Clock: &Clock{now: T0}, Alerts: &alerttest.Recorder{}, base: cfg,
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DBPath: filepath.Join(t.TempDir(), "groupwarden.db")}
 	k.Holder, k.CfgPath = configtest.Holder(t, cfg)
 	k.Fake = &clienttest.Fake{Groups: Groups(), SelfIDs: client.Self{Phone: BotPhone, LID: Bot}}
