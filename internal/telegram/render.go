@@ -37,13 +37,15 @@ type rendered struct {
 // (zero length: none).
 type quote struct{ offset, length int }
 
-// actionLine says what the bot did, by report kind.
+// actionLine says what the bot did, by report kind (a report's own Action
+// replaces it).
 var actionLine = map[string]string{
 	ledger.KindAction:         "deleted for everyone; sender removed and banned",
 	ledger.KindWouldHaveActed: "none (watch-only rule, or the message was too old to act on)",
 	ledger.KindExempt:         "none (an admin or Meta AI posted it)",
 	ledger.KindUnaddressable:  "none (the bot cannot act on the sender's address)",
 	ledger.KindLog:            "none (log rule)",
+	ledger.KindNotDone:        "not done: an admin must do it by hand",
 }
 
 // render builds a report. With evidence it carries the group, the sender's
@@ -86,7 +88,10 @@ func header(r store.Report, ev *store.Evidence, groupName string, full bool) str
 	if ev.Rule != "" {
 		h.WriteString("\nRule: " + ev.Rule)
 	}
-	if a, ok := actionLine[r.Kind]; ok {
+	if a, ok := actionLine[r.Kind]; ok || r.Action != "" {
+		if r.Action != "" {
+			a = r.Action // what was done when it is not the kind's usual (a pause holds it)
+		}
 		h.WriteString("\nAction: " + a)
 	}
 	if ev.ConfigHash != "" {
