@@ -61,7 +61,7 @@ const (
 	// library keeps no time with it).
 	stampSecrets = `INSERT INTO groupwarden_secret_seen (chat_jid, sender_jid, message_id, first_seen)
 SELECT chat_jid, sender_jid, message_id, ?1 FROM whatsmeow_message_secrets WHERE true
-ON CONFLICT DO NOTHING`
+ON CONFLICT DO NOTHING` // #nosec G101 -- SQL text; "secrets" is whatsmeow's message-secret table, not a credential
 	// purgeSecrets deletes the secrets first seen before their cutoff.
 	purgeSecrets = `DELETE FROM whatsmeow_message_secrets WHERE EXISTS (
 	SELECT 1 FROM groupwarden_secret_seen g
