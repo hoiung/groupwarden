@@ -138,7 +138,7 @@ func TestCrashRetriesRepeatSafeAfterRecheck(t *testing.T) {
 		t.Fatal("an unbanned member's action was retried without its re-check")
 	}
 	for _, r := range k.Find(modtest.Other1M, store.ActRevoke, modtest.G1) {
-		if r.Status != store.Failed || !strings.Contains(r.Reason, "unbanned") {
+		if r.Status != store.Failed || !strings.Contains(r.Reason, "not banned in") {
 			t.Fatalf("unbanned row: %s %q", r.Status, r.Reason)
 		}
 	}
