@@ -69,6 +69,21 @@ func (s *Store) InboxLen(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// InboxLast is the ID of the newest undecided row (0 when none is).
+func (s *Store) InboxLast(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM inbox`).Scan(&id)
+	return id, err
+}
+
+// InboxUndecidedThrough reports whether any row up to and including id is
+// still undecided.
+func (s *Store) InboxUndecidedThrough(ctx context.Context, id int64) (bool, error) {
+	var found bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM inbox WHERE id <= ?)`, id).Scan(&found)
+	return found, err
+}
+
 // Decide records a decision for row in one transaction: record writes the
 // decision, the inbox row (and with it the member's text) is deleted, and the
 // delivery is marked seen so a redelivery is ignored.
