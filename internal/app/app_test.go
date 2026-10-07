@@ -18,6 +18,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/config/configtest"
+	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
 )
@@ -307,6 +308,26 @@ func TestExtraCompanionPauses(t *testing.T) {
 	if n := len(h.rec.OfKind(alert.ExtraCompanion)); n != 1 {
 		t.Fatalf("%d companion alerts, want 1", n)
 	}
+}
+
+// TestExtraCompanionPausedBeforeItIsMarkedSeen: a new linked device is marked
+// seen only once its pause is stored, so a stop between the two repeats the
+// pause at the next check rather than losing it. (The store refuses the mark
+// while no pause is there: what a mark written first would leave behind a
+// stop.)
+func TestExtraCompanionPausedBeforeItIsMarkedSeen(t *testing.T) {
+	ctx := context.Background()
+	h := start(t, &clienttest.Fake{}, Settings{CompanionCheckEvery: time.Hour})
+	h.eventually("startup device list", func() bool { return h.fake.Count("LinkedDevices") >= 1 })
+	modtest.FailWrites(t, h.st, "status", "NEW.key = '"+store.StatusCompanionsSeen+
+		"' AND NOT EXISTS (SELECT 1 FROM pause WHERE source = '"+store.SourceExtraCompanion+"')")
+	h.fake.SetDevices([]client.JID{"99999000000777:12@lid"})
+	h.clock.Advance(time.Hour)
+	h.eventually("companion alert", func() bool { return len(h.rec.OfKind(alert.ExtraCompanion)) == 1 })
+	h.eventually("the device marked seen in the store", func() bool {
+		st, err := h.st.Status(ctx)
+		return err == nil && strings.Contains(st[store.StatusCompanionsSeen].Value, "99999000000777")
+	})
 }
 
 // readOnly makes every later write to st fail, as on a full or read-only
