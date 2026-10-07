@@ -92,12 +92,14 @@ func scanBan(sc interface{ Scan(...any) error }) (Ban, error) {
 	return b, err
 }
 
-// RemoveBans deletes every ban (any scope) of anyone known by one of ids
-// inside tx, returning how many were removed.
-func RemoveBans(ctx context.Context, tx *sql.Tx, ids []string) (int64, error) {
-	res, err := tx.ExecContext(ctx, `DELETE FROM bans WHERE member IN (SELECT value FROM json_each(?1))
-	OR (lid != '' AND lid IN (SELECT value FROM json_each(?1))) OR (phone != '' AND phone IN (SELECT value FROM json_each(?1)))`,
-		jsonList(nonEmpty(ids)))
+// RemoveBans deletes the bans of anyone known by one of ids that cover
+// community (its own and an everywhere ban, as FindBan matches them; ""
+// covers every scope) inside tx, returning how many were removed.
+func RemoveBans(ctx context.Context, tx *sql.Tx, ids []string, community string) (int64, error) {
+	res, err := tx.ExecContext(ctx, `DELETE FROM bans WHERE (member IN (SELECT value FROM json_each(?1))
+	OR (lid != '' AND lid IN (SELECT value FROM json_each(?1))) OR (phone != '' AND phone IN (SELECT value FROM json_each(?1))))
+	AND (?2 = '' OR scope = '*' OR scope = ?2)`,
+		jsonList(nonEmpty(ids)), community)
 	if err != nil {
 		return 0, fmt.Errorf("ban delete: %w", err)
 	}
