@@ -195,11 +195,8 @@ func (e *env) healthcheck(ctx context.Context, cfg *config.Config) int {
 		fmt.Fprintln(e.stdout, "paused: no")
 	default:
 		for _, p := range pauses {
-			what := "removals and bans"
-			if p.Scope == store.ScopeAll {
-				what = "every action"
-			}
-			fmt.Fprintf(e.stdout, "paused: %s since %s (%s): %s\n", what, p.Since.UTC().Format(time.RFC3339), p.Source, p.Reason)
+			fmt.Fprintf(e.stdout, "paused: %s since %s (%s): %s\n", p.Scope.Stops(), p.Since.UTC().Format(time.RFC3339), p.Source,
+				p.Reason)
 		}
 	}
 	if !h.OK() {
