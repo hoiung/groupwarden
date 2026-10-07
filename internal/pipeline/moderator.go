@@ -238,7 +238,9 @@ func exemptWho(e rules.Exemption) string {
 // evidence builds the evidence copy: every field as sent with its matching
 // view, the normalised text, and the attachment's description (downloaded
 // later, never delaying the delete; recorded by type, name and size only when
-// over evidence.max_attachment_mb).
+// it declares a size over evidence.max_attachment_mb). A declared size is the
+// sender's claim, so a smaller or missing one only means the download is
+// tried, and the download itself stops at the limit (action.MediaFetcher).
 func (m *Moderator) evidence(ev *client.Message, community string, cur *config.Loaded) (*store.Evidence, error) {
 	fields, err := json.Marshal(ev.Fields)
 	if err != nil {
