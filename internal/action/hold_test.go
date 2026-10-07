@@ -35,8 +35,12 @@ func TestPauseHoldsBanUntilResume(t *testing.T) {
 		t.Fatalf("held ban row %s", ban.Status)
 	}
 	reps := k.Reports(ledger.KindAction)
-	if len(reps) != 1 || !strings.Contains(reps[0].Text, "paused") {
-		t.Fatalf("action reports %+v, want one saying removals and bans are paused", reps)
+	if len(reps) != 1 || !strings.Contains(reps[0].Text, "removed and banned once the pause ends") ||
+		strings.Contains(reps[0].Text, "[Resume]") {
+		t.Fatalf("action reports %+v, want one saying the removal and ban wait for the pause to end", reps)
+	}
+	if r, _, _ := k.Store.Report(k.Ctx, reps[0].ID); r.Action != "deleted for everyone; removal and ban once the pause ends" {
+		t.Fatalf("action line %q", r.Action)
 	}
 	k.Reopen()
 	if _, err := ledger.Recover(k.Ctx, k.Store, k.Log); err != nil {
@@ -98,8 +102,41 @@ func TestFullPauseReportSaysEverythingWaits(t *testing.T) {
 	k.Deliver(k.Spam("M1", modtest.G1))
 	k.Fire()
 	reps := k.Reports(ledger.KindAction)
-	if len(reps) != 1 || !strings.Contains(reps[0].Text, "Every action is paused") || k.Fake.Count("Revoke") != 0 {
+	if len(reps) != 1 || !strings.Contains(reps[0].Text, "Every action is paused, so the post is deleted and the sender "+
+		"removed and banned once the pause ends") || k.Fake.Count("Revoke") != 0 {
 		t.Fatalf("reports %+v, calls %v", reps, k.Fake.Calls())
+	}
+	if r, _, _ := k.Store.Report(k.Ctx, reps[0].ID); r.Action != "none yet: delete, removal and ban once the pause ends" {
+		t.Fatalf("action line %q", r.Action)
+	}
+}
+
+// TestFullPauseOutlastsTheDeleteWindow: a delete a full pause held past
+// act_on_replay_max_age (WhatsApp's delete window) is not sent, and the
+// admins, told it would happen, get a priority report that it did not, with
+// the post, to delete it by hand. The removal still fires.
+func TestFullPauseOutlastsTheDeleteWindow(t *testing.T) {
+	k := modtest.New(t, "")
+	pause(t, k, store.SourceAdmin, store.ScopeAll)
+	k.Deliver(k.Spam("M1", modtest.G1))
+	k.Fire()
+	k.Clock.Advance(48 * time.Hour)
+	if err := k.Exec.Resume(k.Ctx); err != nil {
+		t.Fatal(err)
+	}
+	k.Fire()
+	if k.Fake.Count("Revoke") != 0 || k.Fake.Count("Remove") == 0 {
+		t.Fatalf("calls %v, want the removal and no delete", k.Fake.Calls())
+	}
+	reps := k.Reports(ledger.KindNotDone)
+	if len(reps) != 1 || !reps[0].Priority || reps[0].Text != "The bot could not delete a message in "+
+		pipeline.CommunityLabel(k.Holder.Current().Config, string(modtest.Community))+": the message is older than "+
+		"act_on_replay_max_age (47h0m0s), past WhatsApp's delete window. Do it by hand." {
+		t.Fatalf("not-done reports %+v", reps)
+	}
+	revoke := status(t, k, modtest.SpammerM, store.ActRevoke, modtest.G1)
+	if r, _, _ := k.Store.Report(k.Ctx, reps[0].ID); r.EvidenceID == 0 || r.EvidenceID != revoke.EvidenceID {
+		t.Fatalf("the report shows evidence %d, want the post's %d", r.EvidenceID, revoke.EvidenceID)
 	}
 }
 
