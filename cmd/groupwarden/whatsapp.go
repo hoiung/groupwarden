@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/alert"
@@ -186,6 +187,10 @@ func (e *env) resolveLink(ctx context.Context, w *whatsApp, link string) error {
 	return nil
 }
 
+// envNoSyncTimer is set (true) where no config sync timer runs, as in the
+// Docker image; run then does not watch the sync for overdue runs.
+const envNoSyncTimer = "GROUPWARDEN_NO_SYNC_TIMER"
+
 // runBot is `groupwarden run`. A config file that fails its checks still
 // boots when data_dir holds the last good copy (and the admins are told it
 // was REJECTED); with no good copy the bot refuses to start. The admin chat
@@ -204,6 +209,13 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 		return exitFail
 	}
 	opts.ServerURL = e.telegramURL
+	noSyncTimer := false
+	if v := e.getenv(envNoSyncTimer); v != "" {
+		if noSyncTimer, err = strconv.ParseBool(v); err != nil {
+			fmt.Fprintf(e.stderr, "refusing to start: %s=%q is neither true nor false\n", envNoSyncTimer, v)
+			return exitFail
+		}
+	}
 	var reload <-chan struct{}
 	if e.hangups != nil {
 		ch, stop := e.hangups()
@@ -222,7 +234,7 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 		if err != nil {
 			return err
 		}
-		a.Reload, a.BootRejected = reload, rejected
+		a.Reload, a.BootRejected, a.NoSyncTimer = reload, rejected, noSyncTimer
 		err = a.Run(ctx)
 		log.Info("stopped", "err", err)
 		return err
