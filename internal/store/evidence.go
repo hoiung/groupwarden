@@ -132,15 +132,23 @@ func (s *Store) SetMedia(ctx context.Context, id int64, state, path, errText str
 	})
 }
 
-// PurgeEvidence deletes copies created before cutoff and returns the
-// attachment files they kept, for the caller to delete.
+// openPosts selects the copies an open action (queued, or a ban a pause
+// holds) stands for: the fire-time re-check decides by them, so they outlive
+// their retention until the action settles.
+const openPosts = `(SELECT evidence_id FROM ledger WHERE status = 'intended' AND mode = 'enforce' AND evidence_id IS NOT NULL
+	UNION SELECT r.evidence_id FROM reports r JOIN report_ledger rl ON rl.report_id = r.id JOIN ledger l ON l.id = rl.ledger_id
+		WHERE l.status = 'intended' AND l.mode = 'enforce' AND r.evidence_id IS NOT NULL)`
+
+// PurgeEvidence deletes copies created before cutoff that no open action
+// needs and returns the attachment files they kept, for the caller to delete.
 func (s *Store) PurgeEvidence(ctx context.Context, cutoff time.Time) (n int64, files []string, err error) {
 	err = s.Write(ctx, func(tx *sql.Tx) error {
-		files, err = mediaPaths(ctx, tx, `SELECT media_path FROM evidence WHERE created_at < ? AND media_path != ''`, cutoff.UnixMilli())
+		files, err = mediaPaths(ctx, tx, `SELECT media_path FROM evidence WHERE created_at < ? AND media_path != ''
+	AND id NOT IN `+openPosts, cutoff.UnixMilli())
 		if err != nil {
 			return err
 		}
-		res, err := tx.ExecContext(ctx, `DELETE FROM evidence WHERE created_at < ?`, cutoff.UnixMilli())
+		res, err := tx.ExecContext(ctx, `DELETE FROM evidence WHERE created_at < ? AND id NOT IN `+openPosts, cutoff.UnixMilli())
 		if err != nil {
 			return err
 		}
