@@ -196,6 +196,11 @@ CREATE TABLE coverage (
 	`
 ALTER TABLE tg_messages ADD COLUMN part INTEGER NOT NULL DEFAULT 0;
 `,
+	// 6: the report's "Action:" line when it is not the one for its kind (a
+	// spam report written during a pause says what waits).
+	`
+ALTER TABLE reports ADD COLUMN action TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
