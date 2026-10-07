@@ -174,7 +174,7 @@ func (w *Worker) failed(ctx context.Context, row store.InboxRow, ev client.Event
 		"could carry on with the rest; check that group by hand.", strings.ReplaceAll(row.Kind, "_", " "),
 		mask.IDs(seen.Chat), w.stuckTries, mask.IDs(cause.Error()))
 	if serr := w.Store.Decide(ctx, row, seen, func(tx *sql.Tx) error {
-		_, err := store.InsertReport(ctx, tx, store.Report{Kind: string(alert.Undecided), Priority: true, Text: text},
+		_, err := store.InsertReport(ctx, tx, store.Report{Kind: string(alert.Undecided), Text: text},
 			nil, w.Store.Now())
 		return err
 	}); serr != nil {
