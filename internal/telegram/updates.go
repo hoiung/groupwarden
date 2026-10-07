@@ -235,7 +235,7 @@ func (c *Chat) do(ctx context.Context, r store.Report, button string, by Actor) 
 	case ledger.ButtonDone:
 		now := c.Now()
 		if err := c.Store.SetStatus(ctx, map[string]string{
-			store.StatusPhoneDone: strconv.FormatInt(now.UnixMilli(), 10)}); err != nil {
+			store.StatusPhoneDone: store.StatusTime(now)}); err != nil {
 			return "", err
 		}
 		return "Thanks, " + by.Name + ": the next reminder to open WhatsApp on the bot phone is in 7 days.", nil
