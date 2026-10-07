@@ -2,6 +2,7 @@ package telegram_test
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -169,7 +170,13 @@ func (h *harness) press(user int64, code string, reportID int64) {
 // pressIn is a button press arriving from chat.
 func (h *harness) pressIn(chat, user int64, code string, reportID int64) {
 	h.t.Helper()
-	h.chat.Handle(h.k.Ctx, &models.Update{ID: 1, CallbackQuery: &models.CallbackQuery{ID: "q" + strconv.Itoa(int(reportID)),
+	h.pressWith(h.k.Ctx, chat, user, code, reportID)
+}
+
+// pressWith is pressIn handled under ctx (the poller's, which a stop cancels).
+func (h *harness) pressWith(ctx context.Context, chat, user int64, code string, reportID int64) {
+	h.t.Helper()
+	h.chat.Handle(ctx, &models.Update{ID: 1, CallbackQuery: &models.CallbackQuery{ID: "q" + strconv.Itoa(int(reportID)),
 		From: models.User{ID: user, FirstName: name(user)},
 		Message: models.MaybeInaccessibleMessage{Message: &models.Message{ID: h.head(reportID),
 			Chat: models.Chat{ID: chat, Type: "supergroup"}}},
