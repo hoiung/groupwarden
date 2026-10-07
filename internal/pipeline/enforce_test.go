@@ -43,6 +43,35 @@ func TestEditIntoSpamRevokesOriginal(t *testing.T) {
 	}
 }
 
+// TestJoinedGroupModeratedAtOnce: a linked group the bot has just joined is
+// moderated from the join notification itself, with no group list read
+// (the read a join asks for can fail): spam posted there is deleted and its
+// sender removed and banned. Before the join the group is not moderated.
+func TestJoinedGroupModeratedAtOnce(t *testing.T) {
+	const g3 client.JID = "99999000000333@g.us"
+	k := modtest.New(t, "")
+	k.Deliver(k.Spam("BEFORE", g3))
+	k.Fire()
+	if n := k.Fake.Count("Revoke " + string(g3)); n != 0 {
+		t.Fatalf("a group the bot is not in was moderated: %v", k.Fake.Calls())
+	}
+	bot := client.Participant{JID: modtest.Bot, LID: modtest.Bot, Phone: modtest.BotPhone, IsAdmin: true}
+	spammer := client.Participant{JID: modtest.Spammer, LID: modtest.Spammer, Phone: modtest.SpammerPhone}
+	k.Deliver(&client.JoinedGroup{Group: g3, Time: k.Clock.Now(), Info: client.Group{JID: g3, Name: "events",
+		Parent: modtest.Community, Participants: []client.Participant{bot, spammer}}})
+	k.Deliver(k.Spam("AFTER", g3))
+	k.Fire()
+	if n := k.Fake.Count("Revoke " + string(g3) + " " + string(modtest.Spammer) + " AFTER"); n != 1 {
+		t.Fatalf("spam in the joined group was not deleted: %v", k.Fake.Calls())
+	}
+	if removed(k, g3, modtest.Spammer) != 1 || !k.Banned(modtest.SpammerM, "") {
+		t.Fatalf("the sender was not removed from the joined group and banned: %v", k.Fake.Calls())
+	}
+	if n := k.Fake.Count("JoinedGroups"); n != 0 {
+		t.Fatalf("the group list was read %d times", n)
+	}
+}
+
 // TestBannedRejoinByLinkRemoved: a banned person joining through an invite
 // link is removed and the admins are told.
 func TestBannedRejoinByLinkRemoved(t *testing.T) {
@@ -105,7 +134,7 @@ func TestCommunityOrPerGroupRemove(t *testing.T) {
 	k2 := modtest.New(t, "")
 	groups := modtest.Groups()
 	groups[0].Participants = groups[0].Participants[1:] // the bot is no longer in the community's admin list
-	k2.Dir.Update(groups)
+	modtest.Load(t, k2.Dir, groups)
 	k2.Deliver(k2.Spam("M1", modtest.G1))
 	k2.Fire()
 	if removed(k2, modtest.Community, modtest.Spammer) != 0 {
