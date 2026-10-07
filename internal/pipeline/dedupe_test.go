@@ -76,6 +76,9 @@ func TestShadowSweepThenEnforce(t *testing.T) {
 		len(k.Reports(ledger.KindBannedRejoin)) != 0 {
 		t.Fatalf("would-remove reports %+v, banned-rejoin %d", reps, len(k.Reports(ledger.KindBannedRejoin)))
 	}
+	if n := k.Logged("sweep found a banned member"); n != 1 {
+		t.Fatalf("%d log lines after three shadow sweeps, want 1 (one per new row)", n)
+	}
 	k.ReloadConfig(modtest.Config)
 	if err := k.Enforcer.CheckPresent(k.Ctx, modtest.GB, "run4"); err != nil {
 		t.Fatal(err)
@@ -83,6 +86,9 @@ func TestShadowSweepThenEnforce(t *testing.T) {
 	k.Fire()
 	if n := removed(k, modtest.GB, modtest.Member); n != 1 {
 		t.Fatalf("removed %d times after going to enforce: %v", n, k.Fake.Calls())
+	}
+	if n := k.Logged("sweep found a banned member"); n != 2 {
+		t.Fatalf("%d log lines after the enforce sweep, want 2", n)
 	}
 }
 
@@ -102,7 +108,7 @@ func TestShadowJoinNotReportedRemoved(t *testing.T) {
 }
 
 // TestBannedAdminReportedOncePerBan: a banned member who is a current admin
-// is reported once, not on every sweep.
+// is reported once, not on every sweep; banned again later, once more.
 func TestBannedAdminReportedOncePerBan(t *testing.T) {
 	k := modtest.New(t, "")
 	k.Ban(modtest.AdminM)
@@ -114,7 +120,19 @@ func TestBannedAdminReportedOncePerBan(t *testing.T) {
 	if n := len(k.Reports(ledger.KindAdminSpared)); n != 1 {
 		t.Fatalf("%d admin_spared reports after 3 sweeps, want 1", n)
 	}
+	if n := k.Logged("a banned member is a current admin; not removed"); n != 1 {
+		t.Fatalf("%d log lines after 3 sweeps, want 1", n)
+	}
 	if k.Fake.Count("Remove") != 0 {
 		t.Fatalf("removed a current admin: %v", k.Fake.Calls())
+	}
+	k.Unban(modtest.AdminM)
+	k.Clock.Advance(time.Second)
+	k.Ban(modtest.AdminM)
+	if err := k.Enforcer.CheckPresent(k.Ctx, modtest.G1, "run4"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(k.Reports(ledger.KindAdminSpared)); n != 2 {
+		t.Fatalf("%d admin_spared reports after a new ban, want 2", n)
 	}
 }
