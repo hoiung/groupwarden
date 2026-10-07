@@ -207,6 +207,14 @@ func (a *App) init() {
 	if a.Executor != nil && a.Sweep != nil {
 		a.Executor.NotAdmin = a.Sweep.LostAdmin
 	}
+	// Queued actions wait while WhatsApp is not connected (a temporary ban
+	// can last a day) and go out when it is again.
+	if a.Executor != nil {
+		a.Executor.Connected = func() bool {
+			connected, _, _ := a.mon.snapshot()
+			return connected
+		}
+	}
 	a.Adapter.Events(sink{a})
 }
 
@@ -285,11 +293,13 @@ func (a *App) readyToSweep(ctx context.Context) bool {
 	select {
 	case <-delivered:
 	default:
+		timeout := a.Clock.After(backlogWait)
+		a.Log.Info("sweep waiting for WhatsApp to deliver the offline backlog", "at_most", backlogWait)
 		select {
 		case <-ctx.Done():
 			return false
 		case <-delivered:
-		case <-a.Clock.After(backlogWait):
+		case <-timeout:
 			a.Log.Warn("WhatsApp has not said it delivered the offline backlog; sweeping anyway", "waited", backlogWait)
 			return true
 		}
@@ -297,7 +307,7 @@ func (a *App) readyToSweep(ctx context.Context) bool {
 	a.backlogMu.Lock()
 	mark := a.backlogMark
 	a.backlogMu.Unlock()
-	for {
+	for waiting := false; ; waiting = true {
 		undecided, err := a.Store.InboxUndecidedThrough(ctx, mark)
 		switch {
 		case ctx.Err() != nil:
@@ -311,6 +321,9 @@ func (a *App) readyToSweep(ctx context.Context) bool {
 				a.Log.Info("group list loaded and offline backlog decided; sweeping", "waited", waited)
 			}
 			return true
+		}
+		if !waiting {
+			a.Log.Info("sweep waiting for the worker to decide the offline backlog", "inbox_through", mark)
 		}
 		select {
 		case <-ctx.Done():
@@ -390,6 +403,10 @@ func (a *App) supervise(ctx context.Context) error {
 	nextCompanionCheck := time.Time{}
 
 	connect := func() {
+		// Re-armed before the connection starts, not at Connected: the
+		// library does not order Connected and CaughtUp, so a CaughtUp that
+		// overtakes its own Connected still releases this connection's sweep.
+		a.awaitingBacklog()
 		if err := a.Adapter.Connect(ctx); err != nil {
 			d := b.Next()
 			a.Log.Warn("connect failed; retrying", "in", d, "err", mask.IDs(err.Error()))
@@ -465,9 +482,11 @@ func (a *App) supervise(ctx context.Context) error {
 					bannedUntil = time.Time{}
 					a.mon.onConnected(now)
 					a.Log.Info("connected to WhatsApp")
+					if a.Executor != nil {
+						a.Executor.Wake() // the actions that waited for the connection
+					}
 					nextCompanionCheck = now.Add(a.settings().CompanionCheckEvery)
 					a.Directory.SetSelf(a.Adapter.Self())
-					a.awaitingBacklog()
 					a.refreshDirectory(ctx)
 					a.checkCompanions(ctx)
 					a.requestSweep()
@@ -495,7 +514,8 @@ func (a *App) supervise(ctx context.Context) error {
 						Reason: "WhatsApp temporarily banned the bot number: " + l.Detail, Since: now})
 					a.alert(ctx, alert.Alert{Kind: alert.TemporaryBan, Priority: true, Text: fmt.Sprintf(
 						"WhatsApp temporarily banned the bot number (%s). It stays disconnected until %s (in %s), then reconnects with removals and bans PAUSED until an admin presses [Resume]; deletes continue.",
-						l.Detail, bannedUntil.UTC().Format("2006-01-02 15:04 MST"), wait.Round(time.Minute))})
+						l.Detail, bannedUntil.UTC().Format("2006-01-02 15:04 MST"), wait.Round(time.Minute)),
+						Buttons: []string{ledger.ButtonResume}})
 				case l.Kind.Fatal():
 					a.mon.onDisconnected(now)
 					a.Adapter.Disconnect()
@@ -569,7 +589,8 @@ func (a *App) checkCompanions(ctx context.Context) {
 	a.pause(ctx, store.Pause{Source: store.SourceExtraCompanion, Scope: store.ScopeRemoveBan, Reason: reason, Since: now})
 	a.alert(ctx, alert.Alert{Kind: alert.ExtraCompanion, Priority: true, Text: reason +
 		" (new: " + mask.IDs(strings.Join(fresh, ", ")) + "). Removals and bans are PAUSED; deletes continue. " +
-		"If you linked it yourself press [Resume]; if not, unlink it on the bot phone now."})
+		"If you linked it yourself press [Resume]; if not, unlink it on the bot phone now.",
+		Buttons: []string{ledger.ButtonResume}})
 	// Marked last: a stop before this repeats the pause and the alert at the
 	// next check instead of losing them.
 	a.mark(ctx, store.StatusCompanionsSeen, strings.Join(current, ","))
@@ -745,9 +766,9 @@ func (a *App) marked(st map[string]store.StatusValue, key string) string {
 	return st[key].Value
 }
 
-// awaitingBacklog starts holding sweeps at a connect, until WhatsApp says it
-// has delivered what it held meanwhile (a connect before it said so keeps
-// waiting for the same).
+// awaitingBacklog starts holding sweeps as a connection starts, until
+// WhatsApp says it has delivered what it held meanwhile (a connect before it
+// said so keeps waiting for the same).
 func (a *App) awaitingBacklog() {
 	a.backlogMu.Lock()
 	defer a.backlogMu.Unlock()
