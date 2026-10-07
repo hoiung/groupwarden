@@ -2,6 +2,7 @@ package telegram_test
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/config/configtest"
+	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/store"
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
@@ -47,6 +49,15 @@ func TestStatusCommand(t *testing.T) {
 		Reason: "too many removals", Since: h.k.Clock.Now()}); err != nil {
 		t.Fatal(err)
 	}
+	// A ban the pause holds is counted apart from the ban list.
+	if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
+		_, err := ledger.Write(h.k.Ctx, tx, ledger.Plan{Trigger: "H1", Target: modtest.SpammerM, ConfigHash: "h",
+			Ban: []string{store.BanEverywhere}, BanEnforce: true, BanHeld: true, BanCommunity: string(modtest.Community),
+			Reason: "spam post"}, h.k.Clock.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.k.Store.SetStatus(h.k.Ctx, map[string]string{
 		store.StatusSyncLastRun: strconv.FormatInt(h.k.Clock.Now().Add(-3*time.Minute).UnixMilli(), 10),
 		store.StatusSyncResult:  "ok at abc1234"}); err != nil {
@@ -56,7 +67,8 @@ func TestStatusCommand(t *testing.T) {
 	got := h.lastReply()
 	want := []string{"WhatsApp: connected; last event", "Paused: removals and bans (deletes continue) since",
 		"(breaker): too many removals", "Config: v" + h.k.Holder.Current().Hash + "; last sync 3m0s ago (ok at abc1234)",
-		"Backup: last run never", "Bans: 1;", "stale ledger rows (queued over 1h0m0s): 0",
+		"Backup: last run never", "Bans: 1 (+1 held by a pause: they apply after [Resume]);",
+		"stale ledger rows (queued over 1h0m0s): 0",
 		"community a (enforce): 1 covered, 1 absent, 1 not admin", "general (group…0111): covered, 1 human admin(s)",
 		"jobs (group…0222): not admin, 1 human admin(s)", "events (group…0333): absent",
 		"set b (enforce): 1 covered, 0 absent, 0 not admin"}
