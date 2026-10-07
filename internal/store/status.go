@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -45,6 +46,22 @@ const (
 type StatusValue struct {
 	Value     string
 	UpdatedAt time.Time
+}
+
+// StatusTime is how a status value holds a time (the keys above marked unix
+// ms): its unix milliseconds. StatusValue.Time reads it back.
+func StatusTime(t time.Time) string {
+	return strconv.FormatInt(t.UnixMilli(), 10)
+}
+
+// Time reads a value written with StatusTime: the zero time when the key is
+// absent, unreadable or zero.
+func (v StatusValue) Time() time.Time {
+	ms, err := strconv.ParseInt(v.Value, 10, 64)
+	if err != nil || ms == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms)
 }
 
 // SetStatus writes the given keys in one transaction.
