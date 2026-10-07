@@ -60,6 +60,8 @@ type fakeWA struct {
 	comment, secretEdit       *waE2E.Message
 	commentErr, secretEditErr error
 	downloaded                wm.DownloadableMessage
+	downloadMax               int64 // the cap the last download's context carried
+	downloadDeadline          bool  // whether it carried a deadline
 	devices                   []types.JID
 	subGroups                 []*types.GroupLinkTarget
 	requests                  []types.GroupParticipantRequest
@@ -125,9 +127,11 @@ func (f *fakeWA) GetGroupInfoFromLink(context.Context, string) (*types.GroupInfo
 	f.record("GetGroupInfoFromLink", true)
 	return f.info, f.infoErr
 }
-func (f *fakeWA) Download(_ context.Context, m wm.DownloadableMessage) ([]byte, error) {
+func (f *fakeWA) Download(ctx context.Context, m wm.DownloadableMessage) ([]byte, error) {
 	f.record("Download", true)
 	f.downloaded = m
+	f.downloadMax, _ = maxBytesOf(ctx)
+	_, f.downloadDeadline = ctx.Deadline()
 	return []byte("file-bytes"), nil
 }
 func (f *fakeWA) DecryptComment(context.Context, *events.Message) (*waE2E.Message, error) {
