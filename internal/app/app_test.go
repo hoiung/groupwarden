@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/alert"
+	"github.com/hoiung/groupwarden/internal/alert/alerttest"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/config/configtest"
@@ -91,7 +92,7 @@ type harness struct {
 	app     *App
 	fake    *clienttest.Fake
 	clock   *fakeClock
-	rec     *alert.Recorder
+	rec     *alerttest.Recorder
 	st      *store.Store
 	done    chan error
 	cancel  context.CancelFunc // stops Run cleanly
@@ -129,7 +130,7 @@ func startWith(t *testing.T, fake *clienttest.Fake, s Settings, prep func(*App))
 		s.CompanionCheckEvery = time.Hour
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	rec := &alert.Recorder{}
+	rec := &alerttest.Recorder{}
 	inbox := pipeline.NewInbox(st)
 	holder, cfgPath := configtest.Holder(t, testSet)
 	dir := &pipeline.Directory{}
