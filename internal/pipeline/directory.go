@@ -31,15 +31,34 @@ func CommunityLabel(c *config.Config, id string) string {
 // Directory is what the bot last learned about its groups from WhatsApp:
 // each group's parent community, its members and its admins. The app
 // refreshes it at connect and on every sweep (network calls happen there,
-// never while a message is decided); membership and admin events keep it
-// current in between. Decisions only read it.
+// never while a message is decided); membership, admin and join events keep
+// it current in between. Decisions only read it.
 type Directory struct {
 	mu     sync.RWMutex
 	groups map[client.JID]*dirGroup
 	self   client.Member
+	// refreshing counts refreshes waiting on WhatsApp's group list; while
+	// one is, every change is also kept in journal, to apply again on top
+	// of the list (which may predate it).
+	refreshing int
+	journal    []change
 
 	initOnce, loadOnce sync.Once
 	loaded             chan struct{}
+}
+
+// change is one update to the directory's groups, applied with d.mu held.
+type change func(groups map[client.JID]*dirGroup)
+
+// apply makes c, keeping it for any refresh in flight. d.mu must be held.
+func (d *Directory) apply(c change) {
+	if d.groups == nil {
+		d.groups = map[client.JID]*dirGroup{}
+	}
+	c(d.groups)
+	if d.refreshing > 0 {
+		d.journal = append(d.journal, c)
+	}
 }
 
 func (d *Directory) loadedChan() chan struct{} {
@@ -125,32 +144,72 @@ func (d *Directory) HumanAdmins(group client.JID) int {
 	return n
 }
 
-// Update replaces the directory with groups (as JoinedGroups lists them).
-func (d *Directory) Update(groups []client.Group) {
-	next := make(map[client.JID]*dirGroup, len(groups))
-	for _, g := range groups {
-		dg := newDirGroup(g)
-		for _, p := range g.Participants {
-			addrs := []client.JID{p.JID.Bare(), p.Phone.Bare(), p.LID.Bare()}
-			for _, j := range addrs {
-				if j == "" {
-					continue
-				}
-				dg.members[j] = true
-				if p.IsAdmin || p.IsSuperAdmin {
-					dg.admins[j] = true
-				}
+// listed builds a directory entry from the group as WhatsApp describes it.
+func listed(g client.Group) *dirGroup {
+	dg := newDirGroup(g)
+	for _, p := range g.Participants {
+		addrs := []client.JID{p.JID.Bare(), p.Phone.Bare(), p.LID.Bare()}
+		for _, j := range addrs {
+			if j == "" {
+				continue
 			}
-			if p.Phone != "" && p.LID != "" {
-				dg.alt[p.Phone.Bare()], dg.alt[p.LID.Bare()] = p.LID.Bare(), p.Phone.Bare()
+			dg.members[j] = true
+			if p.IsAdmin || p.IsSuperAdmin {
+				dg.admins[j] = true
 			}
 		}
-		next[g.JID] = dg
+		if p.Phone != "" && p.LID != "" {
+			dg.alt[p.Phone.Bare()], dg.alt[p.LID.Bare()] = p.LID.Bare(), p.Phone.Bare()
+		}
 	}
+	return dg
+}
+
+// Refresh replaces the directory with the groups fetch lists (WhatsApp's
+// group list). fetch runs without the lock, and the list it returns may
+// have been built before changes applied meanwhile (a promotion the worker
+// decided while the list was on its way): those are applied again on top
+// of it, so the older list cannot undo them. On an error the directory is
+// left as it was.
+func (d *Directory) Refresh(fetch func() ([]client.Group, error)) error {
 	d.mu.Lock()
-	d.groups = next
+	d.refreshing++
 	d.mu.Unlock()
+	groups, err := fetch()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.refreshing--
+	replay := d.journal
+	if d.refreshing == 0 {
+		d.journal = nil
+	}
+	if err != nil {
+		return err
+	}
+	next := make(map[client.JID]*dirGroup, len(groups))
+	for _, g := range groups {
+		next[g.JID] = listed(g)
+	}
+	for _, c := range replay {
+		c(next)
+	}
+	d.groups = next
 	d.loadOnce.Do(func() { close(d.loadedChan()) })
+	return nil
+}
+
+// Join records a group the bot joined, as the join notification described
+// it, so its community is known without waiting for the next group list.
+// A group the directory already lists is left as it is: a list read after
+// the join is at least as new as the notification.
+func (d *Directory) Join(g client.Group) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.apply(func(groups map[client.JID]*dirGroup) {
+		if groups[g.JID] == nil {
+			groups[g.JID] = listed(g)
+		}
+	})
 }
 
 // SetSelf records the bot's own addresses.
@@ -276,13 +335,15 @@ func (d *Directory) BotIsAdmin(group client.JID) bool {
 func (d *Directory) BotNotAdmin(group client.JID) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if g := d.groups[group]; g != nil {
-		for _, j := range []client.JID{d.self.LID, d.self.Phone} {
-			if j != "" {
-				delete(g.admins, j)
+	d.apply(func(groups map[client.JID]*dirGroup) {
+		if g := groups[group]; g != nil {
+			for _, j := range []client.JID{d.self.LID, d.self.Phone} {
+				if j != "" {
+					delete(g.admins, j)
+				}
 			}
 		}
-	}
+	})
 }
 
 // IsCommunity reports whether jid is a community the bot knows.
@@ -359,13 +420,15 @@ func (d *Directory) AnnouncementGroups() []string {
 func (d *Directory) Apply(ch *client.GroupChange) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.groups == nil {
-		d.groups = map[client.JID]*dirGroup{}
-	}
-	g := d.groups[ch.Group]
+	d.apply(func(groups map[client.JID]*dirGroup) { d.applyChange(groups, ch) })
+}
+
+// applyChange is Apply on groups. d.mu must be held.
+func (d *Directory) applyChange(groups map[client.JID]*dirGroup, ch *client.GroupChange) {
+	g := groups[ch.Group]
 	if g == nil {
 		g = newDirGroup(client.Group{JID: ch.Group})
-		d.groups[ch.Group] = g
+		groups[ch.Group] = g
 	}
 	both := func(j client.JID) []client.JID {
 		b := j.Bare()
@@ -398,7 +461,7 @@ func (d *Directory) Apply(ch *client.GroupChange) {
 	// The bot itself left: it is no longer in the group at all.
 	for _, j := range ch.Left {
 		if b := j.Bare(); b != "" && (b == d.self.LID || b == d.self.Phone) {
-			delete(d.groups, ch.Group)
+			delete(groups, ch.Group)
 			return
 		}
 	}
