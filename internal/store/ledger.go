@@ -278,9 +278,19 @@ func nullTime(t time.Time) any {
 // still at intended changes: one [Undo] overturned while its call was in
 // flight keeps the reason that says who did.
 func (s *Store) Retry(ctx context.Context, id int64, notBefore time.Time, reason string) error {
+	return s.requeue(ctx, id, notBefore, reason, 1)
+}
+
+// Hold keeps a row queued until notBefore without counting an attempt: the
+// call never reached WhatsApp (not connected).
+func (s *Store) Hold(ctx context.Context, id int64, notBefore time.Time, reason string) error {
+	return s.requeue(ctx, id, notBefore, reason, 0)
+}
+
+func (s *Store) requeue(ctx context.Context, id int64, notBefore time.Time, reason string, attempt int) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE ledger SET attempts = attempts + 1, reason = ?, updated_at = ?
-WHERE id = ? AND status = 'intended'`, reason, s.now().UnixMilli(), id); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE ledger SET attempts = attempts + ?, reason = ?, updated_at = ?
+WHERE id = ? AND status = 'intended'`, attempt, reason, s.now().UnixMilli(), id); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE outbox SET not_before = ? WHERE ledger_id = ?`, notBefore.UnixMilli(), id)
