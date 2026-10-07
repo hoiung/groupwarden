@@ -36,7 +36,7 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 | `backup.age_recipient` | `cmd/groupwarden/storecmds.go` `check --secrets` (parsed by `age`); `internal/backup` `Run` (each backup is encrypted to it) |
 | `backup.keep` | `internal/backup` `Run` → `prune` (keeps the newest this many backups; other files in the directory are never touched) |
 | `evidence.max_attachment_mb` | `internal/pipeline/moderator.go` `evidence` (an attachment that declares a size over it is recorded by type, name and size only); `internal/action/media.go` `fetchOne` (the download stops at it, whatever size the post declared, and a file over it is recorded the same way) |
-| `report.attachment_show_hours` | `internal/telegram/deliver.go` `takeDownDue` (an attachment posted to the admin chat is deleted after it), `takeDown` (the placeholder's text); `internal/telegram/updates.go` `show` (the reply says when the repost comes down) |
+| `report.attachment_show_hours` | `internal/telegram/deliver.go` `takeDownDue` (an attachment posted to the admin chat is deleted after it), `takeDown` (the placeholder's text), `postAttachment` (an attachment Telegram keeps refusing is given up after it and marked failed); `internal/telegram/updates.go` `show` (the reply says when the repost comes down) |
 | `bans.scope` | `internal/rules/compile.go`, `decide.go` (`Decision.BanIn`) |
 | `word_lists` | `internal/rules/compile.go` `addWords` |
 | `leet_word_lists` | `internal/rules/compile.go` |
