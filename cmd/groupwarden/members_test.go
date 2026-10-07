@@ -193,9 +193,6 @@ func TestBanCLIAddRemoveList(t *testing.T) {
 	if code := te.sub("ban", "add", "not-a-number"); code != exitUsage {
 		t.Fatalf("bad member: exit %d", code)
 	}
-	if code := te.sub("ban", "add", memberLID, "--community", "nowhere"); code != exitUsage {
-		t.Fatalf("unknown community: exit %d", code)
-	}
 	// Each change is in the action log with who made it.
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
@@ -206,6 +203,73 @@ func TestBanCLIAddRemoveList(t *testing.T) {
 	rows, err := st.LedgerForTargets(ctx, []string{memberLID})
 	if err != nil || len(rows) != 2 || rows[0].Action != store.ActBan || rows[1].Action != store.ActUnban || rows[1].Actor != "cli" {
 		t.Fatalf("ledger %+v (%v)", rows, err)
+	}
+	// Under all_communities one ban covers every community, so --community is refused.
+	te.cfgPath = te.writeConfig(t, "communities:\n  \""+cmdCommunity+"\": {}\n")
+	for _, sub := range []string{"add", "remove"} {
+		if code := te.sub("ban", sub, memberLID, "--community", cmdCommunity); code != exitUsage ||
+			!strings.Contains(te.errb.String(), "all_communities") {
+			t.Fatalf("ban %s --community under all_communities: exit %d %q", sub, code, te.errb)
+		}
+	}
+}
+
+// TestBanCLIPerCommunity: under bans.scope per_community, `ban remove
+// --community` lifts the ban in that community only; without --community it
+// lifts every ban.
+func TestBanCLIPerCommunity(t *testing.T) {
+	const otherCommunity = "99999000000888@g.us"
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	te.cfgPath = te.writeConfig(t, "communities:\n  \""+cmdCommunity+"\": {}\n  \""+otherCommunity+"\": {}\nbans:\n  scope: per_community\n")
+	for _, c := range []string{cmdCommunity, otherCommunity} {
+		if code := te.sub("ban", "add", memberLID, "--community", c); code != 0 {
+			t.Fatalf("ban add in %s: exit %d %q", c, code, te.errb)
+		}
+	}
+	if code := te.sub("ban", "remove", memberLID, "--community", cmdCommunity); code != 0 ||
+		te.out.String() != "unbanned "+memberLID+" in "+cmdCommunity+"\n" {
+		t.Fatalf("ban remove in one community: exit %d %q %q", code, te.out, te.errb)
+	}
+	if code := te.sub("ban", "list"); code != 0 || !strings.Contains(te.out.String(), "1 ban(s)") ||
+		!strings.Contains(te.out.String(), memberLID+" scope="+otherCommunity+" ") {
+		t.Fatalf("after lifting the ban in %s: %q, want the ban in %s kept", cmdCommunity, te.out, otherCommunity)
+	}
+	if code := te.sub("ban", "remove", memberLID, "--community", cmdCommunity); code != exitFail ||
+		te.out.String() != memberLID+" is not banned in "+cmdCommunity+"\n" {
+		t.Fatalf("lifting it again: exit %d %q", code, te.out)
+	}
+	if code := te.sub("ban", "add", memberLID, "--community", "99999000000777@g.us"); code != exitUsage ||
+		!strings.Contains(te.errb.String(), "not a configured community") {
+		t.Fatalf("unknown community: exit %d %q", code, te.errb)
+	}
+	if code := te.sub("ban", "add", memberLID, "--community", cmdCommunity); code != 0 {
+		t.Fatalf("ban add again: exit %d %q", code, te.errb)
+	}
+	if code := te.sub("ban", "remove", memberLID); code != 0 || te.out.String() != "unbanned "+memberLID+"\n" {
+		t.Fatalf("ban remove everywhere: exit %d %q", code, te.out)
+	}
+	if code := te.sub("ban", "list"); code != 0 || te.out.String() != "0 ban(s)\n" {
+		t.Fatalf("after lifting every ban: %q", te.out)
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rows, err := st.LedgerForTargets(ctx, []string{memberLID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lifted []string
+	for _, r := range rows {
+		if r.Action == store.ActUnban {
+			lifted = append(lifted, r.Chat)
+		}
+	}
+	if len(lifted) != 2 || lifted[0] != cmdCommunity || lifted[1] != "" {
+		t.Fatalf("unban rows lift %q, want %s then every community", lifted, cmdCommunity)
 	}
 }
 
