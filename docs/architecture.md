@@ -8,7 +8,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                ▼
            internal/store (groupwarden.db: inbox, pauses, status)
                ▼
-           internal/pipeline worker ── Moderator.Evaluate
+           internal/pipeline worker ── Moderator.Decide
                │ fields the sender wrote (never the quoted message; @mentions masked)
                ▼
            internal/rules (compiled from internal/config; swapped whole on reload)
