@@ -91,7 +91,7 @@ func TestRecheckUnbanned(t *testing.T) {
 	if k.Fake.Count("Revoke")+k.Fake.Count("Remove") != 0 {
 		t.Fatalf("fired on an unbanned member: %v", k.Fake.Calls())
 	}
-	if r := status(t, k, modtest.SpammerM, store.ActRevoke, modtest.G1); r.Status != store.Failed || !strings.Contains(r.Reason, "unbanned") {
+	if r := status(t, k, modtest.SpammerM, store.ActRevoke, modtest.G1); r.Status != store.Failed || !strings.Contains(r.Reason, "not banned in") {
 		t.Fatalf("revoke: %s %q", r.Status, r.Reason)
 	}
 }
@@ -139,6 +139,20 @@ func TestRecheckAfterLimiter(t *testing.T) {
 	}
 	if r := status(t, k, modtest.MemberM, store.ActRevoke, modtest.GB); r.Status != store.Failed {
 		t.Fatalf("second delete: %s", r.Status)
+	}
+}
+
+// TestPostJudgedInItsOwnCommunity: under all_communities a spam post in one
+// community removes the sender from the other community's groups too, even
+// where that community disables the rule: the fire-time re-check judges the
+// post in the community it was posted in.
+func TestPostJudgedInItsOwnCommunity(t *testing.T) {
+	k := modtest.NewConfig(t, strings.Replace(modtest.Config, "    name: set b\n", "    name: set b\n    disable_rules: [pitch]\n", 1))
+	k.Dir.Apply(&client.GroupChange{Group: modtest.GB, Joined: []client.JID{modtest.Spammer}})
+	k.Deliver(k.Spam("M1", modtest.G1))
+	k.Fire()
+	if k.Fake.Count("Remove "+string(modtest.GB)+" "+string(modtest.Spammer)) != 1 {
+		t.Fatalf("not removed from the other community's group: %v", k.Fake.Calls())
 	}
 }
 
