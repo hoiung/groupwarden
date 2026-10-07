@@ -42,7 +42,9 @@ func (a *Adapter) handle(evt any) bool {
 		sink.Lifecycle(client.Lifecycle{Kind: client.Connected})
 	case *events.OfflineSyncCompleted:
 		// The library handles WhatsApp's notifications one at a time, in the
-		// order they arrive, and this marker comes after the offline ones.
+		// order they arrive, and this marker comes after the offline ones. It
+		// is not ordered with Connected, which the library sends from another
+		// goroutine after two round trips: either may come first.
 		sink.Lifecycle(client.Lifecycle{Kind: client.CaughtUp, Detail: fmt.Sprintf("%d offline events", e.Count)})
 	case *events.Disconnected:
 		sink.Lifecycle(client.Lifecycle{Kind: client.Disconnected, Detail: "connection closed by the server"})
