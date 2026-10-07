@@ -94,6 +94,9 @@ func TestBannedRejoinByLinkRemoved(t *testing.T) {
 	if removed(k, modtest.G2, modtest.Other2) != 0 {
 		t.Fatal("removed someone who is not banned")
 	}
+	if n := k.Logged("banned member joined; removal planned"); n != 1 {
+		t.Fatalf("%d log lines for the banned join, want 1", n)
+	}
 }
 
 // TestBannedJoinRequestRejected: a banned person's pending join request is
@@ -220,6 +223,9 @@ func TestHumanAdminAddNotReversed(t *testing.T) {
 	if reps := k.Reports(ledger.KindBanLifted); len(reps) != 1 {
 		t.Fatalf("reports %+v", reps)
 	}
+	if n := k.Logged("ban lifted: a human admin re-added a banned member"); n != 1 {
+		t.Fatalf("%d log lines for the lift, want 1", n)
+	}
 }
 
 // TestHumanAdminAddLiftsOnlyThatCommunity: under bans.scope per_community, a
@@ -294,6 +300,9 @@ func TestHumanRemovalOffersBan(t *testing.T) {
 	}
 	if !slices.Equal(reps[0].Buttons, []string{ledger.ButtonAddToBanList, ledger.ButtonNo}) {
 		t.Fatalf("buttons %v", reps[0].Buttons)
+	}
+	if n := k.Logged("a human admin removed a member; offering a ban"); n != 1 {
+		t.Fatalf("%d log lines for the offer, want 1", n)
 	}
 	if k.Banned(modtest.MemberM, "") {
 		t.Fatal("banned without an admin pressing [Add to ban list]")
@@ -438,6 +447,18 @@ func TestUnaddressableSenderReportedOnly(t *testing.T) {
 	}
 	if strings.Contains(reps[0].Text, strings.TrimSuffix(string(modtest.Spammer), "@lid")) {
 		t.Fatalf("report names the sender unmasked: %q", reps[0].Text)
+	}
+	if n := k.Logged("rule matched a sender the bot cannot act on; reported only"); n != 1 {
+		t.Fatalf("%d log lines for the unaddressable sender, want 1", n)
+	}
+	// A human admin removing that address is not offered for the ban list:
+	// there is nobody the list could hold.
+	k.Deliver(change(k, modtest.G1, modtest.Admin, nil, []client.JID{hosted}))
+	if reps := k.Reports(ledger.KindHumanRemoval); len(reps) != 0 {
+		t.Fatalf("offered a ban of an unaddressable member: %+v", reps)
+	}
+	if n := k.Logged("a human admin removed an address the bot cannot ban; not offered"); n != 1 {
+		t.Fatalf("%d log lines for the removal not offered, want 1", n)
 	}
 	k.Deliver(k.Spam("S1", modtest.G1))
 	k.Fire()
