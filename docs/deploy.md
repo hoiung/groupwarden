@@ -49,6 +49,15 @@ backup:
   keep: 14
 ```
 
+The config repo also needs its first corpus before the first sync. Every load tests the rules against `corpus/` and refuses one without both spam and legit samples, so the sync would REJECT the commit. Start from the public corpus and check the config from a clone of this repo before you push:
+
+```bash
+cp -r tests/corpus <config repo>/corpus
+go run ./cmd/groupwarden check --config <config repo>/config.yaml   # must print "OK config v…"
+```
+
+The check also fails when your rules miss a spam sample or would delete a legit one. Add your own samples later with the spam-intake skill (`.claude/skills/spam-intake`) or `groupwarden corpus add`.
+
 ## Install on a Linux node
 
 Run these as your own user (with sudo) from a clone of this repo. Each step says how to check it.
@@ -120,7 +129,7 @@ Run these as your own user (with sudo) from a clone of this repo. Each step says
 
    `healthcheck` exits 0 once the bot is running, connected, hearing messages, has its config and has reached the admin chat. The admin chat gets a "started" message, the pinned command list and the coverage of each community; `/status` shows the rest.
 
-8. **Test a backup once** rather than waiting for the night: `sudo systemctl start groupwarden-backup.service`, then `ls -l /srv/groupwarden-backup` and `/status` ("Backup: last run …").
+8. **Test a backup once** rather than waiting for the night: `sudo systemctl start groupwarden-backup.service`, then `sudo ls -l /srv/groupwarden-backup` and `/status` ("Backup: last run …").
 
 Run `deploy/install.sh` again whenever you change `config_sync_minutes` or `backup.target_dir`: those two are baked into the units.
 
@@ -216,4 +225,11 @@ docker run -it --rm -v groupwarden-data:/data -v /path/to/config:/config:ro grou
 docker run -d --name groupwarden --restart on-failure -e TZ=Europe/London -v groupwarden-data:/data -v /path/to/config:/config:ro groupwarden
 ```
 
-`pair` takes the same lock as `run`, so pair before you start the bot. The image has no git and no timers: reload a changed config with `docker kill --signal HUP groupwarden`, and run the backup from the host's scheduler with `docker run --rm -v groupwarden-data:/data -v /path/to/config:/config:ro -v /path/to/backups:/backup groupwarden backup` (with `backup.target_dir: /backup`). `--restart on-failure` also restarts after exit code 78, which needs a human; check the admin chat before you restart a stopped container.
+`pair` takes the same lock as `run`, so pair before you start the bot. The image has no git and no timers, and it sets `GROUPWARDEN_NO_SYNC_TIMER=1` so the bot does not alert that the config sync is overdue: reload a changed config with `docker kill --signal HUP groupwarden`. Run the backup from the host's scheduler (the bot still alerts when it has not run for two days), into a directory the container's user can write, with `backup.target_dir: /backup`:
+
+```bash
+sudo install -d -o 65532 -g 65532 -m 0700 /path/to/backups
+docker run --rm -v groupwarden-data:/data -v /path/to/config:/config:ro -v /path/to/backups:/backup groupwarden backup
+```
+
+`--restart on-failure` also restarts after exit code 78, which needs a human; check the admin chat before you restart a stopped container.
