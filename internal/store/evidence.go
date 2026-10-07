@@ -13,7 +13,7 @@ const (
 	MediaNone     = "none"      // no attachment
 	MediaPending  = "pending"   // to be downloaded (never delays the revoke)
 	MediaSaved    = "saved"     // the file is in the evidence dir
-	MediaTooLarge = "too_large" // over evidence.max_attachment_mb: type, name and size only
+	MediaTooLarge = "too_large" // over evidence.max_attachment_mb, declared or downloaded: type, name and size only
 	MediaFailed   = "failed"    // the download failed, the file could not be saved, or Telegram refused it (error recorded)
 )
 
@@ -38,7 +38,7 @@ type Evidence struct {
 	MediaKind  string
 	MediaMime  string
 	MediaName  string
-	MediaSize  uint64
+	MediaSize  uint64 // the file's size once downloaded; before, what the post declared (0: unknown)
 	MediaRaw   []byte // adapter-private description the download needs
 	MediaState string
 	MediaPath  string
@@ -120,13 +120,14 @@ func (s *Store) evidenceRows(ctx context.Context, query string, args ...any) ([]
 	return out, rows.Err()
 }
 
-// SetMedia records the outcome of an attachment download.
-func (s *Store) SetMedia(ctx context.Context, id int64, state, path, errText string) error {
+// SetMedia records the outcome of an attachment download, with the size it
+// leaves known (0: unknown).
+func (s *Store) SetMedia(ctx context.Context, id int64, state, path, errText string, size uint64) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
 		// The adapter-private download description is not needed once the
 		// download is over.
-		_, err := tx.ExecContext(ctx, `UPDATE evidence SET media_state = ?, media_path = ?, media_error = ?, media_raw = NULL
-WHERE id = ?`, state, path, errText, id)
+		_, err := tx.ExecContext(ctx, `UPDATE evidence SET media_state = ?, media_path = ?, media_error = ?, media_size = ?,
+	media_raw = NULL WHERE id = ?`, state, path, errText, int64(size), id) // #nosec G115 -- a WhatsApp attachment size is far below 2^63
 		return err
 	})
 }
