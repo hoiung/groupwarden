@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/config/configtest"
+	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
@@ -227,8 +229,9 @@ func TestTempBanWaitsForExpiryThenPaused(t *testing.T) {
 	h.fake.Emit(client.Lifecycle{Kind: client.TemporaryBan, Detail: "101: too many messages", Expiry: 2 * time.Hour})
 	h.eventually("temp ban alert", func() bool { return len(h.rec.OfKind(alert.TemporaryBan)) == 1 })
 	al := h.rec.OfKind(alert.TemporaryBan)[0]
-	if !al.Priority || !strings.Contains(al.Text, "2h0m0s") || !strings.Contains(al.Text, "PAUSED") {
-		t.Fatalf("alert %+v, want priority with the expiry and the pause", al)
+	if !al.Priority || !strings.Contains(al.Text, "2h0m0s") || !strings.Contains(al.Text, "PAUSED") ||
+		!slices.Equal(al.Buttons, []string{ledger.ButtonResume}) {
+		t.Fatalf("alert %+v, want priority with the expiry, the pause and [Resume]", al)
 	}
 	if h.fake.Count("Disconnect") < 1 {
 		t.Fatal("bot did not disconnect for the ban")
@@ -292,7 +295,8 @@ func TestExtraCompanionPauses(t *testing.T) {
 	h.fake.SetDevices([]client.JID{"99999000000777:12@lid"})
 	h.clock.Advance(time.Hour)
 	h.eventually("companion alert", func() bool { return len(h.rec.OfKind(alert.ExtraCompanion)) == 1 })
-	if a := h.rec.OfKind(alert.ExtraCompanion)[0]; !a.Priority || !strings.Contains(a.Text, "[Resume]") {
+	if a := h.rec.OfKind(alert.ExtraCompanion)[0]; !a.Priority || !strings.Contains(a.Text, "[Resume]") ||
+		!slices.Equal(a.Buttons, []string{ledger.ButtonResume}) {
 		t.Fatalf("alert %+v", a)
 	}
 	if paused, why := h.st.PausedFor(ctx, store.ScopeRemoveBan); !paused || !strings.HasPrefix(why, store.SourceExtraCompanion) {
