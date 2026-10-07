@@ -85,7 +85,11 @@ func (m *Moderator) Decide(ctx context.Context, tx *sql.Tx, item Item) error {
 			"promoted", len(ev.Promoted), "demoted", len(ev.Demoted))
 		return m.Enforcer.OnGroupChange(ctx, tx, ev, m.Store.Now())
 	case *client.JoinedGroup:
-		m.Log.Info("bot joined a group", "group", mask.IDs(string(ev.Group)), "reason", ev.Reason)
+		info := ev.Info
+		info.JID = ev.Group
+		m.Directory.Join(info)
+		m.Log.Info("bot joined a group", "group", mask.IDs(string(ev.Group)), "reason", ev.Reason,
+			"community", mask.IDs(m.Directory.Community(ev.Group, m.Config.Current().Rules)))
 	}
 	return nil
 }
