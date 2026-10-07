@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/store"
+	"github.com/hoiung/groupwarden/internal/store/sessiontest"
 )
 
 func revokeRow(t *testing.T, k *modtest.Kit) store.LedgerRow {
@@ -221,6 +223,53 @@ func TestActionLogPurge(t *testing.T) {
 
 func purger(k *modtest.Kit) *ledger.Purger {
 	return &ledger.Purger{Store: k.Store, Config: k.Holder, Log: k.Log, Now: k.Clock.Now}
+}
+
+// TestSecretsKeptUntilTheGroupListIsRead: after a restart the purge runs
+// before the group list is read, when no group is known to be an
+// announcement group. Message secrets wait for the list: a 40-day-old
+// announcement secret is kept (announcement_secret_days 90), and once the
+// list is read the ordinary one goes (evidence_days 30).
+func TestSecretsKeptUntilTheGroupListIsRead(t *testing.T) {
+	k := modtest.New(t, "")
+	path := filepath.Join(t.TempDir(), "whatsmeow.db")
+	db := sessiontest.Create(t, path)
+	sess, err := store.OpenSession(k.Ctx, path, k.Clock.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	const announcement = "99999000000333@g.us"
+	for chat, id := range map[string]string{announcement: "ANN", "99999000000111@g.us": "ORD"} {
+		sessiontest.Exec(t, db, `INSERT INTO whatsmeow_message_secrets (our_jid, chat_jid, sender_jid, message_id, key)
+VALUES ('447700900789@s.whatsapp.net', ?, '99999000000555@lid', ?, x'00')`, chat, id)
+	}
+	left := func() string {
+		t.Helper()
+		var ids string
+		if err := db.QueryRowContext(k.Ctx, `SELECT COALESCE(group_concat(message_id, ','), '') FROM
+	(SELECT message_id FROM whatsmeow_message_secrets ORDER BY message_id)`).Scan(&ids); err != nil {
+			t.Fatal(err)
+		}
+		return ids
+	}
+	known := []string{announcement}
+	p := purger(k)
+	p.Session, p.AnnouncementChats = sess, func() []string { return known }
+	if _, err := p.Purge(k.Ctx); err != nil { // the last run: both secrets first seen now
+		t.Fatal(err)
+	}
+	k.Clock.Advance(40 * 24 * time.Hour)
+	loaded := make(chan struct{})
+	known, p.Ready = nil, loaded // restarted, the group list not read yet
+	if res, err := p.Purge(k.Ctx); err != nil || res.Secrets != 0 || left() != "ANN,ORD" {
+		t.Fatalf("before the list is read: purged %d (%v), left %q, want both", res.Secrets, err, left())
+	}
+	known = []string{announcement}
+	close(loaded)
+	if res, err := p.Purge(k.Ctx); err != nil || res.Secrets != 1 || left() != "ANN" {
+		t.Fatalf("after the list is read: purged %d (%v), left %q, want ANN", res.Secrets, err, left())
+	}
 }
 
 // TestEvidencePurge: evidence copies and their files go after
