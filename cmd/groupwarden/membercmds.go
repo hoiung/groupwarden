@@ -118,7 +118,19 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 			fmt.Fprintf(e.stdout, "%s scope=%s lid=%s phone=%s since=%s reason=%q\n", b.Member, b.Scope, dash(b.LID),
 				dash(b.Phone), b.CreatedAt.UTC().Format(time.RFC3339), b.Reason)
 		}
+		held, err := st.HeldBans(ctx)
+		if err != nil {
+			fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+			return exitFail
+		}
+		for _, r := range held {
+			fmt.Fprintf(e.stdout, "%s scope=%s held by a pause (applies after [Resume]) since=%s reason=%q\n", r.Target, r.Chat,
+				r.CreatedAt.UTC().Format(time.RFC3339), r.Reason)
+		}
 		fmt.Fprintf(e.stdout, "%d ban(s)\n", len(bans))
+		if len(held) > 0 {
+			fmt.Fprintf(e.stdout, "%d ban(s) held by a pause\n", len(held))
+		}
 		return exitOK
 	}
 	if len(args) != 1 {
@@ -159,11 +171,16 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		p.Ban, p.BanEnforce, p.Reason = []string{scope}, true, "added with the ban command"
 		p.Reports = []store.Report{{Kind: ledger.KindBanCLI, Community: scope, Text: "A ban was added with the ban command."}}
 	case "remove":
-		if _, banned, err := st.FindBan(ctx, m.IDs(), community); err != nil || !banned {
-			if err != nil {
-				fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
-				return exitFail
-			}
+		// A ban a pause holds is lifted too (it would apply after [Resume]).
+		_, banned, err := st.FindBan(ctx, m.IDs(), community)
+		if err == nil && !banned {
+			banned, err = st.HeldBan(ctx, m.IDs(), community)
+		}
+		if err != nil {
+			fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+			return exitFail
+		}
+		if !banned {
 			fmt.Fprintf(e.stdout, "%s is not banned%s\n", m.Key(), in)
 			return exitFail
 		}
@@ -394,6 +411,10 @@ func (e *env) memberForget(ctx context.Context, st *store.Store, session *store.
 		fmt.Fprintf(e.stdout, "kept: ban of %s (scope %s) since %s: an active ban is kept so a removed spammer cannot rejoin; "+
 			"lift it with `groupwarden ban remove %s` first if it should go\n", b.Member, b.Scope,
 			b.CreatedAt.UTC().Format("2006-01-02"), b.Member)
+	}
+	if f.HeldBans > 0 {
+		fmt.Fprintf(e.stdout, "kept: %d ban(s) a pause holds: they apply after [Resume] like an active ban; "+
+			"lift them with `groupwarden ban remove` first if they should go\n", f.HeldBans)
 	}
 	return exitOK
 }
