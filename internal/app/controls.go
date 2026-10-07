@@ -214,8 +214,15 @@ func (a *App) statusText(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintf(&b, "Bans: %d; queued actions: %d; stale ledger rows (queued over %s): %d\n", len(bans), queued,
-		staleAfter, stale)
+	held, err := a.Store.HeldBans(ctx)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(&b, "Bans: %d", len(bans))
+	if len(held) > 0 {
+		fmt.Fprintf(&b, " (+%d held by a pause: they apply after [Resume])", len(held))
+	}
+	fmt.Fprintf(&b, "; queued actions: %d; stale ledger rows (queued over %s): %d\n", queued, staleAfter, stale)
 	var cov reconcile.Coverage
 	if a.Sweep != nil {
 		cov = a.Sweep.Coverage()
