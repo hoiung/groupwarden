@@ -162,7 +162,8 @@ func (x *Executor) Step(ctx context.Context) (bool, error) {
 		moved, err := x.settle(ctx, row.ID, func(tx *sql.Tx, now time.Time) (bool, error) {
 			return store.ToShadowIn(ctx, tx, row.ID, v.reason, now)
 		}, &store.Report{Kind: ledger.KindWouldRemove, Community: row.Community, Subject: row.Target,
-			Text: fmt.Sprintf("Would %s in %s, which is in shadow mode: not done.", what(row.Action), row.Community)})
+			Text: fmt.Sprintf("Would %s in %s, which is in shadow mode: not done.", what(row.Action),
+				pipeline.CommunityLabel(x.Config.Current().Config, row.Community))})
 		if err != nil {
 			return false, err
 		}
@@ -381,7 +382,7 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 		return verdict{outcome: fail, reason: "the member is a current admin", report: &store.Report{
 			Kind: ledger.KindAdminSpared, Priority: true, Community: row.Community, Subject: row.Target,
 			Text: fmt.Sprintf("The bot did not %s: the member is a current admin in %s. An admin must decide.",
-				what(row.Action), row.Community)}}, nil
+				what(row.Action), pipeline.CommunityLabel(cur.Config, row.Community))}}, nil
 	}
 	return verdict{outcome: proceed}, nil
 }
