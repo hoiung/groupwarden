@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/client"
@@ -41,13 +42,13 @@ type MediaFetcher struct {
 	Dir string
 	Log *slog.Logger
 
-	wake chan struct{}
+	// initOnce: Wake is called from the inbox worker while Run starts.
+	initOnce sync.Once
+	wake     chan struct{}
 }
 
 func (f *MediaFetcher) init() {
-	if f.wake == nil {
-		f.wake = make(chan struct{}, 1)
-	}
+	f.initOnce.Do(func() { f.wake = make(chan struct{}, 1) })
 }
 
 // Wake asks the fetcher to look for attachments now.
@@ -103,11 +104,11 @@ func (f *MediaFetcher) fetchOne(ctx context.Context, e store.Evidence) error {
 	data, mimeType, name, err := f.Adapter.DownloadMedia(ctx, msg, int64(limitMB)<<20)
 	if errors.Is(err, client.ErrMediaTooLarge) {
 		f.Log.Info("attachment over the size limit; not kept", "evidence", e.ID, "declared_bytes", e.MediaSize, "limit_mb", limitMB)
-		return f.Store.SetMedia(ctx, e.ID, store.MediaTooLarge, "", "", 0)
+		return f.settle(ctx, e.ID, store.MediaTooLarge, "", "", 0)
 	}
 	if err != nil {
 		f.Log.Warn("attachment download failed", "evidence", e.ID, "err", mask.IDs(err.Error()))
-		return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", mask.IDs(err.Error()), e.MediaSize)
+		return f.settle(ctx, e.ID, store.MediaFailed, "", mask.IDs(err.Error()), e.MediaSize)
 	}
 	size := uint64(len(data))
 	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
@@ -117,7 +118,7 @@ func (f *MediaFetcher) fetchOne(ctx context.Context, e store.Evidence) error {
 	if err := writeFile(path, data); err != nil {
 		return f.saveFailed(ctx, e, size, err)
 	}
-	return f.Store.SetMedia(ctx, e.ID, store.MediaSaved, path, "", size)
+	return f.settle(ctx, e.ID, store.MediaSaved, path, "", size)
 }
 
 // saveFailed records an attachment that downloaded but could not be written
@@ -125,7 +126,26 @@ func (f *MediaFetcher) fetchOne(ctx context.Context, e store.Evidence) error {
 // row is settled as failed, which the report shows.
 func (f *MediaFetcher) saveFailed(ctx context.Context, e store.Evidence, size uint64, err error) error {
 	f.Log.Error("could not save an attachment", "evidence", e.ID, "err", err)
-	return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", "could not save it: "+err.Error(), size)
+	return f.settle(ctx, e.ID, store.MediaFailed, "", "could not save it: "+err.Error(), size)
+}
+
+// settle records a download's outcome on its evidence row. A row deleted
+// during the download (`member forget`, the evidence purge) is not
+// recreated, and the file written for it is removed: no row names it, so
+// retention and forget would never delete it.
+func (f *MediaFetcher) settle(ctx context.Context, id int64, state, path, errText string, size uint64) error {
+	ok, err := f.Store.SettleMedia(ctx, id, state, path, errText, size)
+	if err != nil || ok {
+		return err
+	}
+	f.Log.Info("the evidence copy was deleted during its download; nothing kept", "evidence", id, "file", path != "")
+	if path == "" {
+		return nil
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) { // #nosec G703 -- the file this fetcher just wrote under data_dir
+		f.Log.Error("could not delete the attachment of a deleted evidence copy", "evidence", id, "err", err)
+	}
+	return nil
 }
 
 // writeFile writes data under a temporary name and renames it into place, so
