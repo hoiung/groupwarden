@@ -154,6 +154,7 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 		return ledger.Plan{}, err
 	}
 	p := ledger.Plan{Trigger: ev.ID, Target: member, Rule: d.Rule, ConfigHash: cur.Hash, Evidence: evidence}
+	where := CommunityLabel(cur.Config, community)
 	targetTime := item.TargetTime
 	if targetTime.IsZero() {
 		targetTime = ev.Time
@@ -170,7 +171,7 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 		p.Reason = "the sender has no address the bot can act on"
 		p.Reports = []store.Report{{Kind: ledger.KindUnaddressable, Priority: true, Community: community,
 			Text: fmt.Sprintf("Rule %s matched a post in %s, but the sender's address (%s) is not one the bot can "+
-				"remove or ban: reported only. Delete it by hand if it is spam.", d.Rule, community, mask.IDs(string(ev.Sender)))}}
+				"remove or ban: reported only. Delete it by hand if it is spam.", d.Rule, where, mask.IDs(string(ev.Sender)))}}
 		return p, nil
 	}
 	if act {
@@ -186,7 +187,7 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 			// already turned into an exempt report by the rules).
 			p.Intents = nil
 			p.Reports = []store.Report{{Kind: ledger.KindExempt, Community: community,
-				Text: fmt.Sprintf("Rule %s matched a post in %s by an admin: reported only.", d.Rule, community)}}
+				Text: fmt.Sprintf("Rule %s matched a post in %s by an admin: reported only.", d.Rule, where)}}
 			return p, nil
 		}
 		for _, r := range removals {
@@ -204,30 +205,30 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 		if evidence.MediaState == store.MediaPending {
 			buttons = append(buttons, ledger.ButtonShowAttachment)
 		}
-		text := fmt.Sprintf("Spam in %s matched rule %s: the post is deleted and the sender removed and banned.", community, d.Rule)
+		text := fmt.Sprintf("Spam in %s matched rule %s: the post is deleted and the sender removed and banned.", where, d.Rule)
 		switch paused {
 		case store.ScopeRemoveBan:
 			text = fmt.Sprintf("Spam in %s matched rule %s: the post is deleted. Removals and bans are paused, so the "+
-				"sender is removed and banned after [Resume] if the config then still acts on this post.", community, d.Rule)
+				"sender is removed and banned after [Resume] if the config then still acts on this post.", where, d.Rule)
 		case store.ScopeAll:
 			text = fmt.Sprintf("Spam in %s matched rule %s. Every action is paused, so after [Resume] the post is "+
-				"deleted and the sender removed and banned if the config then still acts on this post.", community, d.Rule)
+				"deleted and the sender removed and banned if the config then still acts on this post.", where, d.Rule)
 		}
 		p.Reports = []store.Report{{Kind: ledger.KindAction, Community: community, Buttons: buttons, Text: text}}
 	case act && item.ReportOnly:
 		p.Reason = "too old to act on (older than act_on_replay_max_age)"
 		p.Reports = []store.Report{{Kind: ledger.KindWouldHaveActed, Community: community,
-			Text: fmt.Sprintf("Spam in %s matched rule %s, but the message is older than act_on_replay_max_age: reported only.", community, d.Rule)}}
+			Text: fmt.Sprintf("Spam in %s matched rule %s, but the message is older than act_on_replay_max_age: reported only.", where, d.Rule)}}
 	case act:
 		p.Reason = "watch-only rule (rule " + d.Rule + ")"
 		p.Reports = []store.Report{{Kind: ledger.KindWouldHaveActed, Community: community, Buttons: []string{ledger.ButtonBan},
-			Text: fmt.Sprintf("Would have acted in %s: rule %s matched but is watch-only.", community, d.Rule)}}
+			Text: fmt.Sprintf("Would have acted in %s: rule %s matched but is watch-only.", where, d.Rule)}}
 	case d.Exempt != "":
 		p.Reports = []store.Report{{Kind: ledger.KindExempt, Community: community,
-			Text: fmt.Sprintf("Rule %s matched a post in %s by %s: reported only.", d.Rule, community, exemptWho(d.Exempt))}}
+			Text: fmt.Sprintf("Rule %s matched a post in %s by %s: reported only.", d.Rule, where, exemptWho(d.Exempt))}}
 	default:
 		p.Reports = []store.Report{{Kind: ledger.KindLog, Community: community,
-			Text: fmt.Sprintf("Rule %s matched a post in %s (report only).", d.Rule, community)}}
+			Text: fmt.Sprintf("Rule %s matched a post in %s (report only).", d.Rule, where)}}
 	}
 	return p, nil
 }
