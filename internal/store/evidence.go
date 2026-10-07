@@ -132,6 +132,25 @@ func (s *Store) SetMedia(ctx context.Context, id int64, state, path, errText str
 	})
 }
 
+// SettleMedia records the outcome of a pending attachment's download, as
+// SetMedia does, but only while the row is still pending. ok is false when
+// it is not: `member forget` or the evidence purge deleted the row during
+// the download, so the caller removes the file it wrote, which no row will
+// ever name for retention or forget to delete.
+func (s *Store) SettleMedia(ctx context.Context, id int64, state, path, errText string, size uint64) (ok bool, err error) {
+	err = s.Write(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE evidence SET media_state = ?, media_path = ?, media_error = ?, media_size = ?,
+	media_raw = NULL WHERE id = ? AND media_state = 'pending'`, state, path, errText, int64(size), id) // #nosec G115 -- a WhatsApp attachment size is far below 2^63
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		ok = n == 1
+		return err
+	})
+	return ok, err
+}
+
 // openPosts selects the copies an open action (queued, or a ban a pause
 // holds) stands for: the fire-time re-check decides by them, so they outlive
 // their retention until the action settles.
