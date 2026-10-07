@@ -65,7 +65,7 @@ func (e *env) syncConfig(ctx context.Context, livePath, repo string, log *slog.L
 	}
 	var report *store.Report
 	if configsync.NewEpisode(status[store.StatusSyncResult].Value, o) {
-		report = &store.Report{Kind: string(alert.SyncFailed), Priority: true,
+		report = &store.Report{Kind: string(alert.SyncFailed),
 			Text: "The config sync FAILED: " + o.Err.Error() + ". The bot keeps its current config; it tries again " +
 				"every " + strconv.Itoa(o.Settings.ConfigSyncMinutes) + " minutes."}
 		if o.Status == configsync.Rejected {
@@ -75,7 +75,7 @@ func (e *env) syncConfig(ctx context.Context, livePath, repo string, log *slog.L
 		}
 	}
 	if err := st.SetStatusReporting(ctx, map[string]string{
-		store.StatusSyncLastRun: strconv.FormatInt(e.now().UnixMilli(), 10),
+		store.StatusSyncLastRun: store.StatusTime(e.now()),
 		store.StatusSyncResult:  o.Result,
 	}, report); err != nil {
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
