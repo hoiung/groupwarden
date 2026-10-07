@@ -60,7 +60,8 @@ type Executor struct {
 	rate    config.Rate
 }
 
-// Sleep is the real Executor.Sleep.
+// Sleep waits d or until ctx ends: the real sleep of the executor, the sweep
+// and the admin chat.
 func Sleep(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
