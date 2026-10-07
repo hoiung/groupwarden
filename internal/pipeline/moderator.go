@@ -122,15 +122,11 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 		"sender", mask.IDs(string(ev.Sender)), "edit", ev.IsEdit, "comment", ev.IsComment,
 		"report_only", item.ReportOnly, "config", "v"+hash)
 	// A pause covering removals and bans holds an enforced ban too: the ban is
-	// applied after [Resume] if the post still counts (deletes continue unless
-	// every action is paused).
+	// applied once the pause ends if the post still counts (deletes continue
+	// unless every action is paused).
 	var paused store.Scope
 	if d.Action == rules.DeleteRemoveBan && !item.ReportOnly {
-		if all, _ := m.Store.PausedForTx(ctx, tx, store.ScopeAll); all {
-			paused = store.ScopeAll
-		} else if rb, _ := m.Store.PausedForTx(ctx, tx, store.ScopeRemoveBan); rb {
-			paused = store.ScopeRemoveBan
-		}
+		paused = pausedScope(ctx, tx, m.Store)
 	}
 	p, err := m.messagePlan(ev, item, d, community, cur, paused)
 	if err != nil {
@@ -169,15 +165,30 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 	enforce := d.Action == rules.DeleteRemoveBan && !item.ReportOnly
 	if act && member.Key() == "" {
 		// WhatsApp gave the sender an address that is neither a LID nor a
-		// phone number: there is no one to remove or ban, so the admins are
-		// told instead (a plan with actions and no target fails its write
-		// and would hold the inbox).
-		m.Log.Warn("rule matched a sender the bot cannot act on; reported only", "rule", d.Rule,
-			"chat", mask.IDs(string(ev.Chat)), "sender", mask.IDs(string(ev.Sender)))
-		p.Reason = "the sender has no address the bot can act on"
-		p.Reports = []store.Report{{Kind: ledger.KindUnaddressable, Priority: true, Community: community,
+		// phone number: the post is still deleted (that needs only the chat,
+		// the author's address and the message), but the ban list cannot
+		// hold the sender, so nobody is removed or banned and the admins are
+		// told to do it by hand.
+		addr := mask.IDs(string(ev.Sender))
+		m.Log.Warn("rule matched a sender the bot cannot remove or ban", "rule", d.Rule, "enforce", enforce,
+			"chat", mask.IDs(string(ev.Chat)), "sender", addr)
+		p.Reason = "the sender has no address the bot can remove or ban"
+		rep := store.Report{Kind: ledger.KindUnaddressable, Priority: true, Community: community,
 			Text: fmt.Sprintf("Rule %s matched a post in %s, but the sender's address (%s) is not one the bot can "+
-				"remove or ban: reported only. Delete it by hand if it is spam.", d.Rule, where, mask.IDs(string(ev.Sender)))}}
+				"remove or ban: reported only. Delete it by hand if it is spam.", d.Rule, where, addr)}
+		if enforce {
+			p.Intents = []ledger.Intent{{Action: store.ActRevoke, Chat: ev.Chat, Community: community, Enforce: true,
+				Address: ev.Sender, MsgID: ev.TargetID, MsgTime: targetTime}}
+			deleted, action := "the post is deleted", "deleted for everyone; the sender cannot be removed or banned"
+			if paused == store.ScopeAll {
+				deleted = "the post is deleted once the pause ends"
+				action = "none yet: delete once the pause ends; the sender cannot be removed or banned"
+			}
+			rep.Text = fmt.Sprintf("Spam in %s matched rule %s: %s, but the sender's address (%s) is not one the bot "+
+				"can remove or ban. Remove them by hand.", where, d.Rule, deleted, addr)
+			rep.Action = action
+		}
+		p.Reports = []store.Report{rep}
 		return p, nil
 	}
 	if act {
@@ -211,16 +222,22 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 		if evidence.MediaState == store.MediaPending {
 			buttons = append(buttons, ledger.ButtonShowAttachment)
 		}
+		// The pause may be one that lifts by itself (Telegram accepting the bot
+		// again) or one an admin lifts with [Resume], so the text says only
+		// that the action waits for it to end.
 		text := fmt.Sprintf("Spam in %s matched rule %s: the post is deleted and the sender removed and banned.", where, d.Rule)
+		action := ""
 		switch paused {
 		case store.ScopeRemoveBan:
 			text = fmt.Sprintf("Spam in %s matched rule %s: the post is deleted. Removals and bans are paused, so the "+
-				"sender is removed and banned after [Resume] if the config then still acts on this post.", where, d.Rule)
+				"sender is removed and banned once the pause ends, if the config then still acts on this post.", where, d.Rule)
+			action = "deleted for everyone; removal and ban once the pause ends"
 		case store.ScopeAll:
-			text = fmt.Sprintf("Spam in %s matched rule %s. Every action is paused, so after [Resume] the post is "+
-				"deleted and the sender removed and banned if the config then still acts on this post.", where, d.Rule)
+			text = fmt.Sprintf("Spam in %s matched rule %s. Every action is paused, so the post is deleted and the "+
+				"sender removed and banned once the pause ends, if the config then still acts on this post.", where, d.Rule)
+			action = "none yet: delete, removal and ban once the pause ends"
 		}
-		p.Reports = []store.Report{{Kind: ledger.KindAction, Community: community, Buttons: buttons, Text: text}}
+		p.Reports = []store.Report{{Kind: ledger.KindAction, Community: community, Buttons: buttons, Text: text, Action: action}}
 	case act && item.ReportOnly:
 		p.Reason = "too old to act on (older than act_on_replay_max_age)"
 		p.Reports = []store.Report{{Kind: ledger.KindWouldHaveActed, Community: community,
