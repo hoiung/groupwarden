@@ -5,7 +5,6 @@ package alert
 import (
 	"context"
 	"log/slog"
-	"sync"
 
 	"github.com/hoiung/groupwarden/internal/mask"
 )
@@ -104,36 +103,4 @@ func (l Log) Alert(ctx context.Context, a Alert) error {
 	l.Logger.Log(ctx, level, "alert", "kind", string(a.Kind), "priority", a.Priority || a.Kind.Priority(),
 		"text", mask.IDs(a.Text), "buttons", a.Buttons)
 	return nil
-}
-
-// Recorder keeps every alert in memory; tests use it as the fake Alerter.
-type Recorder struct {
-	mu     sync.Mutex
-	alerts []Alert
-}
-
-// Alert records a.
-func (r *Recorder) Alert(_ context.Context, a Alert) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.alerts = append(r.alerts, a)
-	return nil
-}
-
-// All returns a copy of every recorded alert.
-func (r *Recorder) All() []Alert {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]Alert(nil), r.alerts...)
-}
-
-// OfKind returns the recorded alerts of kind k.
-func (r *Recorder) OfKind(k Kind) []Alert {
-	var out []Alert
-	for _, a := range r.All() {
-		if a.Kind == k {
-			out = append(out, a)
-		}
-	}
-	return out
 }
