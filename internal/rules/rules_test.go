@@ -79,22 +79,29 @@ func TestSchemelessLinks(t *testing.T) {
 	if s := sig(body("email me at someone@example.com")); s[AnyLink] {
 		t.Error("an email address counted as a link")
 	}
-	// An "@" in a link's path, or a link the URL parser refuses (a bad
-	// %-escape or port), is still a link: never invisible to a rule.
+	// An "@" in a link's path, query or fragment, or a link the URL parser
+	// refuses (a bad %-escape or port), is still a link: never invisible to a
+	// rule. Without "//" the matcher keeps a "?" or "#" tail only after a
+	// scheme like "bitcoin:".
 	for _, text := range []string{
 		"cheap crypto signals youtube.com/@cryptoguru", "tiktok.com/@spammer/video/123", "example.org/join?u=a@b",
+		"pay bitcoin:bc1qexampleaddr?label=a@b", "pay bitcoin:bc1qexampleaddr#a@b",
 		"https://promo.example/get-100%free-bonus", "promo.example/get-100%free-bonus", "http://example.com:abc/x",
 	} {
 		if !sig(body(text))[AnyLink] {
 			t.Errorf("%q: no any_link", text)
 		}
 	}
-	// The host of a refused link still decides allowed and shortener.
+	// The host of a refused link still decides allowed and shortener: read
+	// past a user name, up to the port or path.
 	if s := sig(body("https://www.eventbrite.co.uk/e/100%off"), "eventbrite.co.uk"); s[AnyLink] {
 		t.Error("a refused link on an allowed domain counted as a link")
 	}
-	if s := sig(body("bit.ly/100%x")); !s[AnyLink] || !s[Shortener] {
-		t.Errorf("a refused shortener link: %v", s)
+	// The user name is joined at run time: written whole it reads as an email.
+	for _, text := range []string{"bit.ly/100%x", "https://promo" + "@" + "bit.ly/100%x", "http://bit.ly:abc/x"} {
+		if s := sig(body(text)); !s[AnyLink] || !s[Shortener] {
+			t.Errorf("%q: a refused shortener link: %v", text, s)
+		}
 	}
 	if _, ok := RegistrableDomain("someone@example.com"); ok {
 		t.Error("an email address accepted as an allowed domain")
@@ -174,8 +181,9 @@ func TestUsernameHandle(t *testing.T) {
 			t.Errorf("%q: handle", text)
 		}
 	}
-	// A real handle ending a sentence is still a handle.
-	for _, text := range []string{"message @profit_mentor.", "ask @anna.trader."} {
+	// A real handle ending a sentence is still a handle, and so is one that
+	// merely starts with the marker's letters.
+	for _, text := range []string{"message @profit_mentor.", "ask @anna.trader.", "ask @mention_trader for signals"} {
 		if !sig(body(text))[Handle] {
 			t.Errorf("%q: no handle", text)
 		}
