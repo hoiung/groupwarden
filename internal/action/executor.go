@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strconv"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -245,10 +244,8 @@ func (x *Executor) breaker(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if ms, err := strconv.ParseInt(status[store.StatusBreakerReset].Value, 10, 64); err == nil {
-		if reset := time.UnixMilli(ms); reset.After(since) {
-			since = reset
-		}
+	if reset := status[store.StatusBreakerReset].Time(); reset.After(since) {
+		since = reset
 	}
 	n, err := x.Store.SentSince(ctx, since)
 	if err != nil {
@@ -287,7 +284,7 @@ func (x *Executor) Resume(ctx context.Context) error {
 		}
 	}
 	if err := x.Store.SetStatus(ctx, map[string]string{
-		store.StatusBreakerReset: strconv.FormatInt(x.Now().UnixMilli(), 10)}); err != nil {
+		store.StatusBreakerReset: store.StatusTime(x.Now())}); err != nil {
 		return err
 	}
 	x.Wake()
