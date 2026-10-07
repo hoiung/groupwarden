@@ -25,8 +25,12 @@ type Purger struct {
 	// AnnouncementChats lists the announcement groups, whose message secrets
 	// are kept longer so replies to older announcements still decrypt.
 	AnnouncementChats func() []string
-	Log               *slog.Logger
-	Now               func() time.Time
+	// Ready closes once AnnouncementChats can be trusted (the group list has
+	// been read); message secrets are not purged before, or every
+	// announcement secret would age out as an ordinary one (nil: at once).
+	Ready <-chan struct{}
+	Log   *slog.Logger
+	Now   func() time.Time
 }
 
 // PurgeResult counts what one purge deleted.
@@ -62,7 +66,9 @@ func (p *Purger) Purge(ctx context.Context) (PurgeResult, error) {
 	if res.Outbox, err = p.Store.PurgeOutbox(ctx); err != nil {
 		return res, err
 	}
-	if p.Session != nil {
+	if p.Session != nil && !p.ready() {
+		p.Log.Info("message secrets kept until the group list is read")
+	} else if p.Session != nil {
 		var chats []string
 		if p.AnnouncementChats != nil {
 			chats = p.AnnouncementChats()
@@ -73,6 +79,18 @@ func (p *Purger) Purge(ctx context.Context) (PurgeResult, error) {
 		}
 	}
 	return res, nil
+}
+
+func (p *Purger) ready() bool {
+	if p.Ready == nil {
+		return true
+	}
+	select {
+	case <-p.Ready:
+		return true
+	default:
+		return false
+	}
 }
 
 // Run purges at once and then every hour until ctx ends.
