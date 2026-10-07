@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,6 +112,14 @@ func startApp(t *testing.T, k *modtest.Kit, s *sweeper, exec *action.Executor) f
 		}
 	}
 }
+
+// The supervisor's log lines for a sweep that waits: a test that checks no
+// sweep ran waits for one of these first, so the check does not depend on
+// how fast the machine is.
+const (
+	waitingForBacklog = "sweep waiting for WhatsApp to deliver the offline backlog"
+	waitingForWorker  = "sweep waiting for the worker to decide the offline backlog"
+)
 
 // sweeps counts the sweeps that reached G1's join requests.
 func sweeps(k *modtest.Kit) int { return k.Fake.Count("JoinRequests " + string(modtest.G1)) }
@@ -325,17 +334,24 @@ func TestSweepAfterRepair(t *testing.T) {
 	stop := startApp(t, k, s, nil)
 	waitFor(t, "the sweep at connect", func() bool { return sweeps(k) == 1 })
 	begun := k.Fake.Count("SubGroups")
+	// The connection drops and the supervisor reconnects after its backoff
+	// (the library's own reconnect is off), as in production: this time
+	// WhatsApp says Connected but has not yet delivered what it held.
+	k.Fake.OnConnect = func(f *clienttest.Fake) { f.Emit(client.Lifecycle{Kind: client.Connected}) }
+	waits := k.Logged(waitingForBacklog)
 	k.Fake.Emit(client.Lifecycle{Kind: client.Disconnected})
-	k.Fake.Emit(client.Lifecycle{Kind: client.Connected})
+	waitFor(t, "the reconnect scheduled", func() bool { return k.Logged("disconnected; reconnecting") == 1 })
+	k.Clock.Advance(5 * time.Minute) // the longest backoff
 	// The sweep after the reconnect waits for WhatsApp to deliver what it
 	// held meanwhile, as the first one did.
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, "the sweep after the reconnect waiting", func() bool { return k.Logged(waitingForBacklog) == waits+1 })
 	if n := k.Fake.Count("SubGroups"); n != begun {
 		t.Fatalf("a sweep began before WhatsApp delivered the offline backlog after the reconnect (%d, was %d)", n, begun)
 	}
 	k.Fake.Emit(client.Lifecycle{Kind: client.CaughtUp})
 	waitFor(t, "the sweep after a reconnect", func() bool { return sweeps(k) == 2 })
 	stop()
+	k.Fake.OnConnect = nil // the next start connects with nothing held
 	// `groupwarden pair`, then `run` again: a member banned while the bot was
 	// down is in "general".
 	k.Ban(modtest.Other1M)
@@ -381,11 +397,12 @@ func TestConnectSweepWaitsForOfflineBacklog(t *testing.T) {
 	if err := k.Fake.Deliver(readd); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, "the sweep waiting for the backlog", func() bool { return k.Logged(waitingForBacklog) == 1 })
 	if n := k.Fake.Count("SubGroups"); n != 0 {
 		t.Fatalf("the sweep began before WhatsApp delivered the offline backlog: %v", k.Fake.Calls())
 	}
 	k.Fake.Emit(client.Lifecycle{Kind: client.CaughtUp, Detail: "1 offline events"})
+	waitFor(t, "the sweep waiting for the worker", func() bool { return k.Logged(waitingForWorker) == 1 })
 	for range 3 { // the sweep checks the inbox every second
 		time.Sleep(20 * time.Millisecond)
 		k.Clock.Advance(time.Second)
@@ -424,7 +441,7 @@ func TestSweepWaitsForTheGroupList(t *testing.T) {
 	stop := startApp(t, k, newSweep(k), nil)
 	defer stop()
 	waitFor(t, "the failed list at connect", func() bool { return k.Fake.Count("JoinedGroups") == 1 })
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, "the sweep waiting for the list", func() bool { return k.Logged("sweep waiting for the group list") == 1 })
 	if n := k.Fake.Count("SubGroups") + k.Fake.Count("JoinLinkedGroup"); n != 0 {
 		t.Fatalf("swept before the group list loaded: %v", k.Fake.Calls())
 	}
@@ -440,21 +457,41 @@ func TestSweepWaitsForTheGroupList(t *testing.T) {
 // the next tick makes, so it never runs on a list that lacks the group.
 func TestJoinSweepAfterTheListReads(t *testing.T) {
 	k := modtest.New(t, "")
+	// The re-read (the third read) waits until any sweep asked for before it
+	// has ended, so a sweep on the list the failed read left shows. That
+	// sweep would be waiting on the clock step that also brings the re-read.
+	var reads atomic.Int32
+	k.Fake.OnCall = func(call string) {
+		if call != "JoinedGroups" || reads.Add(1) != 3 {
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+		for deadline := time.Now().Add(10 * time.Second); k.Logged("sweep") != sweeps(k) && time.Now().Before(deadline); {
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
 	stop := startApp(t, k, newSweep(k), nil)
 	defer stop()
-	waitFor(t, "the sweep at connect", func() bool { return sweeps(k) == 1 })
+	waitFor(t, "the sweep at connect", func() bool { return k.Logged("sweep") == 1 && sweeps(k) == 1 })
+	groups := modtest.Groups()
+	k.Fake.SetGroups(append(groups, client.Group{JID: G3, Name: "events", Parent: modtest.Community,
+		Participants: groups[1].Participants})) // the bot is an admin there, as in general
 	k.Fake.FailNext("JoinedGroups", errors.New("rate limited"))
 	if err := k.Fake.Deliver(&client.JoinedGroup{Group: G3, Time: k.Clock.Now(),
 		Info: client.Group{JID: G3, Parent: modtest.Community}}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the failed read after the join", func() bool { return k.Fake.Count("JoinedGroups") == 2 })
-	time.Sleep(50 * time.Millisecond)
-	if n := sweeps(k); n != 1 {
-		t.Fatalf("%d sweeps: one ran on the list the failed read left", n)
-	}
 	k.Clock.Advance(30 * time.Second) // the next tick reads it again
-	waitFor(t, "the sweep after the read", func() bool { return sweeps(k) == 2 })
+	// Every sweep after the join checks the joined group's requests, unless it
+	// ran on the list the failed read left. Counted once every sweep started
+	// (one JoinRequests call in G1 each) has logged its end.
+	g3 := func() int { return k.Fake.Count("JoinRequests " + string(G3)) }
+	waitFor(t, "the sweep after the read", func() bool { return g3() >= 1 && k.Logged("sweep") == sweeps(k) })
+	if after := sweeps(k) - 1; after != 1 || g3() != 1 {
+		t.Fatalf("%d sweeps after the join, %d of them on the list with the joined group: one ran on the list "+
+			"the failed read left", after, g3())
+	}
 }
 
 // TestSweepRunsWhenWhatsAppNeverSaysCaughtUp: a connection where WhatsApp
@@ -466,7 +503,7 @@ func TestSweepRunsWhenWhatsAppNeverSaysCaughtUp(t *testing.T) {
 	stop := startApp(t, k, newSweep(k), nil)
 	defer stop()
 	waitFor(t, "the list at connect", func() bool { return k.Fake.Count("JoinedGroups") == 1 })
-	time.Sleep(50 * time.Millisecond) // the sweep starts waiting
+	waitFor(t, "the sweep waiting for the backlog", func() bool { return k.Logged(waitingForBacklog) == 1 })
 	k.Clock.Advance(9 * time.Minute)
 	time.Sleep(50 * time.Millisecond)
 	if n := k.Fake.Count("SubGroups"); n != 0 {
@@ -474,6 +511,24 @@ func TestSweepRunsWhenWhatsAppNeverSaysCaughtUp(t *testing.T) {
 	}
 	k.Clock.Advance(time.Minute)
 	waitFor(t, "the sweep after the wait", func() bool { return sweeps(k) >= 1 })
+}
+
+// TestSweepRunsWhenCaughtUpComesFirst: the library does not order its
+// "caught up" and "connected" events; when WhatsApp says it delivered the
+// offline backlog before the connection is reported, the connect sweep still
+// runs at once, without waiting out the bounded wait for that word.
+func TestSweepRunsWhenCaughtUpComesFirst(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Fake.OnConnect = func(f *clienttest.Fake) {
+		f.Emit(client.Lifecycle{Kind: client.CaughtUp, Detail: "0 offline events"})
+		f.Emit(client.Lifecycle{Kind: client.Connected})
+	}
+	stop := startApp(t, k, newSweep(k), nil)
+	defer stop()
+	waitFor(t, "the sweep at connect", func() bool { return k.Logged("sweep") == 1 })
+	if n := k.Logged("WhatsApp has not said it delivered the offline backlog; sweeping anyway"); n != 0 {
+		t.Fatalf("the sweep waited for word WhatsApp had given (%d warnings)", n)
+	}
 }
 
 // TestBotRemovedDetected: a leave event naming the bot raises a priority
