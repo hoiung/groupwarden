@@ -74,8 +74,10 @@ To roll back by hand (the new version is healthy but wrong):
 ```bash
 deploy/install.sh --version <the previous tag or commit>
 # or, without building:
-sudo cp -p /usr/local/bin/groupwarden.previous /usr/local/bin/groupwarden && sudo systemctl restart groupwarden
+sudo cp -p /usr/local/bin/groupwarden.previous /usr/local/bin/groupwarden.new && sudo mv -f /usr/local/bin/groupwarden.new /usr/local/bin/groupwarden && sudo systemctl restart groupwarden
 ```
+
+Copy to `groupwarden.new` and then move it over: copying straight onto the binary the service is running fails with "Text file busy".
 
 If the newer version changed the database, the older binary refuses to start ("groupwarden.db is at schema version N but this binary knows only M"): [restore](#restore-a-backup) the backup you took before the upgrade.
 
@@ -113,7 +115,7 @@ The nightly backup is an age-encrypted copy of `groupwarden.db` only, never the 
 
 ## Alerts about timers and backups
 
-- **"The config sync timer has not run for …"** or **"The backup timer has not run for …"**: the systemd timer stopped. Check `systemctl list-timers 'groupwarden*'` and `systemctl status groupwarden-sync.service groupwarden-backup.service`. On a Windows node, check that WSL is up and, for the backup, that the backup disk is mounted (`ls /mnt/wsl/gwbackup`); the boot task mounts it.
+- **"The config sync timer has not run for …"** or **"The backup timer has not run for …"**: the timer that runs it stopped. On a systemd install, check `systemctl list-timers 'groupwarden*'` and `systemctl status groupwarden-sync.service groupwarden-backup.service`. On a Windows node, check that WSL is up and, for the backup, that the backup disk is mounted (`ls /mnt/wsl/gwbackup`); the boot task mounts it. In Docker only the backup is watched, because no sync timer runs there (the image sets `GROUPWARDEN_NO_SYNC_TIMER=1`): check the host's scheduled job that runs the backup container.
 - **"The nightly backup FAILED: …"**: the reason is in the alert and in `/status`. Usual causes: the target disk is missing or full, or `backup.target_dir` changed without running `deploy/install.sh` again (the backup unit can write only the directory it was given). Earlier backups are kept; it tries again the next night, or now with `sudo systemctl start groupwarden-backup.service`. You get one alert when backups start failing, not one every night.
 - **"The config sync FAILED"** or **"Config commit … was REJECTED"**: the bot keeps its current config. Fix the network or the deploy key, or fix the config repo; the next sync tries again.
 
