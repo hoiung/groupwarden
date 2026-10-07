@@ -21,17 +21,20 @@ type Report struct {
 	EvidenceID int64
 	Text       string
 	Buttons    []string
-	CreatedAt  time.Time
-	SentAt     time.Time
+	// Action is the report's "Action:" line when it is not the one for its
+	// kind ("": the kind's).
+	Action    string
+	CreatedAt time.Time
+	SentAt    time.Time
 }
 
 // InsertReport writes r and its ledger links inside tx. A report of an alert
 // kind in the priority set (AC 4.1) is priority whoever wrote it.
 func InsertReport(ctx context.Context, tx *sql.Tx, r Report, ledgerIDs []int64, now time.Time) (int64, error) {
 	priority := r.Priority || alert.Kind(r.Kind).Priority()
-	res, err := tx.ExecContext(ctx, `INSERT INTO reports (kind, priority, community, subject, evidence_id, text, buttons, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, r.Kind, priority, r.Community, r.Subject, nullID(r.EvidenceID), r.Text,
-		strings.Join(r.Buttons, ","), now.UnixMilli())
+	res, err := tx.ExecContext(ctx, `INSERT INTO reports (kind, priority, community, subject, evidence_id, text, buttons, action, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Kind, priority, r.Community, r.Subject, nullID(r.EvidenceID), r.Text,
+		strings.Join(r.Buttons, ","), r.Action, now.UnixMilli())
 	if err != nil {
 		return 0, fmt.Errorf("report insert: %w", err)
 	}
@@ -71,13 +74,15 @@ func (s *Store) AddReport(ctx context.Context, r Report, ledgerIDs []int64) (int
 	return id, err
 }
 
-const reportCols = `id, kind, priority, community, subject, COALESCE(evidence_id, 0), text, buttons, created_at, COALESCE(sent_at, 0)`
+const reportCols = `id, kind, priority, community, subject, COALESCE(evidence_id, 0), text, buttons, action, created_at,
+	COALESCE(sent_at, 0)`
 
 func scanReport(sc interface{ Scan(...any) error }) (Report, error) {
 	var r Report
 	var buttons string
 	var created, sent int64
-	err := sc.Scan(&r.ID, &r.Kind, &r.Priority, &r.Community, &r.Subject, &r.EvidenceID, &r.Text, &buttons, &created, &sent)
+	err := sc.Scan(&r.ID, &r.Kind, &r.Priority, &r.Community, &r.Subject, &r.EvidenceID, &r.Text, &buttons, &r.Action,
+		&created, &sent)
 	if buttons != "" {
 		r.Buttons = strings.Split(buttons, ",")
 	}
