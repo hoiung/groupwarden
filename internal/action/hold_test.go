@@ -51,6 +51,9 @@ func TestPauseHoldsBanUntilResume(t *testing.T) {
 	if r := status(t, k, modtest.SpammerM, store.ActBan, store.BanEverywhere); r.Status != store.Requested {
 		t.Fatalf("held ban row after [Resume]: %s", r.Status)
 	}
+	if n := k.Logged("held ban applied"); n != 1 {
+		t.Fatalf("%d log lines for the held ban, want 1", n)
+	}
 }
 
 // TestFixedRuleBeforeResumeBansNobody: a rule fixed while a pause held its
@@ -167,6 +170,9 @@ func TestUndoWhileRemovalInFlight(t *testing.T) {
 	race := k.Reports(ledger.KindUndoRace)
 	if len(race) != 1 || !race[0].Priority || !strings.Contains(race[0].Text, "jobs") {
 		t.Fatalf("undo race reports %+v", race)
+	}
+	if n := k.Logged("action went out while [Undo] ran"); n != 1 {
+		t.Fatalf("%d log lines for the race, want 1", n)
 	}
 	if k.Banned(modtest.SpammerM, "") {
 		t.Fatal("still banned after [Undo]")
