@@ -17,6 +17,15 @@ const (
 	ScopeRemoveBan Scope = "remove_ban"
 )
 
+// Stops says what a pause of scope s stops, as `healthcheck` and /status
+// both show it.
+func (s Scope) Stops() string {
+	if s == ScopeAll {
+		return "every action"
+	}
+	return "removals and bans (deletes continue)"
+}
+
 // Pause sources: each is one reason a pause can be set; a source is cleared
 // on its own.
 const (
