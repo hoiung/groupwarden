@@ -79,10 +79,10 @@ type Plan struct {
 	BanEnforce   bool
 	BanCommunity string
 	// BanHeld: a pause covering removals and bans is in force, so an enforce
-	// ban is recorded but not applied; the first removal of the target that
-	// passes its fire-time re-check after [Resume] applies it
-	// (store.ApplyHeldBans), and a re-check that finds the message no longer
-	// spam fails it.
+	// ban is recorded but not applied. Once no pause covers bans the executor
+	// settles it: applied when any post it stands for still counts under the
+	// current config, failed when none does. An admin's ban of the member
+	// applies at once and settles it too.
 	BanHeld bool
 	// Lift removes the target's bans (a human admin re-added them, or an
 	// admin unbanned them) with an unban row in the ledger. LiftIn narrows it
@@ -125,7 +125,8 @@ func existing(ctx context.Context, tx *sql.Tx, p Plan, r store.LedgerRow) (store
 		case store.ActRevoke:
 			return store.RevokeOf(ctx, tx, r.Chat, r.Target, r.MsgID)
 		case store.ActBan:
-			return store.BanRowOf(ctx, tx, r.Target, r.Chat)
+			// An admin's ban (applied at once) never folds into a held one.
+			return store.BanRowOf(ctx, tx, r.Target, r.Chat, r.Status != store.Requested)
 		case store.ActRemove, store.ActReject:
 			if open, ok, err := store.OpenFor(ctx, tx, r.Action, r.Chat, r.Target); err != nil || ok {
 				return open, ok, err
@@ -227,8 +228,13 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 		if !p.BanEnforce || held || !inserted {
 			continue
 		}
+		id := w.LedgerIDs[len(w.LedgerIDs)-1]
 		if err := store.AddBan(ctx, tx, store.Ban{Member: target, Scope: scope, LID: string(p.Target.LID),
-			Phone: string(p.Target.Phone), Reason: p.Reason, LedgerID: w.LedgerIDs[len(w.LedgerIDs)-1]}, now); err != nil {
+			Phone: string(p.Target.Phone), Reason: p.Reason, LedgerID: id}, now); err != nil {
+			return w, err
+		}
+		// A ban a pause holds for the member there is in force now too.
+		if err := store.SettleHeldBansIn(ctx, tx, target, scope, id, now); err != nil {
 			return w, err
 		}
 	}
