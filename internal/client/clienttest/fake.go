@@ -22,10 +22,12 @@ type Fake struct {
 	// Invites maps an invite code to the group it points at.
 	Invites map[string]client.Group
 	Devices []client.JID
-	// ConnectErr is returned by Connect; when nil Connect reports Connected
-	// unless OnConnect says otherwise.
+	// ConnectErr is returned by Connect; when nil Connect reports Connected,
+	// then CaughtUp (nothing was held offline), unless OnConnect says
+	// otherwise.
 	ConnectErr error
-	// OnConnect, when set, replaces the default Connected lifecycle event.
+	// OnConnect, when set, replaces the default Connected and CaughtUp
+	// lifecycle events.
 	OnConnect func(f *Fake)
 	// Requests are the pending join requests per group.
 	Requests map[client.JID][]client.JoinRequest
@@ -159,6 +161,7 @@ func (f *Fake) Connect(context.Context) error {
 		return nil
 	}
 	f.Emit(client.Lifecycle{Kind: client.Connected})
+	f.Emit(client.Lifecycle{Kind: client.CaughtUp, Detail: "0 offline events"})
 	return nil
 }
 
