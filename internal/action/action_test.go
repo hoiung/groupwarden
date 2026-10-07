@@ -3,8 +3,12 @@ package action_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +18,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/modtest"
+	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -178,8 +183,9 @@ func TestFanOutHonoursTargetScopeMode(t *testing.T) {
 	if r := status(t, k, modtest.SpammerM, store.ActRemove, modtest.G1); r.Mode != store.ModeShadow || r.Status != store.Intended {
 		t.Fatalf("queued removal became %s/%s, want a shadow record", r.Mode, r.Status)
 	}
-	if reps := k.Reports(ledger.KindWouldRemove); len(reps) == 0 {
-		t.Fatal("no would-remove report")
+	if reps := k.Reports(ledger.KindWouldRemove); len(reps) == 0 ||
+		!strings.Contains(reps[0].Text, "in community a, which is in shadow mode: not done.") {
+		t.Fatalf("would-remove reports %+v, want one naming the community", reps)
 	}
 	if k.Logged("action moved to shadow") == 0 {
 		t.Fatal("no log line for the actions moved to shadow")
@@ -368,5 +374,99 @@ func TestRestoreStartsPaused(t *testing.T) {
 	k.Fire()
 	if k.Fake.Count("Revoke") != 1 {
 		t.Fatalf("after [Resume]: %v", k.Fake.Calls())
+	}
+}
+
+// TestNotConnectedSpendsNoAttempt: a delete that finds WhatsApp disconnected
+// (a temporary ban can last a day) waits without counting an attempt, so it
+// is still queued after more failures than maxAttempts and goes out once the
+// connection is back.
+func TestNotConnectedSpendsNoAttempt(t *testing.T) {
+	k := modtest.New(t, "")
+	down := errors.New("failed to send message node: websocket not connected")
+	for range 12 {
+		k.Fake.FailNext("Revoke", fmt.Errorf("%w: %w", client.ErrNotConnected, down))
+	}
+	k.Deliver(k.Spam("M1", modtest.G1))
+	for range 12 {
+		k.Fire()
+		k.Clock.Advance(time.Minute)
+	}
+	row := status(t, k, modtest.SpammerM, store.ActRevoke, modtest.G1)
+	if row.Status != store.Intended || row.Attempts != 0 {
+		t.Fatalf("after 12 tries while disconnected: %s, %d attempts counted", row.Status, row.Attempts)
+	}
+	k.Fire()
+	if row := status(t, k, modtest.SpammerM, store.ActRevoke, modtest.G1); row.Status != store.Requested {
+		t.Fatalf("once connected: %s %q", row.Status, row.Reason)
+	}
+	if reps := k.Reports(ledger.KindNotDone); len(reps) != 0 {
+		t.Fatalf("not-done reports %+v", reps)
+	}
+}
+
+// TestNothingSentWhileDisconnected: while the app says WhatsApp is not
+// connected the executor sends nothing (no attempt is spent), and sends the
+// queue once it is.
+func TestNothingSentWhileDisconnected(t *testing.T) {
+	k := modtest.New(t, "")
+	var connected atomic.Bool
+	k.Exec.Connected = connected.Load
+	k.Deliver(k.Spam("M1", modtest.G1))
+	if n := k.Fire(); n != 0 || len(k.Fake.Calls()) != 0 {
+		t.Fatalf("while disconnected: %d settled, calls %v", n, k.Fake.Calls())
+	}
+	connected.Store(true)
+	k.Fire()
+	if k.Fake.Count("Revoke") != 1 || k.Fake.Count("Remove") == 0 {
+		t.Fatalf("once connected: calls %v", k.Fake.Calls())
+	}
+}
+
+// TestWakeWhileRunStarts: the inbox worker and the supervisor (at connect)
+// wake the executor and the attachment fetcher from their own goroutines,
+// which can be while Run is starting. Under -race (as CI runs it) this fails
+// if the two set the defaults up without synchronisation.
+func TestWakeWhileRunStarts(t *testing.T) {
+	k := modtest.New(t, "")
+	ctx, cancel := context.WithCancel(k.Ctx)
+	var wg sync.WaitGroup
+	for _, c := range []struct {
+		run  func(context.Context)
+		wake func()
+	}{{k.Exec.Run, k.Exec.Wake}, {k.Media.Run, k.Media.Wake}} {
+		wg.Add(2)
+		go func() { defer wg.Done(); c.run(ctx) }()
+		go func() { defer wg.Done(); c.wake() }()
+	}
+	cancel()
+	wg.Wait()
+}
+
+// TestActionFailingForGoodIsReported: an action that fails maxAttempts (8)
+// times is failed, and the admins, told it would happen, get a priority
+// report that it did not, with the post.
+func TestActionFailingForGoodIsReported(t *testing.T) {
+	k := modtest.New(t, "")
+	for range 8 {
+		k.Fake.FailNext("Revoke", errors.New("internal-server-error"))
+	}
+	k.Deliver(k.Spam("M1", modtest.G1))
+	for range 8 {
+		k.Fire()
+		k.Clock.Advance(30 * time.Minute)
+	}
+	row := status(t, k, modtest.SpammerM, store.ActRevoke, modtest.G1)
+	if row.Status != store.Failed {
+		t.Fatalf("revoke %s after 8 failures", row.Status)
+	}
+	reps := k.Reports(ledger.KindNotDone)
+	if len(reps) != 1 || !reps[0].Priority || reps[0].Text != "The bot could not delete a message in "+
+		pipeline.CommunityLabel(k.Holder.Current().Config, string(modtest.Community))+
+		": it failed 8 times (internal-server-error). Do it by hand." {
+		t.Fatalf("not-done reports %+v", reps)
+	}
+	if r, _, _ := k.Store.Report(k.Ctx, reps[0].ID); r.EvidenceID != row.EvidenceID || r.EvidenceID == 0 {
+		t.Fatalf("the report shows evidence %d, want the post's %d", r.EvidenceID, row.EvidenceID)
 	}
 }
