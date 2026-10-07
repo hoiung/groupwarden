@@ -25,7 +25,10 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                already_gone (a delete is never confirmed, so never "succeeded")
 
            internal/reconcile sweep (at connect, every reconcile interval, and
-           when the bot joins a group; the group list is read from WhatsApp first):
+           when the bot joins a group; the group list is read from WhatsApp first,
+           and a read that fails is tried again every 30 seconds; a sweep waits
+           until the list has loaded and, after a connect, until the worker has
+           decided everything WhatsApp held while the bot was offline):
                coverage per group (absent / not admin / covered) ► compared with
                what the admins were told ► changes reported; absent linked groups
                ► joined by the bot itself, else /join asked for; a refused
@@ -58,7 +61,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation |
 | `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders, the daily check; the admin chat's controls; the data-dir lock (it names the holding process and command, so the config sync signals only `run`); `Build`, the one wiring of the bot's parts (`run` and the log test both use it); the health rule `healthcheck`, the heartbeat ping and the daily check share |
 | `internal/backup` | The nightly backup (snapshot, age encryption, keep the newest `backup.keep`, crash leftovers removed) and `restore` (refuses an existing database, a wrong key or a file that is not a groupwarden backup) |
-| `internal/pipeline` | Inbox worker (it decides nothing until the group directory has loaded once), the group directory (communities, members, admins), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
+| `internal/pipeline` | Inbox worker (it decides nothing until the group directory has loaded once), the group directory (communities, members, admins: from WhatsApp's group list, kept current by membership, admin and join events, which a list read already on its way cannot undo), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
 | `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction; crash recovery; retention purge |
 | `internal/telegram` | The admin chat: report and alert delivery from the store (rate limit, priority, digests, attachments, text removed after the evidence window), buttons and commands from admins of that chat only, the command list pinned there and set as its "/" menu |
 | `internal/alert` | Alert kinds and which of them are priority |
