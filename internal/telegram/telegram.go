@@ -21,6 +21,7 @@ import (
 	"github.com/go-telegram/bot"
 	"golang.org/x/time/rate"
 
+	"github.com/hoiung/groupwarden/internal/action"
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/store"
@@ -119,7 +120,7 @@ func New(o Options, c *Chat) (*Chat, error) {
 		c.Now = time.Now
 	}
 	if c.Sleep == nil {
-		c.Sleep = sleep
+		c.Sleep = action.Sleep
 	}
 	c.token, c.chatID = o.Token, o.ChatID
 	c.sem = make(chan struct{}, 1)
@@ -148,17 +149,6 @@ func New(o Options, c *Chat) (*Chat, error) {
 	}
 	c.api = b
 	return c, nil
-}
-
-func sleep(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
 }
 
 // Run takes button presses and commands, keeps the command list pinned and
