@@ -84,11 +84,18 @@ func banReply(res pipeline.Banned, reportID int64, by telegram.Actor, message bo
 		switch {
 		case res.TooOld:
 			parts = append(parts, "the message is older than act_on_replay_max_age, so it stays")
+		case res.Deleting && res.Paused == store.ScopeAll:
+			parts = append(parts, "the message is deleted once the pause ends")
 		case res.Deleting:
 			parts = append(parts, "the message is being deleted")
 		}
 	}
-	parts = append(parts, fmt.Sprintf("%s is removed from %d group(s) and banned", mask.IDs(res.Member.Key()), res.Removals))
+	if res.Paused != "" {
+		parts = append(parts, fmt.Sprintf("%s is banned; their removal from %d group(s) waits for the pause to end",
+			mask.IDs(res.Member.Key()), res.Removals))
+	} else {
+		parts = append(parts, fmt.Sprintf("%s is removed from %d group(s) and banned", mask.IDs(res.Member.Key()), res.Removals))
+	}
 	text := fmt.Sprintf("Banned by %s (#%d): %s.", by.Name, reportID, strings.Join(parts, "; "))
 	if res.Shadow {
 		text += " The community is in shadow mode: this is recorded only, nothing is sent."
