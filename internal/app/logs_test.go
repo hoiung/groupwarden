@@ -56,7 +56,9 @@ func (b *lockedBuffer) String() string {
 // decision names its rule and config hash; no phone number, LID or group ID
 // appears unmasked, in the log or in the admin chat's replies; no message text
 // appears above debug; and neither the Telegram token nor the heartbeat URL
-// appears at all.
+// appears at all. The /reload and the [Ban] reach the bot through the
+// getUpdates long poll, the way Telegram delivers them (the fake hands out
+// only the update types the bot asked for).
 func TestLogsMaskIDsNoBodyNoSecrets(t *testing.T) {
 	const (
 		spamBody  = "cheap crypto signals https://example.org/join zqwobble"
