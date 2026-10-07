@@ -100,8 +100,9 @@ func serveMedia(t *testing.T, body []byte, declareLength bool) *mediaServer {
 // The size a message declares is the sender's claim, so the cap is what keeps
 // a file out of memory. A body whose declared length is over the cap is
 // refused before it is read; one with no declared length stops one byte past
-// it; neither is fetched again (the library retries network errors up to five
-// times). A file exactly at the cap, padding and MAC included, downloads
+// it; neither is fetched again from the same URL (the library retries network
+// errors up to five times; it tries each media host once, which this single
+// URL does not exercise). A file exactly at the cap, padding and MAC included, downloads
 // whole, and a request with no cap (the library's app-state blobs) is not
 // limited.
 func TestMediaDownloadCapped(t *testing.T) {
