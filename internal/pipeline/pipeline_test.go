@@ -256,7 +256,7 @@ func TestWorkerWaitsForGroupList(t *testing.T) {
 	if n, _ := s.InboxLen(ctx); n != 1 || len(rec.got()) != 0 || d.IsLoaded() {
 		t.Fatalf("decided before the group list loaded: inbox %d, decided %d", n, len(rec.got()))
 	}
-	d.Update(nil)
+	load(t, d, nil)
 	deadline := time.Now().Add(10 * time.Second)
 	for len(rec.got()) != 1 {
 		if time.Now().After(deadline) {
