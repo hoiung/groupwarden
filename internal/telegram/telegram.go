@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,8 +46,14 @@ const (
 	refusedAfter = 10 * time.Minute
 	// idlePoll: with nothing to do, look again this often (a wake comes sooner).
 	idlePoll = 30 * time.Second
-	// pollTimeout is the long-poll wait for button presses and commands.
+	// pollTimeout is the long-poll wait for button presses and commands (and
+	// how long any other request may take, as the library has it).
 	pollTimeout = time.Minute
+	// uploadTimeout bounds a file upload (sendDocument, editMessageMedia): the
+	// largest attachment kept (50 MiB, the schema's maximum for
+	// evidence.max_attachment_mb) goes within it at 1.5 Mbit/s, as its
+	// download does.
+	uploadTimeout = 5 * time.Minute
 	// directDeadline bounds a message sent around the store (the database
 	// cannot be written).
 	directDeadline = 30 * time.Second
@@ -112,6 +120,8 @@ type Chat struct {
 	// groupPerMinute-priorityHeadroom in any minute, counted on actual send
 	// times so the headroom holds whatever the shared bucket adds).
 	routineSent []time.Time
+	// uploads: attachments whose upload failed, by evidence ID (postAttachment).
+	uploads map[int64]uploadRetry
 }
 
 // New builds the admin chat (no network call yet).
@@ -128,7 +138,13 @@ func New(o Options, c *Chat) (*Chat, error) {
 	c.wake = make(chan struct{}, 1)
 	c.setupWake = make(chan struct{}, 1)
 	c.pinRetry = pinRetryDefault
+	c.uploads = map[int64]uploadRetry{}
+	client := o.HTTPClient
+	if client == nil {
+		client = newHTTPClient()
+	}
 	opts := []bot.Option{
+		bot.WithHTTPClient(pollTimeout, client),
 		bot.WithSkipGetMe(),
 		bot.WithNotAsyncHandlers(),
 		bot.WithDefaultHandler(c.handle),
@@ -139,9 +155,6 @@ func New(o Options, c *Chat) (*Chat, error) {
 	}
 	if o.ServerURL != "" {
 		opts = append(opts, bot.WithServerURL(o.ServerURL))
-	}
-	if o.HTTPClient != nil {
-		opts = append(opts, bot.WithHTTPClient(pollTimeout, o.HTTPClient))
 	}
 	b, err := bot.New(o.Token, opts...)
 	if err != nil {
@@ -156,6 +169,11 @@ func New(o Options, c *Chat) (*Chat, error) {
 func (c *Chat) Run(ctx context.Context) {
 	if err := c.restoreChatID(ctx); err != nil {
 		c.Log.Error("read the admin chat ID", "err", err)
+	}
+	if n, err := c.Store.ReleaseUnfinishedPresses(ctx); err != nil {
+		c.Log.Error("could not release the presses the last run left unfinished", "err", err)
+	} else if n > 0 {
+		c.Log.Warn("released presses the last run claimed but never finished; they can be pressed again", "presses", n)
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -346,7 +364,8 @@ func (c *Chat) migrate(ctx context.Context, to int64) {
 }
 
 // noteOK ends a refusal episode (and its pause) at the first request that
-// went through.
+// went through: the first after a refusal, and the first of a run (an
+// episode the last run paused for, and a restart then ended, is over too).
 func (c *Chat) noteOK(ctx context.Context) {
 	c.mu.Lock()
 	wasRefused, recorded := c.refused, c.okRecorded
@@ -359,12 +378,11 @@ func (c *Chat) noteOK(ctx context.Context) {
 	if err := c.Store.SetStatus(ctx, map[string]string{store.StatusTelegramOK: "1"}); err != nil {
 		c.Log.Error("write status", "err", err)
 	}
-	if wasRefused {
-		if err := c.Store.ClearPause(ctx, store.SourceTelegram); err != nil {
-			c.Log.Error("could not lift the Telegram pause", "err", err)
-		}
-		c.Log.Info("telegram accepts the bot again; removals and bans resume")
+	if err := c.Store.ClearPause(ctx, store.SourceTelegram); err != nil {
+		c.Log.Error("could not lift the Telegram pause", "err", err)
+		return
 	}
+	c.Log.Info("telegram accepts the bot; any Telegram pause is lifted", "after_refusal", wasRefused)
 }
 
 // noteRefused counts a 401/403. Refused for refusedAfter, the bot is
@@ -466,6 +484,33 @@ func refusal(err error) bool {
 // badRequest: Telegram will never accept this request (the message is gone,
 // too old to delete, or already in that state).
 func badRequest(err error) bool { return errors.Is(err, bot.ErrorBadRequest) }
+
+// gone: Telegram will never let the bot edit or delete this posted message: a
+// bad request, or the chat it was posted in became a supergroup (the old
+// chat's messages stay where they are; the library's MigrateError is a 400
+// that does not wrap ErrorBadRequest).
+func gone(err error) bool {
+	_, moved := migratedTo(err)
+	return badRequest(err) || moved
+}
+
+// httpClient gives a file upload (sendDocument, editMessageMedia)
+// uploadTimeout and every other request pollTimeout (the library's default).
+type httpClient struct{ requests, uploads *http.Client }
+
+func newHTTPClient() httpClient {
+	return httpClient{requests: &http.Client{Timeout: pollTimeout}, uploads: &http.Client{Timeout: uploadTimeout}}
+}
+
+// Do sends r with the client for its method (the last element of the
+// library's ".../bot<token>/<method>" URL).
+func (h httpClient) Do(r *http.Request) (*http.Response, error) {
+	switch path.Base(r.URL.Path) {
+	case "sendDocument", "editMessageMedia":
+		return h.uploads.Do(r) // #nosec G704 -- the library builds r for api.telegram.org (a local fake only in tests); no message picks the host
+	}
+	return h.requests.Do(r) // #nosec G704 -- as above
+}
 
 // fileRefused: Telegram will never take this file, a 400 (an empty file) or
 // a 413 (over its upload limit; the library has no error kind for it, so the
