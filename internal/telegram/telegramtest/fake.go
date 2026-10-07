@@ -101,7 +101,8 @@ func (s *Server) SetAdmin(userID int64, admin bool) {
 	s.admins[userID] = admin
 }
 
-// QueueUpdate adds an update (without its update_id) for getUpdates.
+// QueueUpdate adds an update (without its update_id) for getUpdates, which
+// hands it out only when its type is one the bot asked for.
 func (s *Server) QueueUpdate(u map[string]any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -127,6 +128,21 @@ func (s *Server) Requests(methods ...string) []Request {
 
 // Posted lists the messages posted (sendMessage and sendDocument), in order.
 func (s *Server) Posted() []Request { return s.Requests("sendMessage", "sendDocument") }
+
+// updateKind is an update's type: its one field besides update_id
+// ("message", "callback_query", ...).
+func updateKind(u json.RawMessage) string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(u, &fields); err != nil {
+		return ""
+	}
+	for k := range fields {
+		if k != "update_id" {
+			return k
+		}
+	}
+	return ""
+}
 
 func contains(list []string, v string) bool {
 	for _, x := range list {
@@ -202,14 +218,29 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		result = map[string]any{"status": status, "user": map[string]any{"id": uid, "is_bot": false, "first_name": "u"}}
 	case "getUpdates":
+		// Telegram delivers only the update types listed in allowed_updates
+		// (every type when the list is absent) and drops the rest.
+		var allowed []string
+		if a := req.Params["allowed_updates"]; a != "" {
+			if err := json.Unmarshal([]byte(a), &allowed); err != nil {
+				s.failWith(w, r, Reply{Code: 400, Description: "Bad Request: can't parse allowed_updates"})
+				return
+			}
+		}
 		s.mu.Lock()
 		ups := s.updates
 		s.updates = nil
 		s.mu.Unlock()
-		if len(ups) == 0 {
+		out := []json.RawMessage{}
+		for _, u := range ups {
+			if len(allowed) == 0 || contains(allowed, updateKind(u)) {
+				out = append(out, u)
+			}
+		}
+		if len(out) == 0 {
 			time.Sleep(20 * time.Millisecond) // a long poll with nothing to say
 		}
-		result = append([]json.RawMessage{}, ups...)
+		result = out
 	default:
 		s.failWith(w, r, Reply{Code: 404, Description: "Not Found: method " + method})
 		return
