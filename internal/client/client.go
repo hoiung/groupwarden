@@ -219,6 +219,9 @@ type JoinedGroup struct {
 	Reason string    `json:"reason,omitempty"`
 	Actor  JID       `json:"actor,omitempty"`
 	Time   time.Time `json:"time"`
+	// Info is the group as WhatsApp described it in the join notification:
+	// its community, members and admins.
+	Info Group `json:"info"`
 }
 
 // Event is something the moderation pipeline decides on. It is persisted to
@@ -261,6 +264,9 @@ type LifecycleKind string
 const (
 	Connected    LifecycleKind = "connected"
 	Disconnected LifecycleKind = "disconnected" // transient: reconnect with backoff
+	// CaughtUp: after a connect, WhatsApp has delivered everything it held
+	// while the bot was offline, each event persisted before this arrives.
+	CaughtUp LifecycleKind = "caught_up"
 	// TemporaryBan: stay disconnected until Expiry, then reconnect paused.
 	TemporaryBan LifecycleKind = "temporary_ban"
 	// The kinds below are fatal: no reconnect, a priority alert, exit.
