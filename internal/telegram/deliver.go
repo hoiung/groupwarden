@@ -215,7 +215,7 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 	}
 	r.Text = mask.IDs(r.Text)
 	group := ""
-	if ev != nil && c.Groups != nil {
+	if ev != nil {
 		group = c.Groups.GroupName(ev.Chat)
 	}
 	out := render(r, ev, group)
