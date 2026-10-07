@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
-	"strconv"
 	"strings"
 	"time"
 
@@ -194,11 +193,11 @@ func (a *App) statusText(ctx context.Context) (string, error) {
 				p.Source, p.Reason)
 		}
 	}
-	fmt.Fprintf(&b, "Config: v%s; last sync %s", cur.Hash, ago(now, msStatus(st, store.StatusSyncLastRun)))
+	fmt.Fprintf(&b, "Config: v%s; last sync %s", cur.Hash, ago(now, st[store.StatusSyncLastRun].Time()))
 	if r := st[store.StatusSyncResult].Value; r != "" {
 		fmt.Fprintf(&b, " (%s)", r)
 	}
-	fmt.Fprintf(&b, "\nBackup: last run %s", ago(now, msStatus(st, store.StatusBackupLastRun)))
+	fmt.Fprintf(&b, "\nBackup: last run %s", ago(now, st[store.StatusBackupLastRun].Time()))
 	if r := st[store.StatusBackupResult].Value; r != "" {
 		fmt.Fprintf(&b, " (%s)", r)
 	}
@@ -266,13 +265,4 @@ func ago(now, t time.Time) string {
 		return "never"
 	}
 	return now.Sub(t).Round(time.Second).String() + " ago"
-}
-
-// msStatus reads a unix-ms status value (zero when absent or unreadable).
-func msStatus(st map[string]store.StatusValue, key string) time.Time {
-	ms, err := strconv.ParseInt(st[key].Value, 10, 64)
-	if err != nil || ms == 0 {
-		return time.Time{}
-	}
-	return time.UnixMilli(ms)
 }
