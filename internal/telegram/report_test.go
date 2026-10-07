@@ -452,6 +452,28 @@ func TestTelegramForbiddenPausesBans(t *testing.T) {
 	}
 }
 
+// TestTelegramPauseLiftedAfterARestart: Telegram refused the bot long enough
+// to pause removals and bans, then the bot restarted (fixing a revoked token
+// takes one); the first message through in the new run lifts the pause.
+func TestTelegramPauseLiftedAfterARestart(t *testing.T) {
+	h := newHarness(t, "")
+	h.srv.FailAlways("sendMessage", telegramtest.Reply{Code: 401, Description: "Unauthorized"})
+	h.report(store.Report{Kind: "would_remove", Text: "x"})
+	for i := 0; i < 3; i++ {
+		_, _ = h.chat.Step(h.k.Ctx)
+		h.k.Clock.Advance(5 * time.Minute)
+	}
+	if paused, _ := h.k.Store.PausedFor(h.k.Ctx, store.ScopeRemoveBan); !paused {
+		t.Fatal("removals and bans not paused after 10 minutes of 401")
+	}
+	h.srv.Clear()
+	h.restart()
+	h.drain()
+	if paused, why := h.k.Store.PausedFor(h.k.Ctx, store.ScopeRemoveBan); paused {
+		t.Fatalf("still paused after Telegram took a message in the new run: %s", why)
+	}
+}
+
 // TestFullTextStrippedAfterEvidenceWindow: after retention.evidence_days the
 // bot edits its report and follow-ups to drop the member's text, keeping the
 // report's buttons; not a day before.
