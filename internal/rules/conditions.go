@@ -163,9 +163,11 @@ func allowedText(v string, allowed map[string]bool) bool {
 	return ok && allowed[registrable(host)]
 }
 
-// isEmail reports whether a found link is an email address: no scheme, and
-// an "@" before any path ("name@example.com"). An "@" in a path
-// ("youtube.com/@channel", "example.org/join?u=a@b") is part of a link.
+// isEmail reports whether a found link is an email address: no "://", and an
+// "@" before any path, query or fragment ("name@example.com"). An "@" after
+// them ("youtube.com/@channel", "bitcoin:bc1q…?label=a@b") is part of a link;
+// the matcher keeps a "?" or "#" right after the host only for a scheme
+// without "//", such as "bitcoin:".
 func isEmail(raw string) bool {
 	if strings.Contains(raw, "://") {
 		return false
