@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/alert"
+	"github.com/hoiung/groupwarden/internal/alert/alerttest"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/client/clienttest"
 	"github.com/hoiung/groupwarden/internal/config/configtest"
@@ -148,7 +149,7 @@ func TestDailyCheckLocalTimeAndRetry(t *testing.T) {
 	if got := status(); got != "" {
 		t.Fatalf("daily_check_day = %q after a post the admin chat refused", got)
 	}
-	rec := &alert.Recorder{}
+	rec := &alerttest.Recorder{}
 	a.Alerter = rec
 	a.checkDaily(ctx, noon.Add(30*time.Second))
 	if got := rec.OfKind(alert.DailyCheck); len(got) != 1 || !strings.HasPrefix(got[0].Text, "Daily check, Wednesday 7 October 2026: groupwarden is ") {
