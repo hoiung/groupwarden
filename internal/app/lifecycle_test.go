@@ -192,6 +192,21 @@ func TestOverdueTimerAlert(t *testing.T) {
 	}
 }
 
+// TestNoSyncTimerWatchesBackupOnly: a deployment with no config sync timer
+// (the Docker image) is never told the sync is overdue, while the backup is
+// still watched, and the alert does not send the admins to systemd.
+func TestNoSyncTimerWatchesBackupOnly(t *testing.T) {
+	h := startWith(t, &clienttest.Fake{SelfIDs: botSelf}, Settings{}, func(a *App) { a.NoSyncTimer = true })
+	h.clock.step(48*time.Hour+time.Minute, time.Hour)
+	h.eventually("backup overdue", func() bool { return len(h.rec.OfKind(alert.Overdue)) >= 1 })
+	settle()
+	got := h.rec.OfKind(alert.Overdue)
+	if len(got) != 1 || !strings.HasPrefix(got[0].Text, "The backup timer has not run") ||
+		strings.Contains(got[0].Text, "systemd") {
+		t.Fatalf("overdue alerts %+v, want only the backup's, not naming systemd", got)
+	}
+}
+
 // TestPhoneReminderEscalates: every 7 days since [Done] (or the first start)
 // the admins are asked to open WhatsApp on the bot phone, with [Done]; on day
 // 10 without [Done] it escalates (priority); [Done] starts a new week.
