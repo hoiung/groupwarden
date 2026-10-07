@@ -214,11 +214,23 @@ func (b *logBuffer) Write(p []byte) (int, error) {
 }
 
 // Logged counts the log lines with message msg (info level and above).
-func (k *Kit) Logged(msg string) int {
+func (k *Kit) Logged(msg string) int { return len(k.LogLines(msg)) }
+
+// LogLines lists the log lines whose message is msg, oldest first. The text
+// handler quotes a message only when it has to (msg=sweep, msg="a sweep").
+func (k *Kit) LogLines(msg string) []string {
 	k.logs.mu.Lock()
 	defer k.logs.mu.Unlock()
-	logs, m := k.logs.buf.String(), " msg="+strconv.Quote(msg)
-	return strings.Count(logs, m+" ") + strings.Count(logs, m+"\n")
+	var out []string
+	for _, l := range strings.Split(k.logs.buf.String(), "\n") {
+		for _, m := range []string{" msg=" + strconv.Quote(msg), " msg=" + msg} {
+			if strings.Contains(l, m+" ") || strings.HasSuffix(l, m) {
+				out = append(out, l)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // New builds a kit with Config plus extra.
