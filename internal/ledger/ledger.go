@@ -84,9 +84,13 @@ type Plan struct {
 	// (store.ApplyHeldBans), and a re-check that finds the message no longer
 	// spam fails it.
 	BanHeld bool
-	// Lift removes every ban of the target (a human admin re-added them, or
-	// an admin unbanned them) with an unban row in the ledger.
-	Lift bool
+	// Lift removes the target's bans (a human admin re-added them, or an
+	// admin unbanned them) with an unban row in the ledger. LiftIn narrows it
+	// to the bans covering one community (its own and an everywhere ban, as
+	// store.FindBan matches them), which the unban row names; "" lifts every
+	// ban.
+	Lift   bool
+	LiftIn string
 	// Episode: a sweep retry of the same action on the same target in the same
 	// chat and mode reuses the open row (one row and one report per episode).
 	Episode  bool
@@ -229,15 +233,15 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 		}
 	}
 	if p.Lift {
-		r := row(store.ActUnban, "", p.BanCommunity, true)
+		r := row(store.ActUnban, p.LiftIn, p.BanCommunity, true)
 		r.Status = store.Requested
 		if _, err := add(r); err != nil {
 			return w, err
 		}
-		if _, err := store.RemoveBans(ctx, tx, p.Target.IDs()); err != nil {
+		if _, err := store.RemoveBans(ctx, tx, p.Target.IDs(), p.LiftIn); err != nil {
 			return w, err
 		}
-		if err := store.DropHeldBans(ctx, tx, p.Target.IDs(), "unbanned before a pause let the ban apply", now); err != nil {
+		if err := store.DropHeldBans(ctx, tx, p.Target.IDs(), p.LiftIn, "unbanned before a pause let the ban apply", now); err != nil {
 			return w, err
 		}
 	}
