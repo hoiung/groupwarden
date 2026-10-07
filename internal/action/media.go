@@ -92,35 +92,40 @@ func (f *MediaFetcher) Fetch(ctx context.Context) (int, error) {
 	}
 }
 
+// fetchOne downloads one attachment. The size the post declared is the
+// sender's claim, so the download itself is limited to
+// evidence.max_attachment_mb; a file over it is settled as too large, never
+// left pending to be fetched again.
 func (f *MediaFetcher) fetchOne(ctx context.Context, e store.Evidence) error {
 	msg := &client.Message{Chat: client.JID(e.Chat), Sender: client.JID(e.Sender), ID: e.MsgID,
 		Media: &client.Media{Kind: e.MediaKind, MimeType: e.MediaMime, FileName: e.MediaName, Size: e.MediaSize, Raw: e.MediaRaw}}
-	data, mimeType, name, err := f.Adapter.DownloadMedia(ctx, msg)
+	limitMB := f.Config.Current().Config.Evidence.MaxAttachmentMB
+	data, mimeType, name, err := f.Adapter.DownloadMedia(ctx, msg, int64(limitMB)<<20)
+	if errors.Is(err, client.ErrMediaTooLarge) {
+		f.Log.Info("attachment over the size limit; not kept", "evidence", e.ID, "declared_bytes", e.MediaSize, "limit_mb", limitMB)
+		return f.Store.SetMedia(ctx, e.ID, store.MediaTooLarge, "", "", 0)
+	}
 	if err != nil {
 		f.Log.Warn("attachment download failed", "evidence", e.ID, "err", mask.IDs(err.Error()))
-		return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", mask.IDs(err.Error()))
+		return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", mask.IDs(err.Error()), e.MediaSize)
 	}
-	limitMB := f.Config.Current().Config.Evidence.MaxAttachmentMB
-	if int64(len(data)) > int64(limitMB)<<20 {
-		f.Log.Info("attachment over the size limit; not kept", "evidence", e.ID, "bytes", len(data), "limit_mb", limitMB)
-		return f.Store.SetMedia(ctx, e.ID, store.MediaTooLarge, "", "")
-	}
+	size := uint64(len(data))
 	if err := os.MkdirAll(f.Dir, 0o700); err != nil {
-		return f.saveFailed(ctx, e, err)
+		return f.saveFailed(ctx, e, size, err)
 	}
 	path := filepath.Join(f.Dir, fmt.Sprintf("%d%s", e.ID, extension(mimeType, name, e.MediaName)))
 	if err := writeFile(path, data); err != nil {
-		return f.saveFailed(ctx, e, err)
+		return f.saveFailed(ctx, e, size, err)
 	}
-	return f.Store.SetMedia(ctx, e.ID, store.MediaSaved, path, "")
+	return f.Store.SetMedia(ctx, e.ID, store.MediaSaved, path, "", size)
 }
 
 // saveFailed records an attachment that downloaded but could not be written
 // to the evidence directory (no space, no permission): it is logged, and the
 // row is settled as failed, which the report shows.
-func (f *MediaFetcher) saveFailed(ctx context.Context, e store.Evidence, err error) error {
+func (f *MediaFetcher) saveFailed(ctx context.Context, e store.Evidence, size uint64, err error) error {
 	f.Log.Error("could not save an attachment", "evidence", e.ID, "err", err)
-	return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", "could not save it: "+err.Error())
+	return f.Store.SetMedia(ctx, e.ID, store.MediaFailed, "", "could not save it: "+err.Error(), size)
 }
 
 // writeFile writes data under a temporary name and renames it into place, so
