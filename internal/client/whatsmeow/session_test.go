@@ -107,12 +107,14 @@ func TestSessionQueriesMatchLibrarySchema(t *testing.T) {
 
 // TestCallErrorsClassified: WhatsApp's rate-limit and permission refusals
 // reach callers as client.ErrRateLimited and client.ErrNotAdmin, whatever
-// text came with the code; anything else is passed through.
+// text came with the code, and a call made while disconnected as
+// client.ErrNotConnected; anything else is passed through.
 func TestCallErrorsClassified(t *testing.T) {
 	cases := []struct {
 		err  error
 		want error
 	}{
+		{fmt.Errorf("failed to send message node: %w", wm.ErrNotConnected), client.ErrNotConnected},
 		{&wm.IQError{Code: 429, Text: "rate-overlimit"}, client.ErrRateLimited},
 		{fmt.Errorf("remove: %w", &wm.IQError{Code: 429}), client.ErrRateLimited},
 		{&wm.IQError{Code: 403, Text: "forbidden"}, client.ErrNotAdmin},
@@ -124,7 +126,8 @@ func TestCallErrorsClassified(t *testing.T) {
 		}
 	}
 	other := &wm.IQError{Code: 500, Text: "internal-server-error"}
-	if got := callError(other); errors.Is(got, client.ErrRateLimited) || errors.Is(got, client.ErrNotAdmin) || got != other {
+	if got := callError(other); errors.Is(got, client.ErrRateLimited) || errors.Is(got, client.ErrNotAdmin) ||
+		errors.Is(got, client.ErrNotConnected) || got != other {
 		t.Errorf("500 classified as %v", got)
 	}
 	if callError(nil) != nil {
