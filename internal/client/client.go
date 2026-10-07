@@ -107,6 +107,10 @@ var ErrRateLimited = errors.New("WhatsApp rate limit")
 // bot is not an admin there.
 var ErrNotAdmin = errors.New("the bot is not an admin there")
 
+// ErrMediaTooLarge is returned (wrapped) by DownloadMedia for an attachment
+// over the size it was allowed.
+var ErrMediaTooLarge = errors.New("attachment over the size limit")
+
 // MentionMarker replaces every @-mention of a listed member in a field's
 // matching view, so a mention is never read as a phone number or a handle.
 const MentionMarker = "@mention"
@@ -138,12 +142,15 @@ type Field struct {
 	Match string `json:"match"` // matching view: @-mentions replaced by MentionMarker
 }
 
-// Media describes an attachment. Its size is known before any download.
+// Media describes an attachment.
 type Media struct {
 	Kind     string `json:"kind"` // image, video, document, audio, sticker
 	MimeType string `json:"mime_type"`
 	FileName string `json:"file_name,omitempty"`
-	Size     uint64 `json:"size"`
+	// Size is the length the message declares (0 when it declares none).
+	// It is the sender's claim, which WhatsApp does not check, so
+	// DownloadMedia enforces the real limit.
+	Size uint64 `json:"size"`
 	// Raw is adapter-private: the serialized media part DownloadMedia needs.
 	Raw []byte `json:"raw"`
 }
@@ -390,8 +397,10 @@ type Adapter interface {
 	JoinLinkedGroup(ctx context.Context, community, group JID) (joined, pendingApproval bool, err error)
 	// InviteInfo looks up an invite code without joining.
 	InviteInfo(ctx context.Context, code string) (group Group, parentCommunity JID, err error)
-	// DownloadMedia fetches msg's attachment.
-	DownloadMedia(ctx context.Context, msg *Message) (file []byte, mimeType, fileName string, err error)
+	// DownloadMedia fetches msg's attachment if it is at most maxBytes long.
+	// A longer one is refused with ErrMediaTooLarge, without ever being held
+	// in memory whole.
+	DownloadMedia(ctx context.Context, msg *Message, maxBytes int64) (file []byte, mimeType, fileName string, err error)
 	// LinkedDevices lists the bot account's OTHER linked devices (the phone
 	// and this device excluded).
 	LinkedDevices(ctx context.Context) ([]JID, error)
