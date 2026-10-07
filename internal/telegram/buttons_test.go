@@ -133,6 +133,53 @@ func TestWatchOnlyBanDeletesOnlyWithinReplayWindow(t *testing.T) {
 	}
 }
 
+// TestWatchOnlyBanOfAnEditAgedByTheOriginal: [Ban] on a watch-only report
+// about an edit measures act_on_replay_max_age from the original post's
+// server time, as the inbox does: pressed when the original is past it and
+// the edit is not, the original is left alone; pressed earlier, it is
+// deleted, unless the delete fires only once the original is past it.
+func TestWatchOnlyBanOfAnEditAgedByTheOriginal(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		wait     time.Duration // after the edit; the original is 10 minutes older
+		late     time.Duration // from the press to the delete firing
+		deleted  bool
+		replyOld bool
+	}{
+		{"original past the window", 47*time.Hour - 5*time.Minute, 0, false, true},
+		{"original within the window", 47*time.Hour - 15*time.Minute, 0, true, false},
+		{"delete fires once the original is past it", 47*time.Hour - 15*time.Minute, 10 * time.Minute, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t, "")
+			orig := h.k.Msg("O1", modtest.G1, modtest.Spammer, "hello everyone")
+			orig.SenderAlt = modtest.SpammerPhone
+			h.k.Deliver(orig)
+			h.k.Clock.Advance(10 * time.Minute)
+			edit := h.k.Msg("E1", modtest.G1, modtest.Spammer, "crypto: inbox me")
+			edit.SenderAlt, edit.TargetID, edit.IsEdit = modtest.SpammerPhone, "O1", true
+			h.k.Deliver(edit)
+			h.k.Fire()
+			h.drain()
+			r := h.only(ledger.KindWouldHaveActed)
+			h.k.Clock.Advance(c.wait)
+			h.press(adminUser, "ban", r.ID)
+			reply := h.lastReply()
+			h.k.Clock.Advance(c.late)
+			h.k.Fire()
+			if got := h.k.Fake.Count("Revoke "+string(modtest.G1)+" "+string(modtest.Spammer)+" O1") == 1; got != c.deleted {
+				t.Fatalf("original deleted %v, want %v: %v", got, c.deleted, h.k.Fake.Calls())
+			}
+			if !h.k.Banned(modtest.SpammerM, "") {
+				t.Fatal("not banned after [Ban]")
+			}
+			if old := strings.Contains(reply, "older than act_on_replay_max_age"); old != c.replyOld {
+				t.Fatalf("reply %q", reply)
+			}
+		})
+	}
+}
+
 // TestCallbackFromNonAdminRejected: a press by someone who is not an admin
 // of the chat (checked at press time) does nothing; a demoted admin is
 // refused too.
