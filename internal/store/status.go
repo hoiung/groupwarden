@@ -21,6 +21,9 @@ const (
 	StatusTelegramOK   = "tg_ok"          // "1" once Telegram took a message; "0" while it keeps refusing the bot (401/403)
 	StatusTelegramChat = "tg_chat_id"     // the chat ID after Telegram migrated the group (overrides the secrets file)
 	StatusSummaryDay   = "tg_summary_day" // the last UTC day (2006-01-02) the daily summary covered
+	// StatusSummaryParts is "<UTC day>:<n>": n parts of the daily summary
+	// through that day are posted (a retry resumes after them).
+	StatusSummaryParts = "tg_summary_parts"
 	// The pinned command list: "<chat ID>:<message ID>", the hash of the
 	// text it shows, and "pinned" / "refused" ("" until a pin was tried).
 	StatusTelegramPin      = "tg_pin"
@@ -76,12 +79,8 @@ func (s *Store) SetStatus(ctx context.Context, kv map[string]string) error {
 func (s *Store) SetStatusReporting(ctx context.Context, kv map[string]string, r *Report) error {
 	now := s.now()
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		for k, v := range kv {
-			if _, err := tx.ExecContext(ctx, `
-INSERT INTO status (key, value, updated_at) VALUES (?, ?, ?)
-ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, k, v, now.UnixMilli()); err != nil {
-				return err
-			}
+		if err := setStatusIn(ctx, tx, kv, now); err != nil {
+			return err
 		}
 		if r == nil {
 			return nil
@@ -89,6 +88,18 @@ ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.up
 		_, err := InsertReport(ctx, tx, *r, nil, now)
 		return err
 	})
+}
+
+// setStatusIn writes the given keys inside tx.
+func setStatusIn(ctx context.Context, tx *sql.Tx, kv map[string]string, now time.Time) error {
+	for k, v := range kv {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO status (key, value, updated_at) VALUES (?, ?, ?)
+ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, k, v, now.UnixMilli()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Status reads every status entry.
