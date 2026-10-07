@@ -3,6 +3,7 @@ package whatsmeow
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	wm "go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -35,9 +36,14 @@ func (a *Adapter) handle(evt any) bool {
 			return a.persist(sink, ev)
 		}
 	case *events.JoinedGroup:
-		return a.persist(sink, &client.JoinedGroup{Group: jid(e.JID), Reason: e.Reason, Actor: ptrJID(e.Sender), Time: a.now()})
+		return a.persist(sink, &client.JoinedGroup{Group: jid(e.JID), Reason: e.Reason, Actor: ptrJID(e.Sender), Time: a.now(),
+			Info: group(&e.GroupInfo)})
 	case *events.Connected:
 		sink.Lifecycle(client.Lifecycle{Kind: client.Connected})
+	case *events.OfflineSyncCompleted:
+		// The library handles WhatsApp's notifications one at a time, in the
+		// order they arrive, and this marker comes after the offline ones.
+		sink.Lifecycle(client.Lifecycle{Kind: client.CaughtUp, Detail: fmt.Sprintf("%d offline events", e.Count)})
 	case *events.Disconnected:
 		sink.Lifecycle(client.Lifecycle{Kind: client.Disconnected, Detail: "connection closed by the server"})
 	case *events.ClientOutdated:
