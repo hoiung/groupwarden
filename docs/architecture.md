@@ -20,9 +20,14 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                │ queues them in the outbox, adds the ban, keeps the evidence copy
                │ and stores the admin report
                ▼
-           internal/action executor: token bucket ► circuit breaker ►
-               re-check at fire time ► WhatsApp call ► requested / failed /
-               already_gone (a delete is never confirmed, so never "succeeded")
+           internal/action executor (it waits, without spending attempts, until
+           the group list has loaded and WhatsApp is connected): token bucket ►
+               circuit breaker ► re-check at fire time ► WhatsApp call ►
+               requested / failed / already_gone (a delete is never confirmed,
+               so never "succeeded"); an action WhatsApp refuses for that
+               member, or one given up on ► a priority "do it by hand" report
+               naming the group and the member (once a day for the same
+               action, group and member)
 
            internal/reconcile sweep (at connect, every reconcile interval, and
            when the bot joins a group; the group list is read from WhatsApp first,
@@ -36,8 +41,11 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                banned members present ► removed; their join requests ► rejected
 
            internal/telegram: the stored reports and alerts ► the private admin
-               chat (≤ 20 posts a minute, priority first); admins' buttons and
-               commands ► internal/app Controls ► internal/pipeline Admin
+               chat (≤ 20 posts a minute, priority first); saved attachments ►
+               posted under their reports by a loop of their own, so a slow
+               upload never holds up an alert (one not posted gets a reply
+               saying why); admins' buttons and commands ► internal/app
+               Controls ► internal/pipeline Admin
 
            deploy/groupwarden-sync.timer ► groupwarden sync-config
                (internal/configsync): git pull the private config repo ► the
@@ -92,7 +100,7 @@ Maintained libraries are used instead of hand-written code wherever one fits. Ev
 | `golang.org/x/text` | NFKC, accent folding, case folding | `v0.42.0` | 2026-09-08 | BSD-3-Clause |
 | `github.com/eskriett/confusables` | Unicode UTS #39 confusable skeletons | `v0.0.0-20250910043846-220432c5bd73` | 2025-09-10 | MIT |
 | `mvdan.cc/xurls/v2` | Finding links with or without `https://` | `v2.6.0` | 2025-01-02 | BSD-3-Clause |
-| `golang.org/x/net/publicsuffix` | Registrable domain for `allowed_domains` | `v0.59.0` | 2026-09-08 | BSD-3-Clause |
+| `golang.org/x/net/publicsuffix` | Registrable domain for `allowed_domains` | `v0.60.0` | 2026-10-08 | BSD-3-Clause |
 | `filippo.io/age` | Checking the backup recipient key, encrypting backups and decrypting them on restore | `v1.3.2` | 2026-08-29 | BSD-3-Clause |
 | `github.com/mdp/qrterminal/v3` | Pairing QR code in the terminal | `v3.2.1` | 2025-03-19 | MIT |
 | `google.golang.org/protobuf` | WhatsApp message types | `v1.36.12` | 2026-08-10 | BSD-3-Clause |
