@@ -95,6 +95,11 @@ type Chat struct {
 	sem    chan struct{}
 	shared *rate.Limiter // every message (≤ 20 a minute)
 	wake   chan struct{}
+	// uploadWake wakes uploadLoop, which posts attachments apart from
+	// deliverLoop (an upload can take minutes).
+	uploadWake chan struct{}
+	// client is the HTTP client the bot sends every request with.
+	client bot.HttpClient
 	// setupWake reruns the command menu and pinned list setup (the chat
 	// moved); pinRetry is how long it waits after Telegram refused the pin.
 	setupWake chan struct{}
@@ -136,15 +141,16 @@ func New(o Options, c *Chat) (*Chat, error) {
 	c.sem = make(chan struct{}, 1)
 	c.shared = rate.NewLimiter(rate.Every(time.Minute/groupPerMinute), 1)
 	c.wake = make(chan struct{}, 1)
+	c.uploadWake = make(chan struct{}, 1)
 	c.setupWake = make(chan struct{}, 1)
 	c.pinRetry = pinRetryDefault
 	c.uploads = map[int64]uploadRetry{}
-	client := o.HTTPClient
-	if client == nil {
-		client = newHTTPClient()
+	c.client = o.HTTPClient
+	if c.client == nil {
+		c.client = newHTTPClient()
 	}
 	opts := []bot.Option{
-		bot.WithHTTPClient(pollTimeout, client),
+		bot.WithHTTPClient(pollTimeout, c.client),
 		bot.WithSkipGetMe(),
 		bot.WithNotAsyncHandlers(),
 		bot.WithDefaultHandler(c.handle),
@@ -176,7 +182,7 @@ func (c *Chat) Run(ctx context.Context) {
 		c.Log.Warn("released presses the last run claimed but never finished; they can be pressed again", "presses", n)
 	}
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		c.api.Start(ctx)
@@ -185,14 +191,24 @@ func (c *Chat) Run(ctx context.Context) {
 		defer wg.Done()
 		c.setupLoop(ctx)
 	}()
+	go func() {
+		defer wg.Done()
+		c.uploadLoop(ctx)
+	}()
 	c.deliverLoop(ctx)
 	wg.Wait()
 }
 
-// Wake asks the chat to deliver now.
+// Wake asks the chat to deliver now (and to look for attachments to post).
 func (c *Chat) Wake() {
+	poke(c.wake)
+	poke(c.uploadWake)
+}
+
+// poke wakes the loop waiting on ch, unless a wake is already pending.
+func poke(ch chan struct{}) {
 	select {
-	case c.wake <- struct{}{}:
+	case ch <- struct{}{}:
 	default:
 	}
 }
