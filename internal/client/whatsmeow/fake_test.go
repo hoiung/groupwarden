@@ -3,6 +3,7 @@ package whatsmeow
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -68,6 +69,9 @@ type fakeWA struct {
 	requestAction             wm.ParticipantRequestChange
 	onWhatsApp                []types.IsOnWhatsAppResponse
 	lids                      map[string]types.JID // phone user -> LID in the local store
+
+	// down: every network call fails as the library does with no websocket.
+	down bool
 }
 
 func (f *fakeWA) record(name string, network bool) {
@@ -77,6 +81,16 @@ func (f *fakeWA) record(name string, network bool) {
 	if network && f.offline {
 		f.t.Errorf("network call %s made while handling an event", name)
 	}
+}
+
+// net records a network call; while f.down it fails with the library's
+// not-connected error, as a call made with no websocket does.
+func (f *fakeWA) net(name string) error {
+	f.record(name, true)
+	if f.down {
+		return fmt.Errorf("failed to send node: %w", wm.ErrNotConnected)
+	}
+	return nil
 }
 
 func (f *fakeWA) ConnectContext(context.Context) error { f.record("Connect", true); return nil }
@@ -90,45 +104,65 @@ func (f *fakeWA) BuildRevoke(chat, sender types.JID, id types.MessageID) *waE2E.
 	}}
 }
 func (f *fakeWA) SendMessage(_ context.Context, to types.JID, m *waE2E.Message, _ ...wm.SendRequestExtra) (wm.SendResponse, error) {
-	f.record("SendMessage", true)
+	if err := f.net("SendMessage"); err != nil {
+		return wm.SendResponse{}, err
+	}
 	f.sentTo, f.sent = to, m
 	return wm.SendResponse{}, nil
 }
 func (f *fakeWA) UpdateGroupParticipants(context.Context, types.JID, []types.JID, wm.ParticipantChange) ([]types.GroupParticipant, error) {
-	f.record("UpdateGroupParticipants", true)
+	if err := f.net("UpdateGroupParticipants"); err != nil {
+		return nil, err
+	}
 	return f.participants, nil
 }
 func (f *fakeWA) GetJoinedGroups(context.Context) ([]*types.GroupInfo, error) {
-	f.record("GetJoinedGroups", true)
+	if err := f.net("GetJoinedGroups"); err != nil {
+		return nil, err
+	}
 	return nil, nil
 }
 func (f *fakeWA) GetGroupInfo(context.Context, types.JID) (*types.GroupInfo, error) {
-	f.record("GetGroupInfo", true)
+	if err := f.net("GetGroupInfo"); err != nil {
+		return nil, err
+	}
 	return f.info, f.infoErr
 }
 func (f *fakeWA) GetSubGroups(context.Context, types.JID) ([]*types.GroupLinkTarget, error) {
-	f.record("GetSubGroups", true)
+	if err := f.net("GetSubGroups"); err != nil {
+		return nil, err
+	}
 	return f.subGroups, nil
 }
 func (f *fakeWA) GetGroupRequestParticipants(context.Context, types.JID) ([]types.GroupParticipantRequest, error) {
-	f.record("GetGroupRequestParticipants", true)
+	if err := f.net("GetGroupRequestParticipants"); err != nil {
+		return nil, err
+	}
 	return f.requests, nil
 }
 func (f *fakeWA) UpdateGroupRequestParticipants(_ context.Context, _ types.JID, _ []types.JID, action wm.ParticipantRequestChange) ([]types.GroupParticipant, error) {
-	f.record("UpdateGroupRequestParticipants", true)
+	if err := f.net("UpdateGroupRequestParticipants"); err != nil {
+		return nil, err
+	}
 	f.requestAction = action
 	return f.participants, nil
 }
 func (f *fakeWA) JoinGroupWithLink(context.Context, string) (types.JID, error) {
-	f.record("JoinGroupWithLink", true)
+	if err := f.net("JoinGroupWithLink"); err != nil {
+		return types.JID{}, err
+	}
 	return f.joinResult, nil
 }
 func (f *fakeWA) GetGroupInfoFromLink(context.Context, string) (*types.GroupInfo, error) {
-	f.record("GetGroupInfoFromLink", true)
+	if err := f.net("GetGroupInfoFromLink"); err != nil {
+		return nil, err
+	}
 	return f.info, f.infoErr
 }
 func (f *fakeWA) Download(ctx context.Context, m wm.DownloadableMessage) ([]byte, error) {
-	f.record("Download", true)
+	if err := f.net("Download"); err != nil {
+		return nil, err
+	}
 	f.downloaded = m
 	f.downloadMax, _ = maxBytesOf(ctx)
 	_, f.downloadDeadline = ctx.Deadline()
@@ -143,11 +177,15 @@ func (f *fakeWA) DecryptSecretEncryptedMessage(context.Context, *events.Message)
 	return f.secretEdit, f.secretEditErr
 }
 func (f *fakeWA) GetUserDevices(context.Context, []types.JID) ([]types.JID, error) {
-	f.record("GetUserDevices", true)
+	if err := f.net("GetUserDevices"); err != nil {
+		return nil, err
+	}
 	return f.devices, nil
 }
 func (f *fakeWA) IsOnWhatsApp(context.Context, []string) ([]types.IsOnWhatsAppResponse, error) {
-	f.record("IsOnWhatsApp", true)
+	if err := f.net("IsOnWhatsApp"); err != nil {
+		return nil, err
+	}
 	if f.onWhatsApp == nil {
 		return nil, errNetwork
 	}
@@ -159,7 +197,9 @@ func (f *fakeWA) lidForPhone(_ context.Context, phone types.JID) (types.JID, err
 	return f.lids[phone.User], nil
 }
 func (f *fakeWA) sendGroupIQ(_ context.Context, to types.JID, content waBinary.Node) (*waBinary.Node, error) {
-	f.record("sendGroupIQ", true)
+	if err := f.net("sendGroupIQ"); err != nil {
+		return nil, err
+	}
 	f.iqTo, f.iqContent = to, content
 	return f.iqResp, f.iqErr
 }
