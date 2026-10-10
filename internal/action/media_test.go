@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -55,6 +56,63 @@ func TestAttachmentOfAForgottenCopyNotKept(t *testing.T) {
 			if !strings.Contains(logs.String(), `msg="the evidence copy was deleted during its download; nothing kept" evidence=`+
 				strconv.FormatInt(pending[0].ID, 10)+" file="+strconv.FormatBool(!fail)) {
 				t.Fatalf("not logged:\n%s", logs.String())
+			}
+		})
+	}
+}
+
+// TestAttachmentWaitsForTheConnection: a download that is not the
+// attachment's failure — it never reached WhatsApp (no connection, as at a
+// restart before Connected), or the bot's stop cut it short — leaves the
+// attachment pending, so it is fetched later instead of failing for good.
+func TestAttachmentWaitsForTheConnection(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		fail    func(cancel context.CancelFunc, ctx context.Context) error
+		wantErr error  // what the interrupted Fetch returns
+		logged  string // what it logs ("" for nothing)
+	}{
+		{"not connected", func(context.CancelFunc, context.Context) error {
+			return fmt.Errorf("refresh media connections: %w", client.ErrNotConnected)
+		}, nil, "attachment downloads wait for the WhatsApp connection"},
+		{"stopped mid-download", func(cancel context.CancelFunc, ctx context.Context) error {
+			cancel()
+			return fmt.Errorf("download: %w", ctx.Err())
+		}, context.Canceled, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k := modtest.New(t, "")
+			ctx, cancel := context.WithCancel(k.Ctx)
+			defer cancel()
+			interrupted := true
+			k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+				if interrupted {
+					return nil, "", "", c.fail(cancel, ctx)
+				}
+				return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+			}
+			m := k.Spam("M1", modtest.G1)
+			m.Media = &client.Media{Kind: "image", MimeType: "image/jpeg", FileName: "offer.jpg", Size: 8, Raw: []byte("raw")}
+			k.Deliver(m)
+			if n, err := k.Media.Fetch(ctx); !errors.Is(err, c.wantErr) || (c.wantErr == nil && err != nil) || n != 0 {
+				t.Fatalf("interrupted: fetched %d (%v), want 0 (%v)", n, err, c.wantErr)
+			}
+			pending, err := k.Store.PendingMedia(k.Ctx, 10)
+			if err != nil || len(pending) != 1 {
+				t.Fatalf("pending attachments %d (%v), want it still pending", len(pending), err)
+			}
+			if c.logged != "" && k.Logged(c.logged) != 1 {
+				t.Fatal("the wait is not logged")
+			}
+			if k.Logged("attachment download failed") != 0 {
+				t.Fatal("an interrupted download logged as a failed one")
+			}
+			interrupted = false
+			if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 1 {
+				t.Fatalf("later: fetched %d (%v)", n, err)
+			}
+			if e, _, _ := k.Store.Evidence(k.Ctx, pending[0].ID); e.MediaState != store.MediaSaved {
+				t.Fatalf("media %+v, want saved", e)
 			}
 		})
 	}
