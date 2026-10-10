@@ -275,7 +275,7 @@ func TestBanCLIPerCommunity(t *testing.T) {
 
 // TestBanCLIHeldBan: a ban a pause holds is listed apart from active bans,
 // survives `member forget`, and `ban remove` lifts it, so it never applies
-// after [Resume].
+// once the pause ends.
 func TestBanCLIHeldBan(t *testing.T) {
 	te := newTestEnv(t, &clienttest.Fake{})
 	te.provision(t)
@@ -293,7 +293,7 @@ func TestBanCLIHeldBan(t *testing.T) {
 		t.Fatal(err)
 	}
 	if code := te.sub("ban", "list"); code != 0 ||
-		!strings.Contains(te.out.String(), memberLID+" scope=* held by a pause (applies after [Resume]) since=") ||
+		!strings.Contains(te.out.String(), memberLID+" scope=* held by a pause (applies once the pause ends) since=") ||
 		!strings.HasSuffix(te.out.String(), "\n0 ban(s)\n1 ban(s) held by a pause\n") {
 		t.Fatalf("ban list: exit %d %q", code, te.out)
 	}
