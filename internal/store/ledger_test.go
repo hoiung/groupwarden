@@ -106,6 +106,59 @@ func TestRetryKeepsAnOverturnedRow(t *testing.T) {
 	}
 }
 
+// TestActionReportedOnlyForTheSameAction: a not_done report silences another
+// only for the same action, group and member, and only one written since the
+// given time; a report of another kind on the same action silences nothing.
+func TestActionReportedOnlyForTheSameAction(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	s := openAt(t, &now)
+	const g1, g2 = "99999000000111@g.us", "99999000000222@g.us"
+	const x, y = "99999000000444@lid", "99999000000777@lid"
+	told := LedgerRow{Action: ActRemove, Chat: g1, Target: x, TriggerID: "T1", Community: "c", Mode: ModeEnforce,
+		ConfigHash: "h"}
+	if err := s.Write(ctx, func(tx *sql.Tx) error {
+		id, _, err := InsertLedger(ctx, tx, told, now)
+		if err != nil {
+			return err
+		}
+		_, err = InsertReport(ctx, tx, Report{Kind: "not_done", Community: "c", Subject: x, Text: "do it by hand"},
+			[]int64{id}, now)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	with := func(f func(*LedgerRow)) LedgerRow {
+		r := told
+		f(&r)
+		return r
+	}
+	for _, c := range []struct {
+		name  string
+		kind  string
+		row   LedgerRow
+		since time.Time
+		want  bool
+	}{
+		{"the same action", "not_done", told, now.Add(-time.Hour), true},
+		{"written at since", "not_done", told, now, true},
+		{"another kind", "action", told, now.Add(-time.Hour), false},
+		{"another action", "not_done", with(func(r *LedgerRow) { r.Action = ActReject }), now.Add(-time.Hour), false},
+		{"another group", "not_done", with(func(r *LedgerRow) { r.Chat = g2 }), now.Add(-time.Hour), false},
+		{"another member", "not_done", with(func(r *LedgerRow) { r.Target = y }), now.Add(-time.Hour), false},
+		{"written before since", "not_done", told, now.Add(time.Millisecond), false},
+	} {
+		var got bool
+		if err := s.Write(ctx, func(tx *sql.Tx) error {
+			var err error
+			got, err = ActionReported(ctx, tx, c.kind, c.row, c.since)
+			return err
+		}); err != nil || got != c.want {
+			t.Errorf("%s: reported %v (%v), want %v", c.name, got, err, c.want)
+		}
+	}
+}
+
 // TestRowChangesOnlyFromIntended: moving a queued row to shadow, or
 // finishing it, changes only a row still at intended. A row [Undo] overturned
 // meanwhile keeps its status and mode, and the caller is told nothing changed
