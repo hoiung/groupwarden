@@ -67,7 +67,7 @@ func TestStatusCommand(t *testing.T) {
 	got := h.lastReply()
 	want := []string{"WhatsApp: connected; last event", "Paused: removals and bans (deletes continue) since",
 		"(breaker): too many removals", "Config: v" + h.k.Holder.Current().Hash + "; last sync 3m0s ago (ok at abc1234)",
-		"Backup: last run never", "Bans: 1 (+1 held by a pause: they apply after [Resume]);",
+		"Backup: last run never", "Bans: 1 (+1 held by a pause: they apply once the pause ends);",
 		"stale ledger rows (queued over 1h0m0s): 0",
 		"community a (enforce): 1 covered, 1 absent, 1 not admin", "general (group…0111): covered, 1 human admin(s)",
 		"jobs (group…0222): not admin, 1 human admin(s)", "events (group…0333): absent",
