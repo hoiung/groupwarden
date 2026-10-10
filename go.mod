@@ -1,6 +1,6 @@
 module github.com/hoiung/groupwarden
 
-go 1.27.1
+go 1.27.2
 
 require (
 	filippo.io/age v1.3.2
@@ -10,7 +10,7 @@ require (
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.mau.fi/whatsmeow v0.0.0-20261005195255-6bb48c0f1ff0
 	go.yaml.in/yaml/v3 v3.0.5
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/text v0.42.0
 	golang.org/x/time v0.16.0
 	google.golang.org/protobuf v1.36.12
