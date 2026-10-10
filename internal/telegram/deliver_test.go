@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -239,6 +240,13 @@ func TestRefusedAttachmentDoesNotBlock(t *testing.T) {
 			if n := len(h.srv.Requests("sendDocument")); n != 1 {
 				t.Fatalf("%d sendDocument calls, want 1", n)
 			}
+			if n := saidNotPosted(h, r.ID, "refused by Telegram"); n != 1 {
+				t.Fatalf("%d replies under the report saying the attachment was refused, want 1", n)
+			}
+			h.press(adminUser, "show", r.ID)
+			if got := h.lastReply(); !strings.Contains(got, "could not be posted: Telegram refused the file") {
+				t.Fatalf("[Show attachment] answered %q, want why it could not be posted", got)
+			}
 			h.k.Clock.Advance(31 * 24 * time.Hour)
 			h.drain()
 			if len(h.srv.Requests("editMessageText")) == 0 {
@@ -393,6 +401,69 @@ func TestLongSummaryPostsEachPartOnce(t *testing.T) {
 	}
 }
 
+// TestSummaryCutShortFinishesOnALaterDay: a daily summary interrupted after
+// its first part (a 500), retried only after the next UTC midnight, finishes
+// the same summary from where it stopped: no part twice, none missing.
+func TestSummaryCutShortFinishesOnALaterDay(t *testing.T) {
+	h := newHarness(t, "")
+	h.drain() // the first run starts the summaries with today
+	summaryCounters(t, h)
+	h.k.Clock.Advance(24 * time.Hour)
+	h.srv.Fail("sendMessage", telegramtest.Reply{})
+	h.srv.Fail("sendMessage", telegramtest.Reply{Code: 500, Description: "Internal Server Error"})
+	if _, err := h.chat.Step(h.k.Ctx); err == nil {
+		t.Fatal("no error from the step whose send failed")
+	}
+	h.k.Clock.Advance(24 * time.Hour)
+	h.drain()
+	texts := postedOnce(t, h.srv.Requests("sendMessage"))
+	all := strings.Join(texts, "\n")
+	for i := 0; i < 300; i++ {
+		if n := strings.Count(all, fmt.Sprintf("number %03d\n", i)) + strings.Count(all, fmt.Sprintf("number %03d: ", i)); n != 1 {
+			t.Fatalf("counter %03d posted %d times", i, n)
+		}
+	}
+	if n := strings.Count(all, "Daily summary for 2026-10-06"); n != 1 {
+		t.Fatalf("the 2026-10-06 heading posted %d times", n)
+	}
+}
+
+// TestFollowupsResumeWhereTheTextStopped: a report's header changes between
+// attempts (its attachment line, once the download settles). A retry posts
+// the member's text from where the posted parts stopped, so every line goes
+// exactly once.
+func TestFollowupsResumeWhereTheTextStopped(t *testing.T) {
+	h := newHarness(t, "")
+	var b strings.Builder
+	b.WriteString("crypto https://example.org/x\n")
+	for i := 0; i < 1500; i++ {
+		fmt.Fprintf(&b, "line %04d\n", i)
+	}
+	b.WriteString("THE END")
+	h.srv.Fail("sendMessage", telegramtest.Reply{})
+	h.srv.Fail("sendMessage", telegramtest.Reply{Code: 429, Description: "Too Many Requests: retry after 1", RetryAfter: 1})
+	h.k.Deliver(image(h.k.Msg("F1", modtest.G1, modtest.Spammer, b.String())))
+	if _, err := h.chat.Step(h.k.Ctx); err == nil {
+		t.Fatal("no error from the step Telegram told to wait")
+	}
+	h.k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return nil, "", "", errors.New(strings.Repeat("the media host kept failing; ", 20))
+	}
+	if _, err := h.k.Media.Fetch(h.k.Ctx); err != nil {
+		t.Fatal(err)
+	}
+	h.drain()
+	all := strings.Join(postedOnce(t, h.srv.Posted()), "\n")
+	for i := 0; i < 1500; i++ {
+		if n := strings.Count(all, fmt.Sprintf("line %04d\n", i)); n != 1 {
+			t.Fatalf("line %04d posted %d times", i, n)
+		}
+	}
+	if !strings.Contains(all, "THE END") {
+		t.Fatal("the message's end was not posted")
+	}
+}
+
 // TestRetryAfterARefusedFollowupPostsNoPartTwice: Telegram refuses one
 // follow-up, then tells a later part to wait; the retry resumes after the
 // last part posted, so no part goes twice and the message still ends.
@@ -472,11 +543,188 @@ func TestFailingUploadDoesNotBlock(t *testing.T) {
 		!strings.Contains(ev.MediaError, "Telegram did not take the file") {
 		t.Fatalf("evidence %+v, want failed with its file kept", ev)
 	}
+	r := h.only(ledger.KindAction)
+	if n := saidNotPosted(h, r.ID, "Telegram did not take the file in 47h0m0s"); n != 1 {
+		t.Fatalf("%d replies under the report saying the attachment was given up, want 1", n)
+	}
+	h.press(adminUser, "show", r.ID)
+	if got := h.lastReply(); !strings.Contains(got, "could not be posted: Telegram did not take the file") {
+		t.Fatalf("[Show attachment] answered %q, want why it could not be posted", got)
+	}
 	h.srv.Clear()
 	h.k.Clock.Advance(time.Hour)
 	h.drain()
 	if n := uploads(); n != 3 {
 		t.Fatalf("%d uploads, want 3 (none after giving up)", n)
+	}
+}
+
+// deliverOnly runs delivery (not attachment posting) until it has nothing
+// left to do.
+func deliverOnly(t *testing.T, h *harness) {
+	t.Helper()
+	for did := true; did; {
+		var err error
+		if did, err = h.chat.Step(h.k.Ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// saidNotPosted counts the replies under report reportID's post saying its
+// attachment will not be posted, giving why.
+func saidNotPosted(h *harness, reportID int64, why string) int {
+	h.t.Helper()
+	n := 0
+	for _, req := range h.srv.Requests("sendMessage") {
+		if strings.HasPrefix(req.Params["text"], "Attachment not posted: "+why) &&
+			strings.Contains(req.Params["reply_parameters"], `"message_id":`+strconv.Itoa(h.head(reportID))) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestPriorityAlertNotHeldByAnUpload: while the automatic post of an
+// attachment uploads (held here by the fake API, as a slow uplink would), a
+// priority alert raised meanwhile is posted at once: uploads run apart from
+// delivery.
+func TestPriorityAlertNotHeldByAnUpload(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+	}
+	h.k.Deliver(image(h.k.Spam("I1", modtest.G1)))
+	h.k.Fire()
+	if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != 1 {
+		t.Fatalf("fetched %d (%v)", n, err)
+	}
+	arrived, release := h.srv.Hold("sendDocument")
+	defer release()
+	ctx, cancel := context.WithCancel(h.k.Ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.chat.Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	select {
+	case <-arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the attachment upload never started")
+	}
+	if err := h.chat.Alert(h.k.Ctx, alert.Alert{Kind: alert.Breaker, Text: "too many removals"}); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); requests(h, "sendMessage", "too many removals") == 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the priority alert waited behind the upload")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestBackingOffUploadsDoNotFillTheQueue: with more uploads failing than one
+// step looks at, an attachment behind them is still posted on the next step.
+func TestBackingOffUploadsDoNotFillTheQueue(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+	}
+	const failing = 10
+	for i := 1; i <= failing+1; i++ {
+		h.k.Deliver(image(h.k.Spam(fmt.Sprintf("I%d", i), modtest.G1)))
+	}
+	h.k.Fire()
+	if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != failing+1 {
+		t.Fatalf("fetched %d (%v), want %d", n, err, failing+1)
+	}
+	// The reports go first, and a minute passes: the uploads alone then fit
+	// inside the first failure's backoff (a minute), with no message budget
+	// wait moving the clock past it.
+	deliverOnly(t, h)
+	h.k.Clock.Advance(time.Minute + time.Second)
+	for i := 0; i < failing; i++ {
+		h.srv.Fail("sendDocument", telegramtest.Reply{Code: 500, Description: "Internal Server Error"})
+	}
+	h.drain()
+	reps := h.k.Reports(ledger.KindAction)
+	if len(reps) != failing+1 {
+		t.Fatalf("%d action reports, want %d", len(reps), failing+1)
+	}
+	if n := len(h.srv.Requests("sendDocument")); n != failing+1 {
+		t.Fatalf("%d uploads, want each of the %d failing ones once and then the last", n, failing)
+	}
+	for i, r := range reps {
+		posted := false
+		for _, m := range h.messages(r.ID) {
+			posted = posted || m.Role == store.RoleAttachment
+		}
+		if want := i == failing; posted != want {
+			t.Fatalf("report %d of %d: attachment posted %v, want %v", i+1, len(reps), posted, want)
+		}
+	}
+}
+
+// TestAttachmentForgottenDuringItsUpload: `member forget` runs while the
+// member's attachment uploads, and its take-down finds nothing posted yet;
+// once the upload lands the post is taken down at once, not left showing. A
+// take-down Telegram fails then is retried (the record queued it), not left
+// for the attachment_show_hours take-down.
+func TestAttachmentForgottenDuringItsUpload(t *testing.T) {
+	for _, failOnce := range []bool{false, true} {
+		t.Run("take-down fails once "+strconv.FormatBool(failOnce), func(t *testing.T) {
+			h := newHarness(t, "")
+			h.k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+				return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+			}
+			h.k.Deliver(image(h.k.Spam("I1", modtest.G1)))
+			h.k.Fire()
+			if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != 1 {
+				t.Fatalf("fetched %d (%v)", n, err)
+			}
+			deliverOnly(t, h)
+			arrived, release := h.srv.Hold("sendDocument")
+			defer release()
+			uploaded := make(chan error, 1)
+			go func() {
+				_, err := h.chat.PostAttachment(h.k.Ctx)
+				uploaded <- err
+			}()
+			select {
+			case <-arrived:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the attachment upload never started")
+			}
+			if _, err := h.k.Store.ForgetMember(h.k.Ctx, []string{string(modtest.Spammer), string(modtest.SpammerPhone)}); err != nil {
+				t.Fatal(err)
+			}
+			h.drain() // the forget's take-down runs while nothing is posted yet
+			if n := len(h.srv.Requests("deleteMessage")); n != 0 {
+				t.Fatalf("%d deletions before the upload landed", n)
+			}
+			deletions := 1
+			if failOnce {
+				h.srv.Fail("deleteMessage", telegramtest.Reply{Code: 500, Description: "Internal Server Error"})
+				deletions = 2
+			}
+			release()
+			if err := <-uploaded; (err != nil) != failOnce {
+				t.Fatalf("upload: %v, want an error %v", err, failOnce)
+			}
+			h.drain()
+			post := attachmentPost(t, h)
+			if post.GoneAt.IsZero() || len(h.srv.Requests("deleteMessage")) != deletions {
+				t.Fatalf("post %+v, %d deletions: want the forgotten member's attachment taken down", post,
+					len(h.srv.Requests("deleteMessage")))
+			}
+			if !strings.Contains(h.logs.String(), "the evidence copy was forgotten during the upload") {
+				t.Fatal("the take-down was not logged")
+			}
+		})
 	}
 }
 
