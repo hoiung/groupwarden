@@ -63,6 +63,21 @@ func Reported(ctx context.Context, tx *sql.Tx, kind, community, subject string, 
 	return n > 0, nil
 }
 
+// ActionReported reports, inside tx, whether a report of kind linked to an
+// action like row (same action, group and member) was written at or after
+// since.
+func ActionReported(ctx context.Context, tx *sql.Tx, kind string, row LedgerRow, since time.Time) (bool, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports r
+	JOIN report_ledger rl ON rl.report_id = r.id JOIN ledger l ON l.id = rl.ledger_id
+WHERE r.kind = ? AND r.created_at >= ? AND l.action = ? AND l.chat = ? AND l.target = ?`,
+		kind, since.UnixMilli(), string(row.Action), row.Chat, row.Target).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("read reports of an action: %w", err)
+	}
+	return n > 0, nil
+}
+
 // AddReport writes r in its own transaction.
 func (s *Store) AddReport(ctx context.Context, r Report, ledgerIDs []int64) (int64, error) {
 	var id int64
