@@ -86,6 +86,11 @@ func (f *MediaFetcher) Fetch(ctx context.Context) (int, error) {
 		}
 		for _, e := range pending {
 			if err := f.fetchOne(ctx, e); err != nil {
+				if errors.Is(err, client.ErrNotConnected) {
+					// Pending stays pending; the supervisor wakes this at Connected.
+					f.Log.Info("attachment downloads wait for the WhatsApp connection", "evidence", e.ID)
+					return n, nil
+				}
 				return n, err
 			}
 			n++
@@ -105,6 +110,14 @@ func (f *MediaFetcher) fetchOne(ctx context.Context, e store.Evidence) error {
 	if errors.Is(err, client.ErrMediaTooLarge) {
 		f.Log.Info("attachment over the size limit; not kept", "evidence", e.ID, "declared_bytes", e.MediaSize, "limit_mb", limitMB)
 		return f.settle(ctx, e.ID, store.MediaTooLarge, "", "", 0)
+	}
+	// A download that never reached WhatsApp, or that the bot's stop cut
+	// short, is not the attachment's failure: it stays pending.
+	if errors.Is(err, client.ErrNotConnected) {
+		return err
+	}
+	if err != nil && ctx.Err() != nil {
+		return ctx.Err()
 	}
 	if err != nil {
 		f.Log.Warn("attachment download failed", "evidence", e.ID, "err", mask.IDs(err.Error()))
