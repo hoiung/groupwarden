@@ -21,9 +21,10 @@ const (
 	StatusTelegramOK   = "tg_ok"          // "1" once Telegram took a message; "0" while it keeps refusing the bot (401/403)
 	StatusTelegramChat = "tg_chat_id"     // the chat ID after Telegram migrated the group (overrides the secrets file)
 	StatusSummaryDay   = "tg_summary_day" // the last UTC day (2006-01-02) the daily summary covered
-	// StatusSummaryParts is "<UTC day>:<n>": n parts of the daily summary
-	// through that day are posted (a retry resumes after them).
-	StatusSummaryParts = "tg_summary_parts"
+	// StatusSummaryUpto is "<UTC day>:<units>": the daily summary through that
+	// day is posted up to that many UTF-16 units of its text (a retry, on any
+	// later day, finishes that summary from there).
+	StatusSummaryUpto = "tg_summary_upto"
 	// The pinned command list: "<chat ID>:<message ID>", the hash of the
 	// text it shows, and "pinned" / "refused" ("" until a pin was tried).
 	StatusTelegramPin      = "tg_pin"
