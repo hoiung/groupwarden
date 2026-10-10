@@ -29,6 +29,8 @@ func requests(h *harness, method, match string) int {
 
 func step(h *harness) { _, _ = h.chat.Step(h.k.Ctx) }
 
+func postAttachment(h *harness) { _, _ = h.chat.PostAttachment(h.k.Ctx) }
+
 func setup(h *harness) { _ = h.chat.Setup(h.k.Ctx) }
 
 // TestPostNotRepeatedWhileItsRecordFails: every post whose record is a store
@@ -79,7 +81,7 @@ func TestPostNotRepeatedWhileItsRecordFails(t *testing.T) {
 		{name: "digest reports sent", table: "reports", run: step, setup: func(t *testing.T, h *harness) { busy(h) },
 			posts:    func(h *harness) int { return requests(h, "sendMessage", "reports while the chat was busy") },
 			recorded: func(t *testing.T, h *harness) { unsentNone(t, h) }},
-		{name: "attachment", table: "tg_messages", run: step,
+		{name: "attachment", table: "tg_messages", run: postAttachment,
 			setup: func(t *testing.T, h *harness) {
 				h.k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
 					return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
