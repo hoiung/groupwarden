@@ -17,6 +17,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/ledger"
+	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
@@ -36,6 +37,59 @@ func status(t *testing.T, k *modtest.Kit, m client.Member, a store.Action, chat 
 		t.Fatalf("%s %s rows: %+v", a, chat, rows)
 	}
 	return rows[0]
+}
+
+// notDoneText is the not_done report for an action on the spammer in group:
+// where, why, and who, for an admin to do it by hand.
+func notDoneText(k *modtest.Kit, what string, group client.JID, why string) string {
+	return "The bot could not " + what + " in " + k.Dir.Label(group) + " (" +
+		pipeline.CommunityLabel(k.Holder.Current().Config, string(modtest.Community)) + "): " + why +
+		". Do it by hand. Member: " + mask.IDs(string(modtest.SpammerPhone)) + "."
+}
+
+// TestRefusedRemovalReportedNotDone: WhatsApp refusing a removal for that
+// member (a per-participant error, not a failed call) fails it for good and
+// tells the admins to do it by hand; the same refusal again within a day (a
+// sweep, or another post, queues it again) is not reported again, and after
+// a day it is.
+func TestRefusedRemovalReportedNotDone(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Fake.Results = map[client.JID]client.MemberStatus{modtest.Spammer: client.MemberFailed,
+		modtest.SpammerPhone: client.MemberFailed}
+	want := notDoneText(k, "remove a member", modtest.G1, "WhatsApp refused it (code 0)")
+	told := func() int {
+		n := 0
+		for _, r := range k.Reports(ledger.KindNotDone) {
+			if r.Text == want && r.Priority {
+				n++
+			}
+		}
+		return n
+	}
+	k.Deliver(k.Spam("M1", modtest.G1))
+	k.Fire()
+	for _, r := range k.Find(modtest.SpammerM, store.ActRemove, modtest.G1) {
+		if r.Status != store.Failed {
+			t.Fatalf("refused removal is %s, want failed", r.Status)
+		}
+	}
+	if n := told(); n != 1 {
+		t.Fatalf("%d not-done reports %q, want 1; all: %+v", n, want, k.Reports(ledger.KindNotDone))
+	}
+	k.Deliver(k.Spam("M2", modtest.G1))
+	k.Fire()
+	if n := len(k.Find(modtest.SpammerM, store.ActRemove, modtest.G1)); n < 2 {
+		t.Fatalf("%d removal rows in the group, want the second post's removal too", n)
+	}
+	if n := told(); n != 1 {
+		t.Fatalf("%d not-done reports after the same refusal again, want still 1", n)
+	}
+	k.Clock.Advance(25 * time.Hour)
+	k.Deliver(k.Spam("M3", modtest.G1))
+	k.Fire()
+	if n := told(); n != 2 {
+		t.Fatalf("%d not-done reports a day later, want 2", n)
+	}
 }
 
 // TestRecheckPaused: a pause holds the actions it covers in the outbox
@@ -274,6 +328,10 @@ func TestBreakerPausesRemovalsNotDeletes(t *testing.T) {
 	if len(al) != 1 || !al[0].Priority || len(al[0].Buttons) != 1 || al[0].Buttons[0] != ledger.ButtonResume {
 		t.Fatalf("breaker alerts %+v", al)
 	}
+	// The removal still queued may be one a report already called done.
+	if held := " 1 queued removal(s) go out only after [Resume]; a report may already say they were done."; !strings.HasSuffix(al[0].Text, held) {
+		t.Fatalf("breaker alert %q, want it to end %q", al[0].Text, held)
+	}
 	if err := k.Exec.Resume(k.Ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -423,6 +481,23 @@ func TestNothingSentWhileDisconnected(t *testing.T) {
 	}
 }
 
+// TestNothingSentBeforeTheGroupListLoads: queued actions wait for the group
+// list (a restart's first connection), since the re-check before each send
+// asks who is an admin now; once it loads they go out.
+func TestNothingSentBeforeTheGroupListLoads(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Deliver(k.Spam("M1", modtest.G1))
+	k.Exec.Directory = &pipeline.Directory{}
+	if n := k.Fire(); n != 0 || len(k.Fake.Calls()) != 0 {
+		t.Fatalf("with no group list: %d settled, calls %v", n, k.Fake.Calls())
+	}
+	k.Exec.Directory = k.Dir
+	k.Fire()
+	if k.Fake.Count("Revoke") != 1 || k.Fake.Count("Remove") == 0 {
+		t.Fatalf("once loaded: calls %v", k.Fake.Calls())
+	}
+}
+
 // TestWakeWhileRunStarts: the inbox worker and the supervisor (at connect)
 // wake the executor and the attachment fetcher from their own goroutines,
 // which can be while Run is starting. Under -race (as CI runs it) this fails
@@ -461,9 +536,8 @@ func TestActionFailingForGoodIsReported(t *testing.T) {
 		t.Fatalf("revoke %s after 8 failures", row.Status)
 	}
 	reps := k.Reports(ledger.KindNotDone)
-	if len(reps) != 1 || !reps[0].Priority || reps[0].Text != "The bot could not delete a message in "+
-		pipeline.CommunityLabel(k.Holder.Current().Config, string(modtest.Community))+
-		": it failed 8 times (internal-server-error). Do it by hand." {
+	if len(reps) != 1 || !reps[0].Priority || reps[0].Text != notDoneText(k, "delete a message", modtest.G1,
+		"it failed 8 times (internal-server-error)") {
 		t.Fatalf("not-done reports %+v", reps)
 	}
 	if r, _, _ := k.Store.Report(k.Ctx, reps[0].ID); r.EvidenceID != row.EvidenceID || r.EvidenceID == 0 {
