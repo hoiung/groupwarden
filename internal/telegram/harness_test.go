@@ -104,7 +104,8 @@ func (h *harness) restart() {
 	h.build()
 }
 
-// drain runs delivery until nothing is left to do.
+// drain runs delivery and attachment posting (each loop's work, in turn)
+// until neither has anything left to do.
 func (h *harness) drain() {
 	h.t.Helper()
 	for i := 0; i < 1000; i++ {
@@ -112,7 +113,11 @@ func (h *harness) drain() {
 		if err != nil {
 			h.t.Fatalf("step %d: %v", i, err)
 		}
-		if !did {
+		posted, err := h.chat.PostAttachment(h.k.Ctx)
+		if err != nil {
+			h.t.Fatalf("attachment step %d: %v", i, err)
+		}
+		if !did && !posted {
 			return
 		}
 	}
