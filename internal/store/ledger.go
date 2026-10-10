@@ -222,6 +222,14 @@ WHERE (scope = 'all' AND ?) OR (scope = 'remove_ban' AND ?)`, allowDelete, allow
 	return time.UnixMilli(at.Int64), at.Valid, nil
 }
 
+// QueuedRemovals counts queued removals and rejections (what a removals-and-
+// bans pause holds).
+func (s *Store) QueuedRemovals(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox WHERE scope = 'remove_ban'`).Scan(&n)
+	return n, err
+}
+
 // OutboxLen counts queued actions (healthcheck prints it).
 func (s *Store) OutboxLen(ctx context.Context) (int, error) {
 	var n int
@@ -531,7 +539,7 @@ func (s *Store) HeldBan(ctx context.Context, targets []string, community string)
 }
 
 // HeldBans lists every ban a pause holds, oldest first (`ban list` shows them
-// beside the ban list: they apply after [Resume]).
+// beside the ban list: they apply once the pause ends).
 func (s *Store) HeldBans(ctx context.Context) ([]LedgerRow, error) {
 	return s.ledgerRows(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE `+heldBan+` ORDER BY id`)
 }
