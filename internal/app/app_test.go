@@ -223,15 +223,33 @@ func TestFatalStopsAndAlerts(t *testing.T) {
 	}
 }
 
+// heldNote is how a pause alert ends with one removal queued.
+const heldNote = " 1 queued removal(s) go out only after [Resume]; a report may already say they were done."
+
+// queueRemoval queues one removal before the bot starts (no executor runs in
+// these tests, so it stays queued).
+func queueRemoval(t *testing.T) func(*App) {
+	return func(a *App) {
+		if err := a.Store.Write(context.Background(), func(tx *sql.Tx) error {
+			_, _, err := store.InsertLedger(context.Background(), tx, store.LedgerRow{Action: store.ActRemove,
+				Chat: string(modtest.G1), Target: string(modtest.Other1), TriggerID: "queued", Community: string(modtest.Community),
+				Mode: store.ModeEnforce}, a.Clock.Now())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestTempBanWaitsForExpiryThenPaused(t *testing.T) {
-	h := start(t, &clienttest.Fake{}, Settings{})
+	h := startWith(t, &clienttest.Fake{}, Settings{}, queueRemoval(t))
 	ctx := context.Background()
 	h.fake.Emit(client.Lifecycle{Kind: client.TemporaryBan, Detail: "101: too many messages", Expiry: 2 * time.Hour})
 	h.eventually("temp ban alert", func() bool { return len(h.rec.OfKind(alert.TemporaryBan)) == 1 })
 	al := h.rec.OfKind(alert.TemporaryBan)[0]
 	if !al.Priority || !strings.Contains(al.Text, "2h0m0s") || !strings.Contains(al.Text, "PAUSED") ||
-		!slices.Equal(al.Buttons, []string{ledger.ButtonResume}) {
-		t.Fatalf("alert %+v, want priority with the expiry, the pause and [Resume]", al)
+		!strings.HasSuffix(al.Text, heldNote) || !slices.Equal(al.Buttons, []string{ledger.ButtonResume}) {
+		t.Fatalf("alert %+v, want priority with the expiry, the pause, the queued removal and [Resume]", al)
 	}
 	if h.fake.Count("Disconnect") < 1 {
 		t.Fatal("bot did not disconnect for the ban")
@@ -287,7 +305,7 @@ func TestBackoffCapped(t *testing.T) {
 
 func TestExtraCompanionPauses(t *testing.T) {
 	ctx := context.Background()
-	h := start(t, &clienttest.Fake{}, Settings{CompanionCheckEvery: time.Hour})
+	h := startWith(t, &clienttest.Fake{}, Settings{CompanionCheckEvery: time.Hour}, queueRemoval(t))
 	h.eventually("startup device list", func() bool { return h.fake.Count("LinkedDevices") >= 1 })
 	if paused, _ := h.st.PausedFor(ctx, store.ScopeRemoveBan); paused {
 		t.Fatal("paused with no extra device")
@@ -296,7 +314,7 @@ func TestExtraCompanionPauses(t *testing.T) {
 	h.clock.Advance(time.Hour)
 	h.eventually("companion alert", func() bool { return len(h.rec.OfKind(alert.ExtraCompanion)) == 1 })
 	if a := h.rec.OfKind(alert.ExtraCompanion)[0]; !a.Priority || !strings.Contains(a.Text, "[Resume]") ||
-		!slices.Equal(a.Buttons, []string{ledger.ButtonResume}) {
+		!strings.HasSuffix(a.Text, heldNote) || !slices.Equal(a.Buttons, []string{ledger.ButtonResume}) {
 		t.Fatalf("alert %+v", a)
 	}
 	if paused, why := h.st.PausedFor(ctx, store.ScopeRemoveBan); !paused || !strings.HasPrefix(why, store.SourceExtraCompanion) {
