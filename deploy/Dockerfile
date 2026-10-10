@@ -4,7 +4,7 @@
 # Mount the config directory at /config (config.yaml, secrets file) and a
 # volume for data_dir at /data; pair once with `docker run -it ... pair`.
 
-FROM golang:1.27.1 AS build
+FROM golang:1.27.2 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
