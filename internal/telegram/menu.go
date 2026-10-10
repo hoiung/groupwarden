@@ -117,12 +117,7 @@ func (c *Chat) setupLoop(ctx context.Context) {
 }
 
 // wakeSetup asks setupLoop to run again (the chat moved).
-func (c *Chat) wakeSetup() {
-	select {
-	case c.setupWake <- struct{}{}:
-	default:
-	}
-}
+func (c *Chat) wakeSetup() { poke(c.setupWake) }
 
 // Setup sets the command menu for the admin chat and makes sure the command
 // list is posted, current and pinned there. It returns errPinRefused when the
