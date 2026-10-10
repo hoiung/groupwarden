@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -367,6 +368,59 @@ func TestSweepAfterRepair(t *testing.T) {
 	}
 }
 
+// TestSweepAfterTheLibrarysOwnReconnect: a connection the library opens by
+// itself (its reconnect after a 515 stream error: no Disconnected, no
+// connect by the supervisor) still makes its sweep wait for the offline
+// backlog.
+func TestSweepAfterTheLibrarysOwnReconnect(t *testing.T) {
+	k := modtest.New(t, "")
+	s := newSweep(k)
+	stop := startApp(t, k, s, nil)
+	defer stop()
+	waitFor(t, "the sweep at connect", func() bool { return sweeps(k) == 1 })
+	begun, waits := k.Fake.Count("SubGroups"), k.Logged(waitingForBacklog)
+	k.Fake.Emit(client.Lifecycle{Kind: client.Connected})
+	waitFor(t, "the sweep after the library's reconnect waiting", func() bool { return k.Logged(waitingForBacklog) == waits+1 })
+	if n := k.Logged("WhatsApp reconnected by itself; the sweep waits for its offline backlog"); n != 1 {
+		t.Fatalf("%d log lines for the library's reconnect", n)
+	}
+	if n := k.Fake.Count("SubGroups"); n != begun {
+		t.Fatalf("a sweep began before WhatsApp delivered the offline backlog (%d, was %d)", n, begun)
+	}
+	k.Fake.Emit(client.Lifecycle{Kind: client.CaughtUp})
+	waitFor(t, "the sweep after the library's reconnect", func() bool { return sweeps(k) == 2 })
+}
+
+// TestNoActionBeforeTheGroupListLoads: at a restart, actions left queued
+// wait for the group list even once WhatsApp is connected (the re-check
+// before each send asks who is an admin now), and go out as soon as a list
+// loads.
+func TestNoActionBeforeTheGroupListLoads(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Deliver(k.Spam("M1", modtest.G1))
+	freshDirectory(k)
+	k.Fake.FailNext("JoinedGroups", errors.New("info query timed out"))
+	stop := startApp(t, k, newSweep(k), k.Exec)
+	defer stop()
+	waitFor(t, "the failed group list", func() bool { return k.Logged("could not list groups") == 1 })
+	k.Clock.Advance(30 * time.Second) // the next tick lists the groups again
+	waitFor(t, "the queued delete", func() bool { return k.Fake.Count("Revoke") == 1 })
+	lists, listed, sent := 0, -1, -1 // listed: the call that loaded the list (the second)
+	for i, c := range k.Fake.Calls() {
+		if strings.HasPrefix(c, "JoinedGroups") {
+			if lists++; lists == 2 {
+				listed = i
+			}
+		}
+		if strings.HasPrefix(c, "Revoke") && sent < 0 {
+			sent = i
+		}
+	}
+	if listed < 0 || sent < listed {
+		t.Fatalf("an action went out before a group list loaded: %v", k.Fake.Calls())
+	}
+}
+
 // freshDirectory gives the kit an empty group directory, as `run` has when
 // it starts: nothing is decided until a group list loads.
 func freshDirectory(k *modtest.Kit) {
@@ -403,11 +457,18 @@ func TestConnectSweepWaitsForOfflineBacklog(t *testing.T) {
 	}
 	k.Fake.Emit(client.Lifecycle{Kind: client.CaughtUp, Detail: "1 offline events"})
 	waitFor(t, "the sweep waiting for the worker", func() bool { return k.Logged(waitingForWorker) == 1 })
-	for range 3 { // the sweep checks the inbox every second
-		time.Sleep(20 * time.Millisecond)
+	// The sweep checks the inbox every second: each check that finds the
+	// backlog undecided arms the next one instead of sweeping.
+	nextCheck := func() {
+		t.Helper()
+		at := k.Clock.Now().Add(time.Second)
+		waitFor(t, "the sweep's next inbox check", func() bool { return slices.Contains(k.Clock.Pending(), at) })
+	}
+	for range 3 {
+		nextCheck()
 		k.Clock.Advance(time.Second)
 	}
-	time.Sleep(50 * time.Millisecond)
+	nextCheck()
 	if n := k.Fake.Count("SubGroups"); n != 0 {
 		t.Fatalf("the sweep began before the worker decided the offline backlog: %v", k.Fake.Calls())
 	}
@@ -504,12 +565,14 @@ func TestSweepRunsWhenWhatsAppNeverSaysCaughtUp(t *testing.T) {
 	defer stop()
 	waitFor(t, "the list at connect", func() bool { return k.Fake.Count("JoinedGroups") == 1 })
 	waitFor(t, "the sweep waiting for the backlog", func() bool { return k.Logged(waitingForBacklog) == 1 })
-	k.Clock.Advance(9 * time.Minute)
-	time.Sleep(50 * time.Millisecond)
+	// The bounded wait is armed (before that log line) for ten minutes on.
+	if at := k.Clock.Now().Add(10 * time.Minute); !slices.Contains(k.Clock.Pending(), at) {
+		t.Fatalf("pending timers %v, want the wait for the offline backlog due at %v", k.Clock.Pending(), at)
+	}
 	if n := k.Fake.Count("SubGroups"); n != 0 {
 		t.Fatalf("swept %d times before the wait for the offline backlog ran out", n)
 	}
-	k.Clock.Advance(time.Minute)
+	k.Clock.Advance(10 * time.Minute)
 	waitFor(t, "the sweep after the wait", func() bool { return sweeps(k) >= 1 })
 }
 
@@ -779,6 +842,29 @@ func TestAutoJoinAbsentLinkedGroups(t *testing.T) {
 		if strings.Contains(c, string(modtest.GB)) {
 			t.Fatalf("joined a standalone group: %v", c)
 		}
+	}
+}
+
+// TestAutoJoinNotSpentWithoutAConnection: a join that never reached WhatsApp
+// (the connection dropped during the sweep) is not a refusal: the bot tries
+// that group by itself again at the next sweep.
+func TestAutoJoinNotSpentWithoutAConnection(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Fake.SetLinked(modtest.Community, []client.GroupRef{{JID: modtest.G1, Name: "general"},
+		{JID: modtest.G2, Name: "jobs"}, {JID: G3, Name: "events"}})
+	k.Fake.FailNext("JoinLinkedGroup", fmt.Errorf("%w: websocket not connected", client.ErrNotConnected))
+	s := newSweep(k)
+	s.run(t)
+	rows, err := k.Store.CoverageRows(k.Ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rows[string(G3)]; r.JoinTried {
+		t.Fatalf("events row %+v: a join that never reached WhatsApp counted as tried", r)
+	}
+	s.run(t)
+	if n := k.Fake.Count("JoinLinkedGroup " + string(modtest.Community) + " " + string(G3)); n != 2 {
+		t.Fatalf("asked %d times, want again at the next sweep: %v", n, k.Fake.Calls())
 	}
 }
 
