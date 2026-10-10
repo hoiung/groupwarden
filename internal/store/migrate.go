@@ -201,6 +201,12 @@ ALTER TABLE tg_messages ADD COLUMN part INTEGER NOT NULL DEFAULT 0;
 	`
 ALTER TABLE reports ADD COLUMN action TEXT NOT NULL DEFAULT '';
 `,
+	// 7: how far into its report's content a posted part reached, so a retry
+	// posts the follow-ups from there even when the report's header renders
+	// differently by then.
+	`
+ALTER TABLE tg_messages ADD COLUMN upto INTEGER NOT NULL DEFAULT 0;
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
