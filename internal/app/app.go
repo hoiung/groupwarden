@@ -402,11 +402,16 @@ func (a *App) supervise(ctx context.Context) error {
 	var bannedUntil time.Time
 	nextCompanionCheck := time.Time{}
 
+	// ownConnect: the supervisor started the connection that the next
+	// Connected reports. A Connected without it is one the library opened by
+	// itself (its reconnect after a 515 stream error).
+	ownConnect := false
 	connect := func() {
 		// Re-armed before the connection starts, not at Connected: the
 		// library does not order Connected and CaughtUp, so a CaughtUp that
 		// overtakes its own Connected still releases this connection's sweep.
 		a.awaitingBacklog()
+		ownConnect = true
 		if err := a.Adapter.Connect(ctx); err != nil {
 			d := b.Next()
 			a.Log.Warn("connect failed; retrying", "in", d, "err", mask.IDs(err.Error()))
@@ -481,13 +486,19 @@ func (a *App) supervise(ctx context.Context) error {
 					b.Reset()
 					bannedUntil = time.Time{}
 					a.mon.onConnected(now)
-					a.Log.Info("connected to WhatsApp")
-					if a.Executor != nil {
-						a.Executor.Wake() // the actions that waited for the connection
+					if !ownConnect {
+						// No connect() armed this connection's backlog wait.
+						a.Log.Info("WhatsApp reconnected by itself; the sweep waits for its offline backlog")
+						a.awaitingBacklog()
 					}
+					ownConnect = false
+					a.Log.Info("connected to WhatsApp")
 					nextCompanionCheck = now.Add(a.settings().CompanionCheckEvery)
 					a.Directory.SetSelf(a.Adapter.Self())
 					a.refreshDirectory(ctx)
+					// After the list: the actions and downloads that waited for
+					// the connection re-check against it.
+					a.wakeWorkers()
 					a.checkCompanions(ctx)
 					a.requestSweep()
 					a.writeStatus(ctx)
@@ -514,8 +525,8 @@ func (a *App) supervise(ctx context.Context) error {
 						Reason: "WhatsApp temporarily banned the bot number: " + l.Detail, Since: now})
 					a.alert(ctx, alert.Alert{Kind: alert.TemporaryBan, Priority: true, Text: fmt.Sprintf(
 						"WhatsApp temporarily banned the bot number (%s). It stays disconnected until %s (in %s), then reconnects with removals and bans PAUSED until an admin presses [Resume]; deletes continue.",
-						l.Detail, bannedUntil.UTC().Format("2006-01-02 15:04 MST"), wait.Round(time.Minute)),
-						Buttons: []string{ledger.ButtonResume}})
+						l.Detail, bannedUntil.UTC().Format("2006-01-02 15:04 MST"), wait.Round(time.Minute)) +
+						pipeline.HeldRemovalsNote(ctx, a.Store, a.Log), Buttons: []string{ledger.ButtonResume}})
 				case l.Kind.Fatal():
 					a.mon.onDisconnected(now)
 					a.Adapter.Disconnect()
@@ -589,8 +600,8 @@ func (a *App) checkCompanions(ctx context.Context) {
 	a.pause(ctx, store.Pause{Source: store.SourceExtraCompanion, Scope: store.ScopeRemoveBan, Reason: reason, Since: now})
 	a.alert(ctx, alert.Alert{Kind: alert.ExtraCompanion, Priority: true, Text: reason +
 		" (new: " + mask.IDs(strings.Join(fresh, ", ")) + "). Removals and bans are PAUSED; deletes continue. " +
-		"If you linked it yourself press [Resume]; if not, unlink it on the bot phone now.",
-		Buttons: []string{ledger.ButtonResume}})
+		"If you linked it yourself press [Resume]; if not, unlink it on the bot phone now." +
+		pipeline.HeldRemovalsNote(ctx, a.Store, a.Log), Buttons: []string{ledger.ButtonResume}})
 	// Marked last: a stop before this repeats the pause and the alert at the
 	// next check instead of losing them.
 	a.mark(ctx, store.StatusCompanionsSeen, strings.Join(current, ","))
@@ -815,7 +826,20 @@ func (a *App) refreshDirectory(ctx context.Context) bool {
 		return false
 	}
 	a.dirAlerted = false
+	// The first list a process loads releases the actions waiting for it.
+	a.wakeWorkers()
 	return true
+}
+
+// wakeWorkers asks the executor and the attachment fetcher to look again now
+// (they wait for the connection and the group list).
+func (a *App) wakeWorkers() {
+	if a.Executor != nil {
+		a.Executor.Wake()
+	}
+	if a.Media != nil {
+		a.Media.Wake()
+	}
 }
 
 // writeStatus records the run state for `healthcheck` and other commands.
