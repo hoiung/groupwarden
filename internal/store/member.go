@@ -14,7 +14,7 @@ type Forgotten struct {
 	ReportEdits int64    // reports queued for text stripping / attachment deletion
 	Files       []string // attachment files to delete (the caller removes them)
 	KeptBans    []Ban    // active bans are kept
-	HeldBans    int64    // bans a pause holds are kept too: they apply after [Resume]
+	HeldBans    int64    // bans a pause holds are kept too: they apply once the pause ends
 }
 
 // ForgetMember deletes everything groupwarden.db holds about the member known
