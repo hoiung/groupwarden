@@ -121,7 +121,7 @@ func TestSettleReportsOnlyAChange(t *testing.T) {
 		rep            *store.Report
 		reports, wakes int
 	}{{"unchanged", false, rep, 0, 0}, {"changed, nothing to report", true, nil, 0, 0}, {"changed", true, rep, 1, 1}} {
-		got, err := k.Exec.Settle(k.Ctx, row.ID, func(*sql.Tx, time.Time) (bool, error) { return c.changed, nil }, c.rep)
+		got, err := k.Exec.Settle(k.Ctx, row, func(*sql.Tx, time.Time) (bool, error) { return c.changed, nil }, c.rep)
 		if err != nil || got != c.changed {
 			t.Fatalf("%s: changed %v (%v)", c.name, got, err)
 		}
