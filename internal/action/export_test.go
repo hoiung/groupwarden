@@ -10,7 +10,7 @@ import (
 
 // Settle writes a row's change and the report about it together, as a step
 // does.
-func (x *Executor) Settle(ctx context.Context, rowID int64, change func(tx *sql.Tx, now time.Time) (bool, error),
+func (x *Executor) Settle(ctx context.Context, row store.LedgerRow, change func(tx *sql.Tx, now time.Time) (bool, error),
 	rep *store.Report) (bool, error) {
-	return x.settle(ctx, rowID, change, rep)
+	return x.settle(ctx, row, change, rep)
 }
