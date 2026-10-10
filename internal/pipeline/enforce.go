@@ -371,6 +371,22 @@ func pausedScope(ctx context.Context, tx *sql.Tx, st *store.Store) store.Scope {
 	return ""
 }
 
+// HeldRemovalsNote is the sentence a removals-and-bans pause alert adds for
+// the removals and rejections it now holds: a report written before the pause
+// may already say they were done ("" when none is queued, or when the count
+// cannot be read, which is logged).
+func HeldRemovalsNote(ctx context.Context, st *store.Store, log *slog.Logger) string {
+	n, err := st.QueuedRemovals(ctx)
+	if err != nil {
+		log.Error("could not count the queued removals for the pause alert", "err", err)
+		return ""
+	}
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" %d queued removal(s) go out only after [Resume]; a report may already say they were done.", n)
+}
+
 // onceUnpaused says when a removal (or rejection) happens: at once, or once
 // the pause holding it ends (every pause holds removals).
 func onceUnpaused(paused store.Scope, done string) string {
@@ -423,7 +439,8 @@ func (e *Enforcer) ResolveBans(ctx context.Context) error {
 		if err == nil {
 			err = errors.New("WhatsApp returned no LID")
 		}
-		if errors.Is(err, client.ErrRateLimited) {
+		// WhatsApp gave no answer about the number: the next sweep asks again.
+		if errors.Is(err, client.ErrRateLimited) || errors.Is(err, client.ErrNotConnected) {
 			return err
 		}
 		e.Log.Warn("ban phone number not resolved to a LID", "phone", mask.IDs(b.Phone), "err", mask.IDs(err.Error()))
