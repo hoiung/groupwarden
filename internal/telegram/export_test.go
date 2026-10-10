@@ -3,7 +3,9 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/go-telegram/bot/models"
@@ -28,10 +30,21 @@ func (c *Chat) SetPinRetry(d time.Duration)   { c.pinRetry = d }
 
 const MaxUnits = maxUnits
 
-// RequestTimeout is the timeout of the client the bot's default HTTP client
-// sends a request for method with (a URL shaped as the library makes it).
+// PostAttachment runs one try of uploadLoop's work.
+func (c *Chat) PostAttachment(ctx context.Context) (bool, error) { return c.postAttachment(ctx) }
+
+// RequestTimeout is the timeout of the client a chat built by New with no
+// Options.HTTPClient (as the bot runs) sends a request for method with (a URL
+// shaped as the library makes it).
 func RequestTimeout(method string) time.Duration {
-	h := newHTTPClient()
+	c, err := New(Options{Token: strconv.Itoa(1) + ":x"}, &Chat{}) // secret-allow (built at run time; never sent)
+	if err != nil {
+		panic(err)
+	}
+	h, ok := c.client.(httpClient)
+	if !ok {
+		panic(fmt.Sprintf("the bot's client is a %T, not the package's httpClient", c.client))
+	}
 	var used time.Duration
 	for _, c := range []*http.Client{h.requests, h.uploads} {
 		c.Transport = roundTrip(func(*http.Request) (*http.Response, error) {
