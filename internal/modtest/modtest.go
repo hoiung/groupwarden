@@ -116,6 +116,18 @@ func (c *Clock) After(d time.Duration) <-chan time.Time {
 	return ch
 }
 
+// Pending lists when every After not yet fired is due, so a test can see a
+// timer armed, and for when, instead of sleeping to see nothing happen.
+func (c *Clock) Pending() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]time.Time, len(c.waiters))
+	for i, w := range c.waiters {
+		out[i] = w.at
+	}
+	return out
+}
+
 // move advances the clock and fires every After now due (c.mu held).
 func (c *Clock) move(d time.Duration) {
 	c.now = c.now.Add(d)
