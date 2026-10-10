@@ -2,6 +2,7 @@ package pipeline_test
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/modtest"
+	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -401,6 +403,36 @@ func TestPhoneToLIDFailureReported(t *testing.T) {
 	}
 }
 
+// TestBanLookupNotFailedWhenWhatsAppCannotAnswer: a lookup WhatsApp did not
+// answer (rate limit, or no connection) is no answer about the number: the
+// ban is not marked unresolved or reported, and the next sweep looks it up.
+func TestBanLookupNotFailedWhenWhatsAppCannotAnswer(t *testing.T) {
+	for name, cause := range map[string]error{"rate limited": client.ErrRateLimited, "not connected": client.ErrNotConnected} {
+		t.Run(name, func(t *testing.T) {
+			k := modtest.New(t, "")
+			m := client.Member{Phone: "447700900456@s.whatsapp.net"}
+			k.Ban(m)
+			k.Fake.FailNext("ResolvePhoneToLID", fmt.Errorf("usync: %w", cause))
+			if err := k.Enforcer.ResolveBans(k.Ctx); !errors.Is(err, cause) {
+				t.Fatalf("resolve: %v, want %v", err, cause)
+			}
+			if b, ok, _ := k.Store.FindBan(k.Ctx, m.IDs(), ""); !ok || b.LIDFailed {
+				t.Fatalf("ban %+v, want it still to be looked up", b)
+			}
+			if n := len(k.Reports(ledger.KindLIDUnresolved)); n != 0 {
+				t.Fatalf("%d unresolved reports", n)
+			}
+			k.Fake.LIDs = map[client.JID]client.JID{m.Phone: modtest.Other2}
+			if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
+				t.Fatal(err)
+			}
+			if b, ok, _ := k.Store.FindBan(k.Ctx, []string{string(modtest.Other2)}, ""); !ok || b.Phone != string(m.Phone) {
+				t.Fatalf("the next sweep did not resolve it: %+v", b)
+			}
+		})
+	}
+}
+
 // TestLIDFailureReportedOncePerPhone: a phone number banned in two scopes is
 // looked up once and reported once; a ban lifted while its lookup runs is not
 // reported (there is nothing left to keep on the phone number).
@@ -514,5 +546,27 @@ func TestUnaddressableSenderPostDeleted(t *testing.T) {
 	k.Fire()
 	if !k.Banned(modtest.SpammerM, "") || removed(k, modtest.G1, modtest.Spammer) != 1 {
 		t.Fatalf("the spam behind it was not actioned: calls %v", k.Fake.Calls())
+	}
+}
+
+// TestHeldRemovalsNote: a pause alert's note counts the queued removals, not
+// the deletes (one spam post queues a delete and a removal from the community
+// and from each of the spammer's two groups), and says nothing when none is
+// queued.
+func TestHeldRemovalsNote(t *testing.T) {
+	k := modtest.New(t, "")
+	if got := pipeline.HeldRemovalsNote(k.Ctx, k.Store, k.Log); got != "" {
+		t.Fatalf("note with nothing queued: %q, want none", got)
+	}
+	k.Deliver(k.Spam("M1", modtest.G1))
+	want := " 3 queued removal(s) go out only after [Resume]; a report may already say they were done."
+	if got := pipeline.HeldRemovalsNote(k.Ctx, k.Store, k.Log); got != want {
+		var rows []string
+		for _, g := range []client.JID{modtest.Community, modtest.G1, modtest.G2, modtest.GB} {
+			for _, r := range k.Find(modtest.SpammerM, store.ActRemove, g) {
+				rows = append(rows, fmt.Sprintf("%s %s %s %s", r.Action, r.Chat, r.Target, r.Status))
+			}
+		}
+		t.Fatalf("note %q, want %q; removal rows %v", got, want, rows)
 	}
 }
