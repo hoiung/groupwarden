@@ -124,7 +124,7 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 			return exitFail
 		}
 		for _, r := range held {
-			fmt.Fprintf(e.stdout, "%s scope=%s held by a pause (applies after [Resume]) since=%s reason=%q\n", r.Target, r.Chat,
+			fmt.Fprintf(e.stdout, "%s scope=%s held by a pause (applies once the pause ends) since=%s reason=%q\n", r.Target, r.Chat,
 				r.CreatedAt.UTC().Format(time.RFC3339), r.Reason)
 		}
 		fmt.Fprintf(e.stdout, "%d ban(s)\n", len(bans))
@@ -171,7 +171,7 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		p.Ban, p.BanEnforce, p.Reason = []string{scope}, true, "added with the ban command"
 		p.Reports = []store.Report{{Kind: ledger.KindBanCLI, Community: scope, Text: "A ban was added with the ban command."}}
 	case "remove":
-		// A ban a pause holds is lifted too (it would apply after [Resume]).
+		// A ban a pause holds is lifted too (it would apply once the pause ends).
 		_, banned, err := st.FindBan(ctx, m.IDs(), community)
 		if err == nil && !banned {
 			banned, err = st.HeldBan(ctx, m.IDs(), community)
@@ -413,7 +413,7 @@ func (e *env) memberForget(ctx context.Context, st *store.Store, session *store.
 			b.CreatedAt.UTC().Format("2006-01-02"), b.Member)
 	}
 	if f.HeldBans > 0 {
-		fmt.Fprintf(e.stdout, "kept: %d ban(s) a pause holds: they apply after [Resume] like an active ban; "+
+		fmt.Fprintf(e.stdout, "kept: %d ban(s) a pause holds: they apply once the pause ends, like an active ban; "+
 			"lift them with `groupwarden ban remove` first if they should go\n", f.HeldBans)
 	}
 	return exitOK
