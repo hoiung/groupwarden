@@ -14,7 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  STATICCHECK_VERSION: v0.8.1
+  # A master commit (2026-10-09): release v0.8.1 cannot read Go 1.27.2's
+  # export data. Move back to a release once one can.
+  STATICCHECK_VERSION: v0.7.0-0.dev.0.20261009230814-452d5bb86b45
   GOSEC_VERSION: v2.29.0
   GOVULNCHECK_VERSION: v1.8.0
 
