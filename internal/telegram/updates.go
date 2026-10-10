@@ -255,6 +255,9 @@ func (c *Chat) show(ctx context.Context, r store.Report) string {
 		c.Log.Error("read evidence", "report", r.ID, "err", err)
 		return "Could not read the evidence copy."
 	}
+	if ok && ev.MediaState == store.MediaFailed && ev.MediaPath != "" {
+		return "The attachment could not be posted: " + ev.MediaError
+	}
 	if !ok || ev.MediaState != store.MediaSaved {
 		return "The attachment is no longer kept (the evidence copy was purged, forgotten or never saved)."
 	}
