@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -158,6 +159,12 @@ func (s *Sweep) autoJoin(ctx context.Context, res *Result, lists []listing, prev
 				return err
 			})
 			res.Joins++
+			if errors.Is(err, client.ErrNotConnected) {
+				// Never reached WhatsApp: not tried, so the next sweep asks again.
+				s.Log.Warn("sweep: self-joins wait for the WhatsApp connection", "community", mask.IDs(l.community),
+					"group", mask.IDs(string(r.JID)))
+				return out
+			}
 			if err != nil {
 				jr.err = mask.IDs(err.Error())
 				s.Log.Warn("sweep: could not join a linked group by itself", "community", mask.IDs(l.community),
