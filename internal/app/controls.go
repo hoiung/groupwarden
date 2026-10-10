@@ -90,17 +90,18 @@ func banReply(res pipeline.Banned, reportID int64, by telegram.Actor, message bo
 			parts = append(parts, "the message is being deleted")
 		}
 	}
-	if res.Paused != "" {
+	who := mask.IDs(res.Member.Key())
+	switch {
+	case res.Shadow: // no ban is applied and nothing is sent, paused or not
+		parts = append(parts, fmt.Sprintf("%s would be removed from %d group(s) and banned, but the community is in "+
+			"shadow mode: this is recorded only, nothing is sent", who, res.Removals))
+	case res.Paused != "":
 		parts = append(parts, fmt.Sprintf("%s is banned; their removal from %d group(s) waits for the pause to end",
-			mask.IDs(res.Member.Key()), res.Removals))
-	} else {
-		parts = append(parts, fmt.Sprintf("%s is removed from %d group(s) and banned", mask.IDs(res.Member.Key()), res.Removals))
+			who, res.Removals))
+	default:
+		parts = append(parts, fmt.Sprintf("%s is removed from %d group(s) and banned", who, res.Removals))
 	}
-	text := fmt.Sprintf("Banned by %s (#%d): %s.", by.Name, reportID, strings.Join(parts, "; "))
-	if res.Shadow {
-		text += " The community is in shadow mode: this is recorded only, nothing is sent."
-	}
-	return text + fmt.Sprintf(" To undo: /unban #%d", reportID)
+	return fmt.Sprintf("Banned by %s (#%d): %s. To undo: /unban #%d", by.Name, reportID, strings.Join(parts, "; "), reportID)
 }
 
 func (c controls) Resume(ctx context.Context, by telegram.Actor) (string, error) {
@@ -227,7 +228,7 @@ func (a *App) statusText(ctx context.Context) (string, error) {
 	}
 	fmt.Fprintf(&b, "Bans: %d", len(bans))
 	if len(held) > 0 {
-		fmt.Fprintf(&b, " (+%d held by a pause: they apply after [Resume])", len(held))
+		fmt.Fprintf(&b, " (+%d held by a pause: they apply once the pause ends)", len(held))
 	}
 	fmt.Fprintf(&b, "; queued actions: %d; stale ledger rows (queued over %s): %d\n", queued, staleAfter, stale)
 	var cov reconcile.Coverage
