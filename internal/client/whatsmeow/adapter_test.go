@@ -763,3 +763,55 @@ func TestResolvePhoneToLID(t *testing.T) {
 		t.Fatalf("no LID known: %v", err)
 	}
 }
+
+// TestEveryCallReportsNotConnected: whichever WhatsApp call is made with no
+// connection, its caller gets client.ErrNotConnected, so it waits for the
+// connection instead of settling a download, a ban lookup or a join as
+// failed for good.
+func TestEveryCallReportsNotConnected(t *testing.T) {
+	ctx := context.Background()
+	raw, err := proto.Marshal(&waE2E.Message{ImageMessage: &waE2E.ImageMessage{DirectPath: ps("/v/img")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, c := client.JID(groupJID.String()), client.JID("99999000000333@g.us")
+	members := []client.JID{client.JID(spammer.String())}
+	calls := map[string]func(a *Adapter) error{
+		"JoinedGroups": func(a *Adapter) error { _, err := a.JoinedGroups(ctx); return err },
+		"GroupInfo":    func(a *Adapter) error { _, err := a.GroupInfo(ctx, g); return err },
+		"SubGroups":    func(a *Adapter) error { _, err := a.SubGroups(ctx, c); return err },
+		"JoinRequests": func(a *Adapter) error { _, err := a.JoinRequests(ctx, g); return err },
+		"Revoke":       func(a *Adapter) error { return a.Revoke(ctx, g, members[0], "M1") },
+		"Remove":       func(a *Adapter) error { _, err := a.Remove(ctx, g, members); return err },
+		"RejectJoinRequests": func(a *Adapter) error {
+			_, err := a.RejectJoinRequests(ctx, g, members)
+			return err
+		},
+		"JoinWithLink":    func(a *Adapter) error { _, _, err := a.JoinWithLink(ctx, "INVITECODE"); return err },
+		"JoinLinkedGroup": func(a *Adapter) error { _, _, err := a.JoinLinkedGroup(ctx, c, g); return err },
+		"InviteInfo":      func(a *Adapter) error { _, _, err := a.InviteInfo(ctx, "INVITECODE"); return err },
+		"DownloadMedia": func(a *Adapter) error {
+			_, _, _, err := a.DownloadMedia(ctx, &client.Message{Media: &client.Media{Kind: "image", Raw: raw}}, 1<<20)
+			return err
+		},
+		"LinkedDevices": func(a *Adapter) error { _, err := a.LinkedDevices(ctx); return err },
+		"ResolvePhoneToLID": func(a *Adapter) error {
+			_, err := a.ResolvePhoneToLID(ctx, client.JID(spammerPN.String()))
+			return err
+		},
+	}
+	for name, call := range calls {
+		f := &fakeWA{down: true}
+		if err := call(newTestAdapter(t, f, nil)); !errors.Is(err, client.ErrNotConnected) {
+			t.Errorf("%s with no connection: %v, want client.ErrNotConnected", name, err)
+		}
+		if len(f.calls) == 0 {
+			t.Errorf("%s made no call to the library", name)
+		}
+	}
+	// The connection lost between a join and its membership check.
+	f := &fakeWA{infoErr: fmt.Errorf("failed to send node: %w", wm.ErrNotConnected)}
+	if _, _, err := newTestAdapter(t, f, nil).JoinWithLink(ctx, "INVITECODE"); !errors.Is(err, client.ErrNotConnected) {
+		t.Errorf("JoinWithLink with the connection lost after the join: %v, want client.ErrNotConnected", err)
+	}
+}
