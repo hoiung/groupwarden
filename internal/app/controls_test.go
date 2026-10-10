@@ -31,6 +31,10 @@ func TestBanReplySaysWhatWasDone(t *testing.T) {
 			"the message is deleted once the pause ends; " + m + " is banned; their removal from 3 group(s) waits for the pause to end."},
 		{"too old", pipeline.Banned{Member: member, TooOld: true, Removals: 1},
 			"the message is older than act_on_replay_max_age, so it stays; " + m + " is removed from 1 group(s) and banned."},
+		{"shadow mode", pipeline.Banned{Member: member, Removals: 2, Shadow: true},
+			m + " would be removed from 2 group(s) and banned, but the community is in shadow mode: this is recorded only, nothing is sent."},
+		{"shadow mode while paused", pipeline.Banned{Member: member, Removals: 2, Shadow: true, Paused: store.ScopeRemoveBan},
+			m + " would be removed from 2 group(s) and banned, but the community is in shadow mode: this is recorded only, nothing is sent."},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
