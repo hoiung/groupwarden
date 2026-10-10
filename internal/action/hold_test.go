@@ -129,9 +129,8 @@ func TestFullPauseOutlastsTheDeleteWindow(t *testing.T) {
 		t.Fatalf("calls %v, want the removal and no delete", k.Fake.Calls())
 	}
 	reps := k.Reports(ledger.KindNotDone)
-	if len(reps) != 1 || !reps[0].Priority || reps[0].Text != "The bot could not delete a message in "+
-		pipeline.CommunityLabel(k.Holder.Current().Config, string(modtest.Community))+": the message is older than "+
-		"act_on_replay_max_age (47h0m0s), past WhatsApp's delete window. Do it by hand." {
+	if len(reps) != 1 || !reps[0].Priority || reps[0].Text != notDoneText(k, "delete a message", modtest.G1,
+		"the message is older than act_on_replay_max_age (47h0m0s)") {
 		t.Fatalf("not-done reports %+v", reps)
 	}
 	revoke := status(t, k, modtest.SpammerM, store.ActRevoke, modtest.G1)
@@ -179,6 +178,46 @@ func TestHeldActionsDoNotSpin(t *testing.T) {
 	k.Exec.Run(ctx)
 	if n := calls.Load(); n > 10 {
 		t.Fatalf("the executor looped %d times in 300ms while paused", n)
+	}
+}
+
+// TestUnreadyExecutorDoesNotSpin: a due action waiting for the connection or
+// for the group list (a list read failing is retried every 30 seconds) leaves
+// the executor on its idle poll (the supervisor wakes it when both are
+// there), not waking every few milliseconds meanwhile. loops counts a call
+// each loop makes only when it computes an early wake.
+func TestUnreadyExecutorDoesNotSpin(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		unready func(k *modtest.Kit, loops *atomic.Int64)
+	}{
+		{"disconnected", func(k *modtest.Kit, loops *atomic.Int64) {
+			k.Exec.Connected = func() bool { loops.Add(1); return false }
+		}},
+		{"no group list", func(k *modtest.Kit, loops *atomic.Int64) {
+			k.Exec.Directory = &pipeline.Directory{}
+			now := k.Exec.Now
+			k.Exec.Now = func() time.Time { loops.Add(1); return now() }
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k := modtest.New(t, "")
+			k.Deliver(k.Spam("M1", modtest.G1))
+			if _, ok, err := k.Store.NextWake(k.Ctx, true, true); err != nil || !ok {
+				t.Fatalf("queued actions not found: ok %v, %v", ok, err)
+			}
+			var loops atomic.Int64
+			c.unready(k, &loops)
+			ctx, cancel := context.WithTimeout(k.Ctx, 300*time.Millisecond)
+			defer cancel()
+			k.Exec.Run(ctx)
+			if n := loops.Load(); n > 10 {
+				t.Fatalf("the executor looped %d times in 300ms", n)
+			}
+			if len(k.Fake.Calls()) != 0 {
+				t.Fatalf("sent while not ready: %v", k.Fake.Calls())
+			}
+		})
 	}
 }
 
@@ -362,6 +401,51 @@ func TestHeldBanFailsWhenItsCommunityStopsEnforcing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHeldBanJudgedByEveryPostsCommunity: a held ban stands for every post
+// linked to it, each judged in the community it was posted in. With the first
+// post's community in shadow mode by [Resume], a later post in a community
+// still enforcing keeps the ban, and its group's removal goes ahead.
+func TestHeldBanJudgedByEveryPostsCommunity(t *testing.T) {
+	for _, scope := range []string{"", "bans:\n  scope: per_community\n"} {
+		t.Run("scope "+strconv.Quote(scope), func(t *testing.T) {
+			k := modtest.New(t, scope)
+			pause(t, k, store.SourceBreaker, store.ScopeRemoveBan)
+			k.Deliver(k.Msg("M1", modtest.G1, modtest.Member, modtest.SpamText))
+			k.Deliver(k.Msg("M2", modtest.GB, modtest.Member, modtest.SpamText))
+			k.Fire()
+			const entry = "    name: community a\n"
+			shadow := strings.Replace(modtest.Config, entry, entry+"    mode: shadow\n", 1)
+			k.ReloadConfig(shadow + scope)
+			resumeAndFire(t, k)
+			if !k.Banned(modtest.MemberM, modtest.SetB) {
+				t.Fatalf("not banned in %s, which still enforces; calls %v", modtest.SetB, k.Fake.Calls())
+			}
+			if n := k.Fake.Count("Remove " + string(modtest.GB) + " " + string(modtest.Member)); n != 1 {
+				t.Fatalf("removed from %s %d times, calls %v", modtest.GB, n, k.Fake.Calls())
+			}
+			if scope != "" && k.Banned(modtest.MemberM, string(modtest.Community)) {
+				t.Fatal("per-community ban applied in the community in shadow mode")
+			}
+		})
+	}
+	// A ban held under the global scope stands for posts in both communities;
+	// moved to per-community bans before [Resume], it applies in each.
+	t.Run("both enforcing", func(t *testing.T) {
+		k := modtest.New(t, "")
+		pause(t, k, store.SourceBreaker, store.ScopeRemoveBan)
+		k.Deliver(k.Msg("M1", modtest.G1, modtest.Member, modtest.SpamText))
+		k.Deliver(k.Msg("M2", modtest.GB, modtest.Member, modtest.SpamText))
+		k.Fire()
+		k.ReloadConfig(modtest.Config + "bans:\n  scope: per_community\n")
+		resumeAndFire(t, k)
+		for _, c := range []string{string(modtest.Community), modtest.SetB} {
+			if !k.Banned(modtest.MemberM, c) {
+				t.Errorf("not banned in %s, where a post of the held ban was; calls %v", c, k.Fake.Calls())
+			}
+		}
+	})
 }
 
 // TestHeldBanOutlivesRetention: a pause longer than the evidence window keeps
