@@ -403,11 +403,11 @@ func memberResults(asked []client.JID, got []types.GroupParticipant) []client.Me
 func (a *Adapter) JoinWithLink(ctx context.Context, code string) (client.JID, bool, error) {
 	g, err := a.cli.JoinGroupWithLink(ctx, code)
 	if err != nil {
-		return "", false, err
+		return "", false, callError(err)
 	}
 	member, err := a.isMember(ctx, g)
 	if err != nil {
-		return jid(g), false, err
+		return jid(g), false, callError(err)
 	}
 	return jid(g), !member, nil
 }
@@ -461,7 +461,7 @@ func (a *Adapter) JoinLinkedGroup(ctx context.Context, community, g client.JID) 
 func (a *Adapter) InviteInfo(ctx context.Context, code string) (client.Group, client.JID, error) {
 	info, err := a.cli.GetGroupInfoFromLink(ctx, code)
 	if err != nil {
-		return client.Group{}, "", err
+		return client.Group{}, "", callError(err)
 	}
 	g := group(info)
 	return g, g.Parent, nil
@@ -496,7 +496,7 @@ func (a *Adapter) DownloadMedia(ctx context.Context, msg *client.Message, maxByt
 	defer cancel()
 	data, err := a.cli.Download(ctx, d)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", callError(err)
 	}
 	if int64(len(data)) > maxBytes {
 		return nil, "", "", tooLarge(maxBytes)
@@ -512,7 +512,7 @@ func (a *Adapter) LinkedDevices(ctx context.Context) ([]client.JID, error) {
 	}
 	devices, err := a.cli.GetUserDevices(ctx, []types.JID{phone.ToNonAD()})
 	if err != nil {
-		return nil, err
+		return nil, callError(err)
 	}
 	var out []client.JID
 	for _, d := range devices {
@@ -538,7 +538,7 @@ func (a *Adapter) ResolvePhoneToLID(ctx context.Context, phone client.JID) (clie
 	}
 	resp, err := a.cli.IsOnWhatsApp(ctx, []string{"+" + pn.User})
 	if err != nil {
-		return "", err
+		return "", callError(err)
 	}
 	if len(resp) == 0 || !resp[0].IsIn {
 		return "", fmt.Errorf("%s is not on WhatsApp", phone)
