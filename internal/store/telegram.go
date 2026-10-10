@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -28,6 +29,9 @@ type TGMessage struct {
 	// Part is which part of its report (0 the report itself, then its
 	// follow-ups) or of the daily summary the message is.
 	Part int
+	// Upto is how far into its report's content (the member's text, or the
+	// report's own text) the part reached, in UTF-16 units.
+	Upto int
 	// Stripped is what the message becomes once the member's message text is
 	// removed ("" when it never carried any).
 	Stripped   string
@@ -45,16 +49,49 @@ func (s *Store) AddTGMessage(ctx context.Context, m TGMessage) error {
 // in one transaction (a summary part and the count of parts posted).
 func (s *Store) AddTGMessageStatus(ctx context.Context, m TGMessage, kv map[string]string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO tg_messages (report_id, role, chat_id, message_id, part, stripped,
-	sent_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
-			nullID(m.ReportID), m.Role, m.ChatID, m.MessageID, m.Part, m.Stripped, m.SentAt.UnixMilli()); err != nil {
+		if err := insertTGMessage(ctx, tx, m); err != nil {
 			return err
 		}
 		return setStatusIn(ctx, tx, kv, s.now())
 	})
 }
 
-const tgCols = `id, COALESCE(report_id, 0), role, chat_id, message_id, part, stripped, sent_at, COALESCE(stripped_at, 0),
+// insertTGMessage records m inside tx (a message already recorded is kept).
+func insertTGMessage(ctx context.Context, tx *sql.Tx, m TGMessage) error {
+	_, err := tx.ExecContext(ctx, `INSERT INTO tg_messages (report_id, role, chat_id, message_id, part, upto, stripped,
+	sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+		nullID(m.ReportID), m.Role, m.ChatID, m.MessageID, m.Part, m.Upto, m.Stripped, m.SentAt.UnixMilli())
+	return err
+}
+
+// AddAttachmentPost records attachment post m of evidence evidenceID and
+// returns it with its ID. kept is false when the evidence copy is gone (a
+// `member forget` or a purge ran while the file uploaded): the post is still
+// recorded, and its deletion queued in the same transaction, so it never stays
+// in the chat unknown to the take-downs.
+func (s *Store) AddAttachmentPost(ctx context.Context, m TGMessage, evidenceID int64) (TGMessage, bool, error) {
+	kept := true
+	err := s.Write(ctx, func(tx *sql.Tx) error {
+		if err := insertTGMessage(ctx, tx, m); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM tg_messages WHERE chat_id = ? AND message_id = ?`, m.ChatID,
+			m.MessageID).Scan(&m.ID); err != nil {
+			return fmt.Errorf("read the attachment post just recorded: %w", err)
+		}
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM evidence WHERE id = ?`, evidenceID).Scan(&n); err != nil {
+			return fmt.Errorf("check the evidence copy: %w", err)
+		}
+		if kept = n > 0; kept {
+			return nil
+		}
+		return QueueReportEdits(ctx, tx, []int64{m.ReportID}, []string{EditDeleteAttachment}, s.now())
+	})
+	return m, kept, err
+}
+
+const tgCols = `id, COALESCE(report_id, 0), role, chat_id, message_id, part, upto, stripped, sent_at, COALESCE(stripped_at, 0),
 	COALESCE(gone_at, 0)`
 
 func (s *Store) tgMessages(ctx context.Context, query string, args ...any) ([]TGMessage, error) {
@@ -67,7 +104,7 @@ func (s *Store) tgMessages(ctx context.Context, query string, args ...any) ([]TG
 	for rows.Next() {
 		var m TGMessage
 		var sent, stripped, gone int64
-		if err := rows.Scan(&m.ID, &m.ReportID, &m.Role, &m.ChatID, &m.MessageID, &m.Part, &m.Stripped, &sent, &stripped,
+		if err := rows.Scan(&m.ID, &m.ReportID, &m.Role, &m.ChatID, &m.MessageID, &m.Part, &m.Upto, &m.Stripped, &sent, &stripped,
 			&gone); err != nil {
 			return nil, fmt.Errorf("read admin-chat messages: %w", err)
 		}
@@ -155,12 +192,21 @@ type AttachmentToPost struct {
 }
 
 // AttachmentsToPost lists delivered reports of kind whose evidence holds a
-// saved file and that never had an attachment post.
-func (s *Store) AttachmentsToPost(ctx context.Context, kind string, limit int) ([]AttachmentToPost, error) {
+// saved file and that never had an attachment post, leaving out the evidence
+// IDs in skip (uploads waiting out a backoff, so they never fill the window).
+func (s *Store) AttachmentsToPost(ctx context.Context, kind string, limit int, skip []int64) ([]AttachmentToPost, error) {
+	if skip == nil {
+		skip = []int64{}
+	}
+	skipped, err := json.Marshal(skip)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT r.id FROM reports r JOIN evidence e ON e.id = r.evidence_id
 WHERE r.kind = ? AND r.sent_at IS NOT NULL AND e.media_state = 'saved'
+	AND e.id NOT IN (SELECT value FROM json_each(?))
 	AND NOT EXISTS (SELECT 1 FROM tg_messages t WHERE t.report_id = r.id AND t.role = 'attachment')
-ORDER BY r.id LIMIT ?`, kind, limit)
+ORDER BY r.id LIMIT ?`, kind, string(skipped), limit)
 	if err != nil {
 		return nil, fmt.Errorf("read attachments to post: %w", err)
 	}
