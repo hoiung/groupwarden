@@ -26,11 +26,16 @@ const nameMax = 200
 // rendered is a report as it goes to the chat: the report message, then any
 // follow-ups the message text did not fit in. quotes[i] is where the member's
 // text sits in message i; stripped[i] is what message i becomes once that
-// text is removed ("" when it never carried any).
+// text is removed ("" when it never carried any). upto[i] is how far message
+// i reaches into the report's content (the member's text, or the report's own
+// text when it has no post), in UTF-16 units: a retry posts the follow-ups
+// from there, since the header part 0 shared can render differently by then
+// (an attachment saved or failed meanwhile).
 type rendered struct {
 	parts    []string
 	quotes   []quote
 	stripped []string
+	upto     []int
 }
 
 // quote is the span of a message that is the member's text, in UTF-16 units
@@ -54,21 +59,60 @@ var actionLine = map[string]string{
 // and every field the sender wrote, in full.
 func render(r store.Report, ev *store.Evidence, groupName string) rendered {
 	if ev == nil {
-		parts, _ := split(r.Text, "")
-		return rendered{parts: parts, quotes: make([]quote, len(parts)), stripped: make([]string, len(parts))}
+		return followups(r, nil, 0)
 	}
 	head := header(r, ev, groupName, true)
 	parts, starts := split(head+"\n"+messageText(ev), head)
 	member := units(head + "\n") // where the member's text starts
-	out := rendered{parts: parts, quotes: make([]quote, len(parts)), stripped: make([]string, len(parts))}
+	out := newRendered(len(parts))
+	out.parts = parts
 	for i, p := range parts {
-		if lo, hi := max(starts[i], member), starts[i]+units(p); hi > lo {
+		lo, hi := max(starts[i], member), starts[i]+units(p)
+		if hi > lo {
 			out.quotes[i] = quote{offset: lo - starts[i], length: hi - lo}
 		}
 		out.stripped[i] = removedNote
+		out.upto[i] = max(hi-member, 0)
 	}
 	out.stripped[0] = clip(header(r, ev, groupName, false)+" "+removedNote, maxUnits)
 	return out
+}
+
+// followups is the rest of a report's content from the unit offset from on,
+// as follow-ups: the member's text (all of each part quoted) with evidence,
+// else the report's own text.
+func followups(r store.Report, ev *store.Evidence, from int) rendered {
+	content := r.Text
+	if ev != nil {
+		content = messageText(ev)
+	}
+	parts, starts := split(afterUnits(content, from), "")
+	out := newRendered(len(parts))
+	out.parts = parts
+	for i, p := range parts {
+		if ev != nil {
+			out.quotes[i] = quote{length: units(p)}
+			out.stripped[i] = removedNote
+		}
+		out.upto[i] = from + starts[i] + units(p)
+	}
+	return out
+}
+
+func newRendered(n int) rendered {
+	return rendered{quotes: make([]quote, n), stripped: make([]string, n), upto: make([]int, n)}
+}
+
+// afterUnits is what follows the first u UTF-16 units of s.
+func afterUnits(s string, u int) string {
+	used := 0
+	for i, r := range s {
+		if used >= u {
+			return s[i:]
+		}
+		used += runeUnits(r)
+	}
+	return ""
 }
 
 // header is a report's text before the member's message: the report line,
