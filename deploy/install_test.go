@@ -128,7 +128,7 @@ func TestInstallRendersRestartsAndRollsBack(t *testing.T) {
 		t.Fatalf("sync timer not rendered from config_sync_minutes 15:\n%s", timer)
 	}
 	if got, want := n.read("etc/systemd/system/groupwarden-backup.service.d/target.conf"),
-		"[Service]\nReadWritePaths="+filepath.Join(n.root, "srv/backup")+"\n"; got != want {
+		"[Service]\nReadWritePaths=-"+filepath.Join(n.root, "srv/backup")+"\n"; got != want {
 		t.Fatalf("backup drop-in %q; want %q", got, want)
 	}
 	for _, u := range []string{"groupwarden.service", "groupwarden-sync.service", "groupwarden-backup.service",
