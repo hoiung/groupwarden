@@ -18,6 +18,34 @@ import (
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
+// TestBackupRefusesATargetOnTheDataDisk: a network share that is not mounted
+// leaves its mount point an empty folder on the local disk. `backup` checks
+// the target first, so it writes nothing there: the run fails, says why, is
+// recorded for /status and alerts the admins.
+func TestBackupRefusesATargetOnTheDataDisk(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	st := setStatus(t, te, map[string]string{"test_marker": "kept"}, time.Now())
+	te.deviceOf = func(string) (uint64, error) { return 1, nil } // the share is not mounted: same disk as the data dir
+	if code := te.cmd("backup"); code != exitFail ||
+		!strings.HasPrefix(te.out.String(), "FAILED: backup.target_dir cannot take the backup: ") ||
+		!strings.Contains(te.out.String(), "same disk as the data dir") {
+		t.Fatalf("backup to the data disk: %d %q", code, te.out.String())
+	}
+	entries, err := os.ReadDir(filepath.Join(te.dir, "backup"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("the target holds %v (%v), want nothing written", entries, err)
+	}
+	status, err := st.Status(context.Background())
+	if err != nil || !strings.HasPrefix(status[store.StatusBackupResult].Value, "FAILED: backup.target_dir cannot take") {
+		t.Fatalf("recorded result %q (%v)", status[store.StatusBackupResult].Value, err)
+	}
+	reps, err := st.UnsentReportsOf(context.Background(), string(alert.BackupFailed), 10)
+	if err != nil || len(reps) != 1 || !strings.Contains(reps[0].Text, "same disk as the data dir") {
+		t.Fatalf("backup failure alerts %+v (%v), want one naming the reason", reps, err)
+	}
+}
+
 // TestBackupAndRestoreCommands: `backup-dir` prints the target; `backup`
 // refuses without a database, records each run's result for /status, alerts
 // the admins once per failure episode, and writes a backup that `restore`
