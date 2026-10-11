@@ -90,9 +90,11 @@ func (s *Store) Evidence(ctx context.Context, id int64) (Evidence, bool, error) 
 	return e, true, nil
 }
 
-// PendingMedia lists copies whose attachment still has to be downloaded.
-func (s *Store) PendingMedia(ctx context.Context, limit int) ([]Evidence, error) {
-	return s.evidenceRows(ctx, `SELECT `+evidenceCols+` FROM evidence WHERE media_state = 'pending' ORDER BY id LIMIT ?`, limit)
+// PendingMedia lists copies whose attachment still has to be downloaded, in
+// order, after the copy with ID after.
+func (s *Store) PendingMedia(ctx context.Context, after int64, limit int) ([]Evidence, error) {
+	return s.evidenceRows(ctx, `SELECT `+evidenceCols+` FROM evidence WHERE media_state = 'pending' AND id > ?
+ORDER BY id LIMIT ?`, after, limit)
 }
 
 // EvidenceFor lists the copies of messages sent by any of the given member keys
