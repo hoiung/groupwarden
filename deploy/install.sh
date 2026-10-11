@@ -38,7 +38,8 @@ BIN=$ROOT/usr/local/bin/groupwarden
 PREV=$BIN.previous
 UNIT_DIR=$ROOT/etc/systemd/system
 LIVE_CONFIG=$ROOT/var/lib/groupwarden/config/config.yaml
-UNITS=(groupwarden.service groupwarden-sync.service groupwarden-sync.timer groupwarden-backup.service groupwarden-backup.timer)
+UNITS=(groupwarden.service groupwarden-sync.service groupwarden-sync.timer groupwarden-backup.service groupwarden-backup.timer
+	groupwarden-backup-failed.service)
 DROPIN=groupwarden-backup.service.d/target.conf
 
 die() {
@@ -135,9 +136,11 @@ if as_service test -f "$LIVE_CONFIG"; then
 	*) die "backup.target_dir is not an absolute path: $target" ;;
 	esac
 	mkdir -p "$work/units/$(dirname "$DROPIN")"
-	# "-": a target that is missing when the unit starts (a network share not
-	# mounted) does not stop the unit before `groupwarden backup` runs; the
-	# backup then finds it missing and fails, recorded and alerted that night.
+	# "-": a target that does not exist when the unit starts does not stop the
+	# unit before `groupwarden backup` runs; the backup then finds it missing
+	# and fails, recorded and alerted that night. Any other error opening it
+	# (a network share that cannot be reached) stops the unit first, and
+	# groupwarden-backup-failed.service (OnFailure=) records and alerts that.
 	printf '[Service]\nReadWritePaths=-%s\n' "$target" >"$work/units/$DROPIN"
 	echo "sync timer: OnCalendar=$calendar; backup unit may write $target"
 else
