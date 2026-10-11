@@ -134,10 +134,21 @@ func (s *Store) reports(ctx context.Context, query string, args ...any) ([]Repor
 	return out, rows.Err()
 }
 
-// MarkReportSent records a delivered report.
-func (s *Store) MarkReportSent(ctx context.Context, id int64) error {
+// MarkReportSent records a delivered report and what its header told the
+// admins about its attachment: the media state it showed (empty for none).
+func (s *Store) MarkReportSent(ctx context.Context, id int64, mediaTold string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE reports SET sent_at = ? WHERE id = ?`, s.now().UnixMilli(), id)
+		_, err := tx.ExecContext(ctx, `UPDATE reports SET sent_at = ?, media_told = ? WHERE id = ?`, s.now().UnixMilli(),
+			mediaTold, id)
+		return err
+	})
+}
+
+// SetMediaTold records what the admin chat has now been told about report
+// id's attachment.
+func (s *Store) SetMediaTold(ctx context.Context, id int64, state string) error {
+	return s.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE reports SET media_told = ? WHERE id = ?`, state, id)
 		return err
 	})
 }
