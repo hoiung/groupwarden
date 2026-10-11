@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	wm "go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -39,7 +40,16 @@ func (a *Adapter) handle(evt any) bool {
 		return a.persist(sink, &client.JoinedGroup{Group: jid(e.JID), Reason: e.Reason, Actor: ptrJID(e.Sender), Time: a.now(),
 			Info: group(&e.GroupInfo)})
 	case *events.Connected:
+		a.dropping.Store(false)
 		sink.Lifecycle(client.Lifecycle{Kind: client.Connected})
+	case *events.ManualLoginReconnect:
+		a.drop(sink, "WhatsApp asked for a fresh login (stream error 515)")
+	case *events.KeepAliveTimeout:
+		// The library gives up on a connection after KeepAliveMaxFailTime of
+		// unanswered keepalives only when its own reconnect is on.
+		if quiet := a.now().Sub(e.LastSuccess); quiet > wm.KeepAliveMaxFailTime {
+			a.drop(sink, fmt.Sprintf("WhatsApp answered no keepalive for %s", quiet.Round(time.Second)))
+		}
 	case *events.OfflineSyncCompleted:
 		// The library handles WhatsApp's notifications one at a time, in the
 		// order they arrive, and this marker comes after the offline ones. It
@@ -57,6 +67,21 @@ func (a *Adapter) handle(evt any) bool {
 		// History sync is disabled (ManualHistorySyncDownload); nothing to do.
 	}
 	return true
+}
+
+// drop closes a connection WhatsApp no longer serves and reports it as a
+// disconnect, so the supervisor reconnects through its own connect() (which
+// re-arms the wait for the offline backlog). Once per connection; off the
+// handler's goroutine, because closing the socket waits for the handlers.
+func (a *Adapter) drop(sink client.Sink, why string) {
+	if !a.dropping.CompareAndSwap(false, true) {
+		return
+	}
+	a.log.Warn("closing the WhatsApp connection to reconnect", "reason", why)
+	go func() {
+		a.cli.Disconnect()
+		sink.Lifecycle(client.Lifecycle{Kind: client.Disconnected, Detail: why})
+	}()
 }
 
 func (a *Adapter) persist(sink client.Sink, ev client.Event) bool {
