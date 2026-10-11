@@ -25,6 +25,11 @@ const (
 	// day is posted up to that many UTF-16 units of its text (a retry, on any
 	// later day, finishes that summary from there).
 	StatusSummaryUpto = "tg_summary_upto"
+	// StatusSummaryText is "<UTC day>\n<text>": the text of the daily summary
+	// through that day once a part of it is posted, so a retry resumes the
+	// same text rather than one rebuilt (a community renamed meanwhile would
+	// move every offset); "" once that day is recorded done.
+	StatusSummaryText = "tg_summary_text"
 	// The pinned command list: "<chat ID>:<message ID>", the hash of the
 	// text it shows, and "pinned" / "refused" ("" until a pin was tried).
 	StatusTelegramPin      = "tg_pin"
