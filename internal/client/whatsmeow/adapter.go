@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -79,6 +80,7 @@ func notConnected(err error) bool {
 // waClient is the slice of *whatsmeow.Client the adapter uses; tests fake it.
 type waClient interface {
 	ConnectContext(ctx context.Context) error
+	IsConnected() bool
 	Disconnect()
 	BuildRevoke(chat, sender types.JID, id types.MessageID) *waE2E.Message
 	SendMessage(ctx context.Context, to types.JID, message *waE2E.Message, extra ...wm.SendRequestExtra) (wm.SendResponse, error)
@@ -142,9 +144,16 @@ type Adapter struct {
 	// client-outdated refusal.
 	updateVersion func(ctx context.Context) error
 	outdatedTried atomic.Bool
-	// dropping: drop closed this connection; cleared when the next one opens.
-	dropping atomic.Bool
-	now      func() time.Time
+	// gone: this connection was reported lost (Disconnected): by the server's
+	// close, a drop or a client version update, whichever came first. One
+	// report per connection; cleared when the next one opens.
+	gone atomic.Bool
+	// closing: work still finishing off the last connection (a drop closing
+	// it, a client version update); Connect waits for it, so a late close
+	// never reaches the next connection and that one uses the new version.
+	closingMu sync.Mutex
+	closing   []chan struct{}
+	now       func() time.Time
 }
 
 type sinkBox struct{ s client.Sink }
@@ -218,10 +227,44 @@ func (a *Adapter) Connect(ctx context.Context) error {
 	if !a.Paired() {
 		return errors.New("this device is not paired: run `groupwarden pair` first")
 	}
-	// A new connection can be dropped again, even one that never logs in
-	// (no Connected): its keepalives are watched from the start.
-	a.dropping.Store(false)
+	if err := a.waitClosing(ctx); err != nil {
+		return err
+	}
+	// A new connection can be reported lost again, even one that never logs
+	// in (no Connected): its keepalives are watched from the start.
+	a.gone.Store(false)
 	return a.cli.ConnectContext(ctx)
+}
+
+// background runs f off the handler's goroutine as work finishing off the
+// current connection, which the next Connect waits for.
+func (a *Adapter) background(f func()) {
+	done := make(chan struct{})
+	a.closingMu.Lock()
+	a.closing = append(a.closing, done)
+	a.closingMu.Unlock()
+	go func() {
+		defer close(done)
+		f()
+	}()
+}
+
+func (a *Adapter) waitClosing(ctx context.Context) error {
+	a.closingMu.Lock()
+	pending := a.closing
+	a.closing = nil
+	a.closingMu.Unlock()
+	for i, done := range pending {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			a.closingMu.Lock()
+			a.closing = append(pending[i:], a.closing...)
+			a.closingMu.Unlock()
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // Disconnect closes the connection.
