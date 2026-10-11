@@ -30,6 +30,9 @@ func (c *Chat) SetPinRetry(d time.Duration)   { c.pinRetry = d }
 
 const MaxUnits = maxUnits
 
+// Header is a report's text before the member's message.
+var Header = header
+
 // PostAttachment runs one try of uploadLoop's work.
 func (c *Chat) PostAttachment(ctx context.Context) (bool, error) { return c.postAttachment(ctx) }
 
