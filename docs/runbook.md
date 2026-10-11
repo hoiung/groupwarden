@@ -7,7 +7,7 @@ What to do when groupwarden asks for a human. Paths are the node layout in [depl
 - **The daily check**: every day at `daily_check_time` (12:00 by default, the node's local time) the bot posts "Daily check, Tuesday 6 October 2026: groupwarden is alive and working." (with that day's date) in the admin chat, or names what is not working. See [No daily check](#no-daily-check).
 - **The admin chat**: every alert lands there. `/status` shows the connection, pauses, the config version, the last config sync and backup, the ban list and queue sizes, and coverage per community.
 - **`sudo -u groupwarden groupwarden healthcheck --config CFG`**: exit 0 only when the bot is running, connected, hearing messages, has its config and has reached the admin chat; otherwise one line says which part is not.
-- **`journalctl -u groupwarden.service`** (and `-u groupwarden-sync.service`, `-u groupwarden-backup.service`): structured JSON logs. Phone numbers and IDs are masked and message text is only logged at debug level.
+- **`journalctl -u groupwarden.service`** (and `-u groupwarden-sync.service`, `-u groupwarden-backup.service`, `-u groupwarden-backup-failed.service`): structured JSON logs. Phone numbers and IDs are masked and message text is only logged at debug level.
 
 ## No daily check
 
