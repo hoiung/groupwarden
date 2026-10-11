@@ -115,6 +115,8 @@ func TestCallErrorsClassified(t *testing.T) {
 		want error
 	}{
 		{fmt.Errorf("failed to send message node: %w", wm.ErrNotConnected), client.ErrNotConnected},
+		{&wm.DisconnectedError{Action: "info query (retry)"}, client.ErrNotConnected},
+		{fmt.Errorf("usync: %w", &wm.DisconnectedError{Action: "message send"}), client.ErrNotConnected},
 		{&wm.IQError{Code: 429, Text: "rate-overlimit"}, client.ErrRateLimited},
 		{fmt.Errorf("remove: %w", &wm.IQError{Code: 429}), client.ErrRateLimited},
 		{&wm.IQError{Code: 403, Text: "forbidden"}, client.ErrNotAdmin},
