@@ -118,7 +118,10 @@ func TestFullPauseReportSaysEverythingWaits(t *testing.T) {
 func TestFullPauseOutlastsTheDeleteWindow(t *testing.T) {
 	k := modtest.New(t, "")
 	pause(t, k, store.SourceAdmin, store.ScopeAll)
+	// Two posts by the same member in the same group: each is its own delete
+	// left undone, so each gets its own report with its own evidence copy.
 	k.Deliver(k.Spam("M1", modtest.G1))
+	k.Deliver(k.Spam("M2", modtest.G1))
 	k.Fire()
 	k.Clock.Advance(48 * time.Hour)
 	if err := k.Exec.Resume(k.Ctx); err != nil {
@@ -129,13 +132,30 @@ func TestFullPauseOutlastsTheDeleteWindow(t *testing.T) {
 		t.Fatalf("calls %v, want the removal and no delete", k.Fake.Calls())
 	}
 	reps := k.Reports(ledger.KindNotDone)
-	if len(reps) != 1 || !reps[0].Priority || reps[0].Text != notDoneText(k, "delete a message", modtest.G1,
-		"the message is older than act_on_replay_max_age (47h0m0s)") {
-		t.Fatalf("not-done reports %+v", reps)
+	if len(reps) != 2 {
+		t.Fatalf("%d not-done reports %+v, want one per undeleted post", len(reps), reps)
 	}
-	revoke := status(t, k, modtest.SpammerM, store.ActRevoke, modtest.G1)
-	if r, _, _ := k.Store.Report(k.Ctx, reps[0].ID); r.EvidenceID == 0 || r.EvidenceID != revoke.EvidenceID {
-		t.Fatalf("the report shows evidence %d, want the post's %d", r.EvidenceID, revoke.EvidenceID)
+	want := notDoneText(k, "delete a message", modtest.G1, "the message is older than act_on_replay_max_age (47h0m0s)")
+	shown := map[int64]bool{}
+	for _, rep := range reps {
+		r, _, _ := k.Store.Report(k.Ctx, rep.ID)
+		if !rep.Priority || rep.Text != want || r.EvidenceID == 0 {
+			t.Fatalf("not-done report %+v (evidence %d)", rep, r.EvidenceID)
+		}
+		shown[r.EvidenceID] = true
+	}
+	evs, err := k.Store.EvidenceFor(k.Ctx, modtest.SpammerM.IDs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	posts := map[string]bool{}
+	for _, e := range evs {
+		if shown[e.ID] {
+			posts[e.MsgID] = true
+		}
+	}
+	if !posts["M1"] || !posts["M2"] {
+		t.Fatalf("posts shown in the reports %v, want M1 and M2", posts)
 	}
 }
 
