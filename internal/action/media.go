@@ -40,12 +40,27 @@ type MediaFetcher struct {
 	Config  *config.Holder
 	// Dir is where attachment files go (data_dir/evidence).
 	Dir string
-	Log *slog.Logger
+	// Connected reports whether WhatsApp is connected (nil: always). A
+	// download that gets no answer while it is not ends the pass; while it
+	// is, only that attachment's media servers failed.
+	Connected func() bool
+	Log       *slog.Logger
 
 	// initOnce: Wake is called from the inbox worker while Run starts.
 	initOnce sync.Once
 	wake     chan struct{}
+	// noAnswer counts, per evidence row, the downloads that got no answer
+	// while WhatsApp was connected. Fetch runs on one goroutine. In memory:
+	// a restart gives each attachment its tries again.
+	noAnswer map[int64]int
 }
+
+// mediaNoAnswerTries bounds the downloads of one attachment that get no
+// answer from WhatsApp's media servers while WhatsApp itself is connected (a
+// file that never finishes within the download timeout, a media path no
+// server takes): after that many it is recorded as not available, instead of
+// being downloaded again every pass until the evidence purge.
+const mediaNoAnswerTries = 5
 
 func (f *MediaFetcher) init() {
 	f.initOnce.Do(func() { f.wake = make(chan struct{}, 1) })
@@ -76,26 +91,70 @@ func (f *MediaFetcher) Run(ctx context.Context) {
 	}
 }
 
-// Fetch downloads every pending attachment and returns how many it settled.
+// Fetch downloads every pending attachment once, in order, and returns how
+// many it settled. An attachment that gets no answer never holds up the ones
+// after it: while WhatsApp is connected it stays pending for the next pass
+// (and is settled as failed after mediaNoAnswerTries); while WhatsApp is not
+// connected the pass ends, and the supervisor wakes it at Connected.
 func (f *MediaFetcher) Fetch(ctx context.Context) (int, error) {
+	if f.noAnswer == nil {
+		f.noAnswer = map[int64]int{}
+	}
 	n := 0
+	var after int64
+	seen := map[int64]bool{}
 	for {
-		pending, err := f.Store.PendingMedia(ctx, 10)
-		if err != nil || len(pending) == 0 {
+		pending, err := f.Store.PendingMedia(ctx, after, 10)
+		if err != nil {
 			return n, err
 		}
+		if len(pending) == 0 {
+			// The rows no longer pending (settled, purged, forgotten) drop
+			// their counts.
+			for id := range f.noAnswer {
+				if !seen[id] {
+					delete(f.noAnswer, id)
+				}
+			}
+			return n, nil
+		}
 		for _, e := range pending {
-			if err := f.fetchOne(ctx, e); err != nil {
-				if errors.Is(err, client.ErrNotConnected) {
-					// Pending stays pending; the supervisor wakes this at Connected.
+			after = e.ID
+			seen[e.ID] = true
+			err := f.fetchOne(ctx, e)
+			if errors.Is(err, client.ErrNotConnected) {
+				if f.Connected != nil && !f.Connected() {
 					f.Log.Info("attachment downloads wait for the WhatsApp connection", "evidence", e.ID)
 					return n, nil
 				}
+				var settled bool
+				if settled, err = f.unanswered(ctx, e, err); err == nil && !settled {
+					continue
+				}
+			}
+			if err != nil {
 				return n, err
 			}
+			delete(f.noAnswer, e.ID)
 			n++
 		}
 	}
+}
+
+// unanswered handles a download of e that got no answer while WhatsApp is
+// connected: it stays pending until its mediaNoAnswerTries-th such answer,
+// which settles it as failed. It reports whether e was settled.
+func (f *MediaFetcher) unanswered(ctx context.Context, e store.Evidence, cause error) (bool, error) {
+	f.noAnswer[e.ID]++
+	tries := f.noAnswer[e.ID]
+	if tries < mediaNoAnswerTries {
+		f.Log.Warn("attachment download got no answer; the others go first, it is tried again next pass",
+			"evidence", e.ID, "tries", tries, "err", mask.IDs(cause.Error()))
+		return false, nil
+	}
+	why := fmt.Sprintf("WhatsApp's media servers gave no answer in %d tries: %s", tries, mask.IDs(cause.Error()))
+	f.Log.Warn("attachment download failed", "evidence", e.ID, "err", why)
+	return true, f.settle(ctx, e.ID, store.MediaFailed, "", why, e.MediaSize)
 }
 
 // fetchOne downloads one attachment. The size the post declared is the
@@ -111,8 +170,9 @@ func (f *MediaFetcher) fetchOne(ctx context.Context, e store.Evidence) error {
 		f.Log.Info("attachment over the size limit; not kept", "evidence", e.ID, "declared_bytes", e.MediaSize, "limit_mb", limitMB)
 		return f.settle(ctx, e.ID, store.MediaTooLarge, "", "", 0)
 	}
-	// A download that never reached WhatsApp, or that the bot's stop cut
-	// short, is not the attachment's failure: it stays pending.
+	// A download that got no answer (no connection, the media servers not
+	// reached in time) is not yet the attachment's failure: Fetch decides.
+	// One the bot's stop cut short stays pending.
 	if errors.Is(err, client.ErrNotConnected) {
 		return err
 	}
