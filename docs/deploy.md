@@ -7,6 +7,7 @@ groupwarden runs as one systemd service on one always-on machine (a "node"): a L
 | `groupwarden.service` | `groupwarden run`: the bot. Restarts on a crash, but not on exit code 78 (`groupwarden fatal-exit-code`): logged out, banned or client outdated need a human, and restarting into them only hammers WhatsApp |
 | `groupwarden-sync.timer` → `groupwarden-sync.service` | `groupwarden sync-config` every `config_sync_minutes`: pulls your private config repo, checks it and swaps it in (see [config.md](config.md)) |
 | `groupwarden-backup.timer` → `groupwarden-backup.service` | `groupwarden backup` every night at 03:15: an encrypted copy of `groupwarden.db` on another disk or a network share |
+| `groupwarden-backup-failed.service` | Run by systemd when the backup unit fails before the backup could say why (its target could not be opened, or it ran out of time): `groupwarden backup-failed` records and reports it the same night |
 
 Both timers have `Persistent=true`, so a run missed while the node was off happens as soon as it is back. Upgrades and rollback are in [runbook.md](runbook.md).
 
@@ -154,14 +155,14 @@ Instead of a second disk, `backup.target_dir` can be a folder on a NAS or anothe
    ```bash
    sudo mkdir -p /mnt/share
    sudo systemctl daemon-reload
-   ls /mnt/share                            # mounts it (x-systemd.automount mounts it whenever it is first used)
+   sudo -u groupwarden ls /mnt/share        # mounts it (x-systemd.automount mounts it whenever it is first used); only groupwarden can read it
    sudo -u groupwarden mkdir /mnt/share/groupwarden
    ```
 
 3. **Point `backup.target_dir` at a folder inside the share**, `/mnt/share/groupwarden` here, never at the mount point itself: while the share is not mounted, the mount point is an empty folder on the node's own disk.
 4. **Install again and test a backup** (steps 6 and 8 above): `deploy/install.sh --version …`, then `sudo systemctl start groupwarden-backup.service` and `/status`.
 
-When the share is not there at night (the NAS is off, the network is down, the password changed), that night's backup fails and the admins get "The nightly backup FAILED: …" with the reason: the folder is missing, or it is on the same disk as the data. Nothing is written to the node's own disk. Earlier backups on the share are kept.
+When the share is not there at night (the NAS is off, the network is down, the password changed), that night's backup fails and the admins get "The nightly backup FAILED: …" with the reason: the folder is missing, it is on the same disk as the data, or systemd could not open it to start the backup unit (then the reason asks whether the network share is reachable). Nothing is written to the node's own disk. Earlier backups on the share are kept.
 
 ## Windows node running WSL2
 
