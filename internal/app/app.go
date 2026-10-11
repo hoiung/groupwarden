@@ -209,11 +209,17 @@ func (a *App) init() {
 	}
 	// Queued actions wait while WhatsApp is not connected (a temporary ban
 	// can last a day) and go out when it is again.
+	// A download without an answer ends the attachment pass only while
+	// WhatsApp is not connected (the pass runs again at Connected).
+	connected := func() bool {
+		c, _, _ := a.mon.snapshot()
+		return c
+	}
 	if a.Executor != nil {
-		a.Executor.Connected = func() bool {
-			connected, _, _ := a.mon.snapshot()
-			return connected
-		}
+		a.Executor.Connected = connected
+	}
+	if a.Media != nil {
+		a.Media.Connected = connected
 	}
 	a.Adapter.Events(sink{a})
 }
