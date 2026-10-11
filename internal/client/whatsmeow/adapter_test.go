@@ -934,14 +934,24 @@ func TestReconnectsGoThroughTheSupervisor(t *testing.T) {
 	if n := disconnects(); n != 1 {
 		t.Fatalf("%d disconnects, want 1", n)
 	}
-	a.handle(&events.Connected{})
+	// The supervisor opens the next connection, which never logs in (no
+	// Connected): its keepalives are still watched.
+	f.mu.Lock()
+	f.offline = false
+	f.mu.Unlock()
+	if err := a.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.offline = true
+	f.mu.Unlock()
 	// Keepalives unanswered for less than the library's limit: kept.
 	a.handle(&events.KeepAliveTimeout{ErrorCount: 3, LastSuccess: now.Add(-wm.KeepAliveMaxFailTime)})
-	if n := len(sink.lifecycles()); n != 2 || disconnects() != 1 {
-		t.Fatalf("lifecycle %+v after a short keepalive gap, want only the Connected", sink.lifecycles())
+	if n := len(sink.lifecycles()); n != 1 || disconnects() != 1 {
+		t.Fatalf("lifecycle %+v after a short keepalive gap, want nothing new", sink.lifecycles())
 	}
 	a.handle(&events.KeepAliveTimeout{ErrorCount: 7, LastSuccess: now.Add(-wm.KeepAliveMaxFailTime - time.Second)})
-	waitDrop(3, "no keepalive for 3m1s")
+	waitDrop(2, "no keepalive for 3m1s")
 	if n := disconnects(); n != 2 {
 		t.Fatalf("%d disconnects, want 2", n)
 	}
