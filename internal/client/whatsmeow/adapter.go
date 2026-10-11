@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sync/atomic"
@@ -36,24 +37,43 @@ const CodeNotParticipant = 404
 const localTimeout = 10 * time.Second
 
 // callError marks WhatsApp's rate-limit (429) and permission (401, 403)
-// refusals with client.ErrRateLimited / client.ErrNotAdmin, and a call made
-// while disconnected with client.ErrNotConnected, so callers back off, mark a
-// group uncovered or wait without knowing the library's errors.
+// refusals with client.ErrRateLimited / client.ErrNotAdmin, and a call that
+// never got an answer for want of a connection with client.ErrNotConnected,
+// so callers back off, mark a group uncovered or wait without knowing the
+// library's errors.
 func callError(err error) error {
-	if errors.Is(err, wm.ErrNotConnected) {
+	return markError(err, true)
+}
+
+// inviteError is callError for the invite-link calls: a 401 or 403 there is
+// WhatsApp refusing the link, not the bot lacking admin rights.
+func inviteError(err error) error {
+	return markError(err, false)
+}
+
+func markError(err error, notAdmin bool) error {
+	if notConnected(err) {
 		return fmt.Errorf("%w: %w", client.ErrNotConnected, err)
 	}
 	var iq *wm.IQError
 	if err == nil || !errors.As(err, &iq) {
 		return err
 	}
-	switch iq.Code {
-	case 429:
+	switch {
+	case iq.Code == 429:
 		return fmt.Errorf("%w: %w", client.ErrRateLimited, err)
-	case 401, 403:
+	case notAdmin && (iq.Code == 401 || iq.Code == 403):
 		return fmt.Errorf("%w: %w", client.ErrNotAdmin, err)
 	}
 	return err
+}
+
+// notConnected: the call was made with no websocket, or the websocket closed
+// while it waited for the answer (the library's DisconnectedError, which
+// matches only another DisconnectedError with errors.Is).
+func notConnected(err error) bool {
+	var dropped *wm.DisconnectedError
+	return errors.Is(err, wm.ErrNotConnected) || errors.As(err, &dropped)
 }
 
 // waClient is the slice of *whatsmeow.Client the adapter uses; tests fake it.
@@ -122,7 +142,9 @@ type Adapter struct {
 	// client-outdated refusal.
 	updateVersion func(ctx context.Context) error
 	outdatedTried atomic.Bool
-	now           func() time.Time
+	// dropping: drop closed this connection; cleared at the next Connected.
+	dropping atomic.Bool
+	now      func() time.Time
 }
 
 type sinkBox struct{ s client.Sink }
@@ -161,8 +183,13 @@ func configure(cli *wm.Client) {
 	cli.EnableDecryptedEventBuffer = true
 	// History sync is never downloaded: groupwarden acts only on live messages.
 	cli.ManualHistorySyncDownload = true
-	// Reconnects are groupwarden's own (capped backoff, alerts).
+	// Reconnects are groupwarden's own (capped backoff, alerts), so the
+	// library reconnects by itself neither after a dropped connection nor
+	// when WhatsApp asks for a fresh login (stream error 515): the handler
+	// turns that request, and keepalives failing, into a disconnect the
+	// supervisor reconnects from. Pair turns the login reconnect back on.
 	cli.EnableAutoReconnect = false
+	cli.DisableLoginAutoReconnect = true
 	cli.SetMediaHTTPClient(mediaClient())
 }
 
@@ -386,7 +413,7 @@ func memberResults(asked []client.JID, got []types.GroupParticipant) []client.Me
 		p, ok := byUser[m.User()+"@"+m.Server()]
 		switch {
 		case !ok:
-			out = append(out, client.MemberResult{Member: m, Status: client.MemberFailed, Code: -1})
+			out = append(out, client.MemberResult{Member: m, Status: client.MemberFailed, Code: client.CodeNoAnswer})
 		case p.Error == 0:
 			out = append(out, client.MemberResult{Member: m, Status: client.MemberDone})
 		case p.Error == CodeNotParticipant:
@@ -403,11 +430,11 @@ func memberResults(asked []client.JID, got []types.GroupParticipant) []client.Me
 func (a *Adapter) JoinWithLink(ctx context.Context, code string) (client.JID, bool, error) {
 	g, err := a.cli.JoinGroupWithLink(ctx, code)
 	if err != nil {
-		return "", false, callError(err)
+		return "", false, inviteError(err)
 	}
 	member, err := a.isMember(ctx, g)
 	if err != nil {
-		return jid(g), false, callError(err)
+		return jid(g), false, inviteError(err)
 	}
 	return jid(g), !member, nil
 }
@@ -461,7 +488,7 @@ func (a *Adapter) JoinLinkedGroup(ctx context.Context, community, g client.JID) 
 func (a *Adapter) InviteInfo(ctx context.Context, code string) (client.Group, client.JID, error) {
 	info, err := a.cli.GetGroupInfoFromLink(ctx, code)
 	if err != nil {
-		return client.Group{}, "", callError(err)
+		return client.Group{}, "", inviteError(err)
 	}
 	g := group(info)
 	return g, g.Parent, nil
@@ -492,16 +519,29 @@ func (a *Adapter) DownloadMedia(ctx context.Context, msg *client.Message, maxByt
 	default:
 		return nil, "", "", errors.New("attachment reference holds no media")
 	}
-	ctx, cancel := context.WithTimeout(withMaxBytes(ctx, maxBytes), downloadTimeout)
+	dctx, cancel := context.WithTimeout(withMaxBytes(ctx, maxBytes), downloadTimeout)
 	defer cancel()
-	data, err := a.cli.Download(ctx, d)
+	data, err := a.cli.Download(dctx, d)
 	if err != nil {
+		if ctx.Err() == nil && unreached(err) {
+			return nil, "", "", fmt.Errorf("%w: %w", client.ErrNotConnected, err)
+		}
 		return nil, "", "", callError(err)
 	}
 	if int64(len(data)) > maxBytes {
 		return nil, "", "", tooLarge(maxBytes)
 	}
 	return data, msg.Media.MimeType, msg.Media.FileName, nil
+}
+
+// unreached: a download that got no answer from WhatsApp's media servers. The
+// library fetches from cached media hosts without the websocket, so a lost
+// internet connection shows as a network error or the download timing out,
+// and the media-host query as no answer within the library's IQ timeout.
+// A refusal (404, 410), a corrupt file or a missing URL is an answer.
+func unreached(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, wm.ErrIQTimedOut)
 }
 
 // LinkedDevices lists the bot account's other linked devices.
@@ -524,9 +564,6 @@ func (a *Adapter) LinkedDevices(ctx context.Context) ([]client.JID, error) {
 	return out, nil
 }
 
-// ErrNoLID is returned when a phone number has no known WhatsApp LID.
-var ErrNoLID = errors.New("no WhatsApp LID known for that number")
-
 // ResolvePhoneToLID finds the LID of a phone number: the local store first,
 // then one lookup on WhatsApp (which records the mapping).
 func (a *Adapter) ResolvePhoneToLID(ctx context.Context, phone client.JID) (client.JID, error) {
@@ -541,7 +578,7 @@ func (a *Adapter) ResolvePhoneToLID(ctx context.Context, phone client.JID) (clie
 		return "", callError(err)
 	}
 	if len(resp) == 0 || !resp[0].IsIn {
-		return "", fmt.Errorf("%s is not on WhatsApp", phone)
+		return "", fmt.Errorf("%w: %s is not on WhatsApp", client.ErrNoLID, phone)
 	}
 	if resp[0].JID.Server == types.HiddenUserServer {
 		return jid(resp[0].JID), nil
@@ -551,7 +588,7 @@ func (a *Adapter) ResolvePhoneToLID(ctx context.Context, phone client.JID) (clie
 		return "", err
 	}
 	if lid.IsEmpty() {
-		return "", ErrNoLID
+		return "", client.ErrNoLID
 	}
 	return jid(lid), nil
 }
