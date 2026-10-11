@@ -302,7 +302,7 @@ func TestReportPurgeTakesPressesAndUnlinkedPosts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := s.MarkReportSent(ctx, id); err != nil {
+		if err := s.MarkReportSent(ctx, id, ""); err != nil {
 			t.Fatal(err)
 		}
 		post(id, RoleReport, msg)
