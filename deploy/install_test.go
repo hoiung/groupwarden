@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -132,7 +133,7 @@ func TestInstallRendersRestartsAndRollsBack(t *testing.T) {
 		t.Fatalf("backup drop-in %q; want %q", got, want)
 	}
 	for _, u := range []string{"groupwarden.service", "groupwarden-sync.service", "groupwarden-backup.service",
-		"groupwarden-backup.timer"} {
+		"groupwarden-backup.timer", "groupwarden-backup-failed.service"} {
 		if got, want := n.read("etc/systemd/system/"+u), readFile(t, u); got != want {
 			t.Fatalf("%s installed differs from deploy/%s", u, u)
 		}
@@ -211,6 +212,37 @@ func TestInstallRendersRestartsAndRollsBack(t *testing.T) {
 	for _, args := range [][]string{nil, {"--binary"}, {"--version", "x", "--binary", "y"}, {"--frobnicate"}} {
 		if code, out := n.install(nil, args...); code != 2 {
 			t.Fatalf("install %v: exit %d; want usage (2)\n%s", args, code, out)
+		}
+	}
+}
+
+// TestBackupUnitHasAFailureHandler: a backup unit that fails before
+// `groupwarden backup` records anything (systemd could not open the target,
+// the time limit) starts groupwarden-backup-failed.service, which runs
+// `backup-failed` and has no access to the target, so it starts whatever
+// state the target is in.
+func TestBackupUnitHasAFailureHandler(t *testing.T) {
+	directives := func(unit string) []string {
+		var d []string
+		for _, l := range strings.Split(readFile(t, unit), "\n") {
+			if l != "" && !strings.HasPrefix(l, "#") {
+				d = append(d, l)
+			}
+		}
+		return d
+	}
+	backup := strings.Join(directives("groupwarden-backup.service"), "\n")
+	if head, _, _ := strings.Cut(backup, "[Service]"); !strings.Contains(head, "\nOnFailure=groupwarden-backup-failed.service\n") {
+		t.Fatalf("the backup unit's [Unit] section starts no failure handler:\n%s", head)
+	}
+	handler := directives("groupwarden-backup-failed.service")
+	run := "ExecStart=/usr/local/bin/groupwarden backup-failed --config /var/lib/groupwarden/config/config.yaml"
+	if !slices.Contains(handler, run) {
+		t.Fatalf("the failure handler does not run backup-failed:\n%s", strings.Join(handler, "\n"))
+	}
+	for _, d := range handler {
+		if strings.HasPrefix(d, "ReadWritePaths=") || strings.HasPrefix(d, "RequiresMountsFor=") {
+			t.Fatalf("the failure handler depends on the target (%s): it would fail with the backup", d)
 		}
 	}
 }
