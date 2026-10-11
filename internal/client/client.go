@@ -109,7 +109,7 @@ var ErrNotAdmin = errors.New("the bot is not an admin there")
 
 // ErrNotConnected is returned (wrapped) when a call got no answer for want of
 // a connection: none when it was made, the connection lost before the answer,
-// or (downloads) WhatsApp's media servers not reached.
+// or (downloads) WhatsApp's media servers not reached or not done in time.
 var ErrNotConnected = errors.New("not connected to WhatsApp")
 
 // ErrMediaTooLarge is returned (wrapped) by DownloadMedia for an attachment
