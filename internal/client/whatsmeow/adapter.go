@@ -538,10 +538,12 @@ func (a *Adapter) DownloadMedia(ctx context.Context, msg *client.Message, maxByt
 // library fetches from cached media hosts without the websocket, so a lost
 // internet connection shows as a network error or the download timing out,
 // and the media-host query as no answer within the library's IQ timeout.
-// A refusal (404, 410), a corrupt file or a missing URL is an answer.
+// A timed-out download is a net.Error too: context.DeadlineExceeded has the
+// Timeout method. A refusal (404, 410), a corrupt file or a missing URL is an
+// answer.
 func unreached(err error) bool {
 	var ne net.Error
-	return errors.As(err, &ne) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, wm.ErrIQTimedOut)
+	return errors.As(err, &ne) || errors.Is(err, wm.ErrIQTimedOut)
 }
 
 // LinkedDevices lists the bot account's other linked devices.
