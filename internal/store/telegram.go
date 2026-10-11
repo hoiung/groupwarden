@@ -213,13 +213,28 @@ func (s *Store) AttachmentsToPost(ctx context.Context, kind string, limit int, s
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id FROM reports r JOIN evidence e ON e.id = r.evidence_id
+	return s.attachments(ctx, "attachments to post", `SELECT r.id FROM reports r JOIN evidence e ON e.id = r.evidence_id
 WHERE r.kind = ? AND r.sent_at IS NOT NULL AND e.media_state = 'saved'
 	AND e.id NOT IN (SELECT value FROM json_each(?))
 	AND NOT EXISTS (SELECT 1 FROM tg_messages t WHERE t.report_id = r.id AND t.role = 'attachment')
 ORDER BY r.id LIMIT ?`, kind, string(skipped), limit)
+}
+
+// AttachmentsNotKept lists delivered reports of kind that told the admins
+// their attachment was being saved or posted below, while it was then not
+// kept (the download failed or was too large, or the saved file was lost).
+func (s *Store) AttachmentsNotKept(ctx context.Context, kind string, limit int) ([]AttachmentToPost, error) {
+	return s.attachments(ctx, "attachments not kept", `SELECT r.id FROM reports r JOIN evidence e ON e.id = r.evidence_id
+WHERE r.kind = ? AND r.sent_at IS NOT NULL AND r.media_told IN ('pending', 'saved')
+	AND e.media_state IN ('failed', 'too_large')
+ORDER BY r.id LIMIT ?`, kind, limit)
+}
+
+// attachments reads the reports query selects, each with its evidence.
+func (s *Store) attachments(ctx context.Context, what, query string, args ...any) ([]AttachmentToPost, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("read attachments to post: %w", err)
+		return nil, fmt.Errorf("read %s: %w", what, err)
 	}
 	// The ids are read and the rows closed before the per-report reads: the
 	// store has one connection, which open rows would hold.
