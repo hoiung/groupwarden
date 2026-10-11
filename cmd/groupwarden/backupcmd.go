@@ -19,7 +19,9 @@ import (
 // backup makes one encrypted backup of groupwarden.db (internal/backup). It
 // prints the result line, records it and the run time for /status and the
 // overdue check, and alerts the admins once per failure episode. Exit 1 when
-// it failed.
+// it failed. The target is checked first, as `check --secrets` does: a
+// network share that is not mounted leaves its mount point an empty folder on
+// the local disk, and a backup written there would be on the disk it guards.
 func (e *env) backup(ctx context.Context, cfg *config.Config, log *slog.Logger) int {
 	if _, err := os.Stat(cfg.StoreDB()); err != nil { // #nosec G703 -- operator-configured data dir
 		fmt.Fprintf(e.stdout, "FAILED: no groupwarden.db to back up (%v)\n", err)
@@ -31,8 +33,15 @@ func (e *env) backup(ctx context.Context, cfg *config.Config, log *slog.Logger) 
 		return exitFail
 	}
 	defer func() { _ = st.Close() }()
-	res, err := backup.Run(ctx, st, backup.Options{TargetDir: cfg.Backup.TargetDir, Recipient: cfg.Backup.AgeRecipient,
-		Keep: cfg.Backup.Keep, ScratchDir: cfg.DataDir, Now: e.now(), Log: log})
+	var res backup.Result
+	err = e.backupTarget(cfg)
+	if err != nil {
+		err = fmt.Errorf("backup.target_dir cannot take the backup: %w", err)
+		log.Error("backup target refused", "err", err)
+	} else {
+		res, err = backup.Run(ctx, st, backup.Options{TargetDir: cfg.Backup.TargetDir, Recipient: cfg.Backup.AgeRecipient,
+			Keep: cfg.Backup.Keep, ScratchDir: cfg.DataDir, Now: e.now(), Log: log})
+	}
 	result := fmt.Sprintf("ok %s (%d bytes, %d older deleted)", filepath.Base(res.File), res.Bytes, len(res.Removed))
 	if err != nil {
 		result = "FAILED: " + err.Error()
