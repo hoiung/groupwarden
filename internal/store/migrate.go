@@ -213,6 +213,11 @@ ALTER TABLE tg_messages ADD COLUMN upto INTEGER NOT NULL DEFAULT 0;
 	`
 ALTER TABLE reports ADD COLUMN media_told TEXT NOT NULL DEFAULT '';
 `,
+	// 9: the reports of each evidence copy, to find a post's own report (the
+	// first), which its attachment is shown under.
+	`
+CREATE INDEX reports_evidence ON reports (evidence_id);
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
