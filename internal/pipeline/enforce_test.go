@@ -404,10 +404,12 @@ func TestPhoneToLIDFailureReported(t *testing.T) {
 }
 
 // TestBanLookupNotFailedWhenWhatsAppCannotAnswer: a lookup WhatsApp did not
-// answer (rate limit, or no connection) is no answer about the number: the
-// ban is not marked unresolved or reported, and the next sweep looks it up.
+// answer (rate limit, no connection, no answer in time, any other error) is no
+// answer about the number: the ban is not marked unresolved or reported, and
+// the next sweep looks it up.
 func TestBanLookupNotFailedWhenWhatsAppCannotAnswer(t *testing.T) {
-	for name, cause := range map[string]error{"rate limited": client.ErrRateLimited, "not connected": client.ErrNotConnected} {
+	for name, cause := range map[string]error{"rate limited": client.ErrRateLimited, "not connected": client.ErrNotConnected,
+		"timed out": errors.New("info query timed out")} {
 		t.Run(name, func(t *testing.T) {
 			k := modtest.New(t, "")
 			m := client.Member{Phone: "447700900456@s.whatsapp.net"}
@@ -549,17 +551,17 @@ func TestUnaddressableSenderPostDeleted(t *testing.T) {
 	}
 }
 
-// TestHeldRemovalsNote: a pause alert's note counts the queued removals, not
-// the deletes (one spam post queues a delete and a removal from the community
-// and from each of the spammer's two groups), and says nothing when none is
-// queued.
+// TestHeldRemovalsNote: a pause alert's note counts the queued removals (and
+// join-request rejections), not the deletes (one spam post queues a delete
+// and a removal from the community and from each of the spammer's two
+// groups), and says nothing when none is queued.
 func TestHeldRemovalsNote(t *testing.T) {
 	k := modtest.New(t, "")
 	if got := pipeline.HeldRemovalsNote(k.Ctx, k.Store, k.Log); got != "" {
 		t.Fatalf("note with nothing queued: %q, want none", got)
 	}
 	k.Deliver(k.Spam("M1", modtest.G1))
-	want := " 3 queued removal(s) go out only after [Resume]; a report may already say they were done."
+	want := " 3 queued removal(s) or join-request rejection(s) go out only after [Resume]; a report may already say they were done."
 	if got := pipeline.HeldRemovalsNote(k.Ctx, k.Store, k.Log); got != want {
 		var rows []string
 		for _, g := range []client.JID{modtest.Community, modtest.G1, modtest.G2, modtest.GB} {
