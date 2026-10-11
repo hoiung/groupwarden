@@ -57,7 +57,10 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                (another disk or a network share; refused when on the data's
                disk, as an unmounted share's folder is) ► keep the newest
                backup.keep; `restore` puts one
-               back with every action paused
+               back with every action paused; a unit that fails before
+               the backup says why (the target cannot be opened) ►
+               groupwarden-backup-failed.service ► `backup-failed`
+               records and reports it
 
            internal/app health rule (running, connected, not deaf, config
                loaded, admin chat reached) ► `healthcheck` (install script,
@@ -68,7 +71,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | Package | Job |
 |---|---|
 | `cmd/groupwarden` | The CLI: `pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `corpus test\|add`, `ledger summary`, `ban add\|remove\|list`, `member show\|forget`, `sync-config`, `schedule sync`, `backup`, `backup-dir`, `restore`, `fatal-exit-code` |
-| `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation. It turns the library's own reconnects off: when WhatsApp asks for a fresh login (stream error 515) or stops answering keepalives for longer than the library's limit, the adapter closes the connection and reports it lost, so the supervisor opens every connection. A call that got no answer (no connection, the connection lost before the answer, the media servers not reached) is reported as not connected and tried again later; only an answer from WhatsApp is final |
+| `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation. It turns the library's own reconnects off: when WhatsApp asks for a fresh login (stream error 515) or stops answering keepalives for longer than the library's limit, the adapter closes the connection and reports it lost, so the supervisor opens every connection. A call that got no answer (no connection, the connection lost before the answer, the media servers not reached or not done in time) is reported as not connected and tried again later; only an answer from WhatsApp is final, except that an attachment download with no answer while WhatsApp is connected is given up after 5 passes (the attachments queued after it go first) |
 | `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders, the daily check; the admin chat's controls; the data-dir lock (it names the holding process and command, so the config sync signals only `run`); `Build`, the one wiring of the bot's parts (`run` and the log test both use it); the health rule `healthcheck`, the heartbeat ping and the daily check share |
 | `internal/backup` | The nightly backup (snapshot, age encryption, keep the newest `backup.keep`, crash leftovers removed) and `restore` (refuses an existing database, a wrong key or a file that is not a groupwarden backup) |
 | `internal/pipeline` | Inbox worker (it decides nothing until the group directory has loaded once), the group directory (communities, members, admins: from WhatsApp's group list, kept current by membership, admin and join events, which a list read already on its way cannot undo), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
