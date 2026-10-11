@@ -770,6 +770,149 @@ func TestAttachmentNotKeptAfterTheReport(t *testing.T) {
 			t.Fatalf("%d replies under a report whose header already said it, want 0", n)
 		}
 	})
+
+	// Telegram refusing the note: recorded as told (best effort), and the
+	// log says no note reached the chat.
+	t.Run("note refused", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.Download = refused
+		h.k.Deliver(image(h.k.Spam("I1", modtest.G1)))
+		h.k.Fire()
+		h.drain()
+		if _, err := h.k.Media.Fetch(h.k.Ctx); err != nil {
+			t.Fatal(err)
+		}
+		h.srv.Fail("sendMessage", telegramtest.Reply{Code: 400, Description: "Bad Request: message to be replied not found"})
+		h.drain()
+		h.drain()
+		logs := h.logs.String()
+		if !strings.Contains(logs, "recorded as told without a note") || strings.Contains(logs, "told the admins an attachment was not kept") {
+			t.Fatalf("log after a refused note:\n%s\nwant it recorded as told without a note, never as told", logs)
+		}
+		if due, err := h.k.Store.AttachmentsNotKept(h.k.Ctx, 10); err != nil || len(due) != 0 {
+			t.Fatalf("%d notes still due (%v), want the refused one recorded as told", len(due), err)
+		}
+	})
+
+	// The promise was kept: the attachment was posted. Its file lost later
+	// (a backup restored on a new host) is answered by the button that finds
+	// it gone, never by a note saying it was not posted.
+	t.Run("posted, then lost", func(t *testing.T) {
+		h := newHarness(t, "")
+		r := attachmentReport(t, h)
+		h.k.Clock.Advance(25 * time.Hour)
+		h.drain()
+		full, _, err := h.k.Store.Report(h.k.Ctx, r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ev, ok, err := h.k.Store.Evidence(h.k.Ctx, full.EvidenceID)
+		if err != nil || !ok || ev.MediaPath == "" {
+			t.Fatalf("evidence %+v (%v %v), want a saved file", ev, ok, err)
+		}
+		if err := os.Remove(ev.MediaPath); err != nil {
+			t.Fatal(err)
+		}
+		h.press(adminUser, "show", r.ID)
+		if got := h.lastReply(); !strings.Contains(got, "no longer kept") {
+			t.Fatalf("[Show attachment] answered %q, want that the file is gone", got)
+		}
+		h.drain()
+		h.drain()
+		if n := saidNotPosted(h, r.ID, ""); n != 0 {
+			t.Fatalf("%d replies saying a posted attachment was not posted, want 0", n)
+		}
+	})
+}
+
+// TestAttachmentShownUnderThePostsOwnReport: every report about a post shows
+// the post's attachment the same way, whatever its kind (a watch-only match,
+// an exempt sender, as a spam report does): posted below once saved, or one
+// reply saying why it was not kept. A later report about the same post (an
+// action not done) names the attachment and points to the first report,
+// rather than promising it again.
+func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
+	saved := func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+	}
+	refused := func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return nil, "", "", errors.New("media server answered 404")
+	}
+	for _, p := range []struct {
+		kind string
+		msg  func(k *modtest.Kit) *client.Message
+	}{
+		{ledger.KindWouldHaveActed, func(k *modtest.Kit) *client.Message {
+			m := k.Msg("W1", modtest.G1, modtest.Spammer, "crypto: inbox me")
+			m.SenderAlt = modtest.SpammerPhone
+			return m
+		}},
+		{ledger.KindExempt, func(k *modtest.Kit) *client.Message {
+			m := k.Msg("AI1", modtest.G1, modtest.Other2, "crypto tips, inbox me")
+			m.FromMetaAI = true
+			return m
+		}},
+	} {
+		t.Run(p.kind+", saved", func(t *testing.T) {
+			h := newHarness(t, "")
+			h.k.Fake.Download = saved
+			h.k.Deliver(image(p.msg(h.k)))
+			h.k.Fire()
+			if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != 1 {
+				t.Fatalf("fetched %d (%v)", n, err)
+			}
+			h.drain()
+			h.drain()
+			r := h.only(p.kind)
+			if n := requests(h, "sendMessage", "\nAttachment: image offer.jpg (0.0 MB), posted below"); n != 1 {
+				t.Fatalf("%d reports saying the attachment is posted below, want 1", n)
+			}
+			docs := h.srv.Requests("sendDocument")
+			if len(docs) != 1 || !strings.Contains(docs[0].Params["reply_parameters"], `"message_id":`+strconv.Itoa(h.head(r.ID))) {
+				t.Fatalf("attachment posts %+v, want the file as a reply to the report", docs)
+			}
+		})
+		t.Run(p.kind+", not kept", func(t *testing.T) {
+			h := newHarness(t, "")
+			h.k.Fake.Download = refused
+			h.k.Deliver(image(p.msg(h.k)))
+			h.k.Fire()
+			h.drain()
+			r := h.only(p.kind)
+			if n := requests(h, "sendMessage", "\nAttachment: image offer.jpg (0.0 MB), being saved"); n != 1 {
+				t.Fatalf("%d reports saying the attachment is being saved, want 1", n)
+			}
+			if _, err := h.k.Media.Fetch(h.k.Ctx); err != nil {
+				t.Fatal(err)
+			}
+			h.drain()
+			h.drain()
+			if n := saidNotPosted(h, r.ID, "media server answered 404"); n != 1 {
+				t.Fatalf("%d replies under the report saying why its attachment was not kept, want 1", n)
+			}
+		})
+	}
+	t.Run("a later report about the same post", func(t *testing.T) {
+		h := newHarness(t, "")
+		r := attachmentReport(t, h)
+		full, _, err := h.k.Store.Report(h.k.Ctx, r.ID)
+		if err != nil || !full.OwnsAttachment {
+			t.Fatalf("report %+v (%v), want it to own its post's attachment", full, err)
+		}
+		later := h.report(store.Report{Kind: ledger.KindNotDone, Priority: true, EvidenceID: full.EvidenceID,
+			Text: "The bot could not delete a message in the group. Do it by hand."})
+		h.drain()
+		h.drain()
+		if n := requests(h, "sendMessage", "\nAttachment: image offer.jpg (0.0 MB), shown under this post's first report"); n != 1 {
+			t.Fatalf("%d later reports pointing to the first report's attachment, want 1", n)
+		}
+		if n := len(h.srv.Requests("sendDocument")); n != 1 {
+			t.Fatalf("%d attachment posts, want 1 (under the first report only)", n)
+		}
+		if n := saidNotPosted(h, later, ""); n != 0 {
+			t.Fatalf("%d notes under the later report, want 0", n)
+		}
+	})
 }
 
 // TestPriorityAlertNotHeldByAnUpload: while the automatic post of an
