@@ -476,6 +476,7 @@ func (c *Chat) noteNotKept(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	var recorded error
 	if head != 0 {
 		// One message (clipped as the header clips the reason), so a retry
 		// never posts part of it twice.
@@ -488,15 +489,22 @@ func (c *Chat) noteNotKept(ctx context.Context) (bool, error) {
 		default:
 			m := store.TGMessage{ReportID: r.ID, Role: store.RoleReply, ChatID: msg.Chat.ID, MessageID: msg.ID,
 				SentAt: c.Now()}
-			if err := c.record(ctx, fmt.Sprintf("note on the attachment of report %d", r.ID), func(ctx context.Context) error {
+			recorded = c.record(ctx, fmt.Sprintf("note on the attachment of report %d", r.ID), func(ctx context.Context) error {
 				return c.Store.AddTGMessage(ctx, m)
-			}); err != nil {
-				return false, err
-			}
+			})
 		}
 	}
-	if err := c.Store.SetMediaTold(ctx, r.ID, ev.MediaState); err != nil {
+	// Made even when the note's own record is owed, and owed the same way
+	// when the store will not take it: settle makes it before the next note,
+	// which would otherwise say it again.
+	state := ev.MediaState
+	if err := c.record(ctx, fmt.Sprintf("what report %d was told about its attachment", r.ID), func(ctx context.Context) error {
+		return c.Store.SetMediaTold(ctx, r.ID, state)
+	}); err != nil {
 		return false, err
+	}
+	if recorded != nil {
+		return false, recorded
 	}
 	c.Log.Info("told the admins an attachment was not kept", "report", r.ID, "evidence", ev.ID, "state", ev.MediaState)
 	return true, nil
