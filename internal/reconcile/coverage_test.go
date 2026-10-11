@@ -368,27 +368,32 @@ func TestSweepAfterRepair(t *testing.T) {
 	}
 }
 
-// TestSweepAfterTheLibrarysOwnReconnect: a connection the library opens by
-// itself (its reconnect after a 515 stream error: no Disconnected, no
-// connect by the supervisor) still makes its sweep wait for the offline
-// backlog.
-func TestSweepAfterTheLibrarysOwnReconnect(t *testing.T) {
+// TestSweepAfterTheAdapterDropsTheConnection: when WhatsApp asks for a fresh
+// login (stream error 515) or stops answering keepalives, the adapter closes
+// the connection and reports Disconnected; the supervisor reconnects, and
+// when WhatsApp then says it delivered the offline backlog before it reports
+// the connection, the sweep runs at once rather than after the ten-minute
+// wait for that word.
+func TestSweepAfterTheAdapterDropsTheConnection(t *testing.T) {
 	k := modtest.New(t, "")
 	s := newSweep(k)
 	stop := startApp(t, k, s, nil)
 	defer stop()
 	waitFor(t, "the sweep at connect", func() bool { return sweeps(k) == 1 })
-	begun, waits := k.Fake.Count("SubGroups"), k.Logged(waitingForBacklog)
-	k.Fake.Emit(client.Lifecycle{Kind: client.Connected})
-	waitFor(t, "the sweep after the library's reconnect waiting", func() bool { return k.Logged(waitingForBacklog) == waits+1 })
-	if n := k.Logged("WhatsApp reconnected by itself; the sweep waits for its offline backlog"); n != 1 {
-		t.Fatalf("%d log lines for the library's reconnect", n)
+	k.Fake.OnConnect = func(f *clienttest.Fake) {
+		f.Emit(client.Lifecycle{Kind: client.CaughtUp, Detail: "0 offline events"})
+		f.Emit(client.Lifecycle{Kind: client.Connected})
 	}
-	if n := k.Fake.Count("SubGroups"); n != begun {
-		t.Fatalf("a sweep began before WhatsApp delivered the offline backlog (%d, was %d)", n, begun)
+	k.Fake.Emit(client.Lifecycle{Kind: client.Disconnected, Detail: "WhatsApp asked for a fresh login (stream error 515)"})
+	waitFor(t, "the reconnect scheduled", func() bool { return k.Logged("disconnected; reconnecting") == 1 })
+	k.Clock.Advance(5 * time.Minute) // the longest backoff
+	waitFor(t, "the sweep after the reconnect", func() bool { return sweeps(k) == 2 })
+	if n := k.Fake.Count("Connect"); n != 2 {
+		t.Fatalf("%d connects, want the first and the supervisor's reconnect", n)
 	}
-	k.Fake.Emit(client.Lifecycle{Kind: client.CaughtUp})
-	waitFor(t, "the sweep after the library's reconnect", func() bool { return sweeps(k) == 2 })
+	if n := k.Logged("WhatsApp has not said it delivered the offline backlog; sweeping anyway"); n != 0 {
+		t.Fatalf("the sweep after the reconnect waited for word WhatsApp had given (%d warnings)", n)
+	}
 }
 
 // TestNoActionBeforeTheGroupListLoads: at a restart, actions left queued
