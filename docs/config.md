@@ -32,7 +32,7 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 | `rate.per_minute`, `rate.burst` | `internal/action/executor.go` `takeToken` (the outbox token bucket) |
 | `breaker.max_actions`, `breaker.window_minutes` | `internal/action/executor.go` `breaker` |
 | `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check, the group-list refresh and the sweep: coverage and its reports, joining absent linked groups, banned members present, join requests, phone-only bans) |
-| `backup.target_dir` | `cmd/groupwarden/storecmds.go` `check --secrets` (must be on a different disk); `cmd/groupwarden/backupcmd.go` `backup` → `internal/backup` `Run`; `groupwarden backup-dir` (the install script lets the backup unit write there) |
+| `backup.target_dir` | `cmd/groupwarden/storecmds.go` `check --secrets` (must be on a different disk); `cmd/groupwarden/backupcmd.go` `backup` (the same check every night, then `internal/backup` `Run`); `groupwarden backup-dir` (the install script lets the backup unit write there) |
 | `backup.age_recipient` | `cmd/groupwarden/storecmds.go` `check --secrets` (parsed by `age`); `internal/backup` `Run` (each backup is encrypted to it) |
 | `backup.keep` | `internal/backup` `Run` → `prune` (keeps the newest this many backups; other files in the directory are never touched) |
 | `evidence.max_attachment_mb` | `internal/pipeline/moderator.go` `evidence` (an attachment that declares a size over it is recorded by type, name and size only); `internal/action/media.go` `fetchOne` (the download stops at it, whatever size the post declared, and a file over it is recorded the same way) |
