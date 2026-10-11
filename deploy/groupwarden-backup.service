@@ -9,7 +9,8 @@ Group=groupwarden
 # Only groupwarden.db is copied, never the WhatsApp session store. The target
 # directory (another disk) is made writable by a drop-in deploy/install.sh
 # writes from `groupwarden backup-dir`
-# (groupwarden-backup.service.d/target.conf: ReadWritePaths=<it>).
+# (groupwarden-backup.service.d/target.conf: ReadWritePaths=-<it>; the "-"
+# lets the backup run, and fail loudly, when the target is not there).
 ExecStart=/usr/local/bin/groupwarden backup --config /var/lib/groupwarden/config/config.yaml
 TimeoutStartSec=30min
 StateDirectory=groupwarden
