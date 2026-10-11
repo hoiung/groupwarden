@@ -64,14 +64,15 @@ func Reported(ctx context.Context, tx *sql.Tx, kind, community, subject string, 
 }
 
 // ActionReported reports, inside tx, whether a report of kind linked to an
-// action like row (same action, group and member) was written at or after
-// since.
+// action like row (same action, group, member and message) was written at or
+// after since. A delete names its message; a removal, ban or rejection has
+// none, so every one of those for the same member and group is alike.
 func ActionReported(ctx context.Context, tx *sql.Tx, kind string, row LedgerRow, since time.Time) (bool, error) {
 	var n int
 	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reports r
 	JOIN report_ledger rl ON rl.report_id = r.id JOIN ledger l ON l.id = rl.ledger_id
-WHERE r.kind = ? AND r.created_at >= ? AND l.action = ? AND l.chat = ? AND l.target = ?`,
-		kind, since.UnixMilli(), string(row.Action), row.Chat, row.Target).Scan(&n)
+WHERE r.kind = ? AND r.created_at >= ? AND l.action = ? AND l.chat = ? AND l.target = ? AND l.msg_id = ?`,
+		kind, since.UnixMilli(), string(row.Action), row.Chat, row.Target, row.MsgID).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("read reports of an action: %w", err)
 	}
@@ -147,18 +148,23 @@ const (
 	EditDeleteAttachment = "delete_attachment" // delete an attachment post still showing
 )
 
-// ReportEdit is one queued change to a sent report.
+// ReportEdit is one queued change to a sent report; ID tells this queuing of
+// it from a later one.
 type ReportEdit struct {
+	ID       int64
 	ReportID int64
 	Op       string
 }
 
-// QueueReportEdits queues ops for each report inside tx (a repeat is ignored).
+// QueueReportEdits queues ops for each report inside tx. Queuing an edit
+// already queued replaces it with a new one (a new ID, never reused), so an
+// edit queued again while the earlier one is being applied is not dropped
+// with it (DeleteReportEdit removes only the queuing it applied).
 func QueueReportEdits(ctx context.Context, tx *sql.Tx, reportIDs []int64, ops []string, now time.Time) error {
 	for _, id := range reportIDs {
 		for _, op := range ops {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO report_edits (report_id, op, created_at) VALUES (?, ?, ?)
-ON CONFLICT (report_id, op) DO NOTHING`, id, op, now.UnixMilli()); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO report_edits (report_id, op, created_at) VALUES (?, ?, ?)`,
+				id, op, now.UnixMilli()); err != nil {
 				return fmt.Errorf("queue report edit: %w", err)
 			}
 		}
@@ -168,7 +174,7 @@ ON CONFLICT (report_id, op) DO NOTHING`, id, op, now.UnixMilli()); err != nil {
 
 // ReportEdits lists queued report edits, oldest first.
 func (s *Store) ReportEdits(ctx context.Context) ([]ReportEdit, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT report_id, op FROM report_edits ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, report_id, op FROM report_edits ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("read report edits: %w", err)
 	}
@@ -176,7 +182,7 @@ func (s *Store) ReportEdits(ctx context.Context) ([]ReportEdit, error) {
 	var out []ReportEdit
 	for rows.Next() {
 		var e ReportEdit
-		if err := rows.Scan(&e.ReportID, &e.Op); err != nil {
+		if err := rows.Scan(&e.ID, &e.ReportID, &e.Op); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
