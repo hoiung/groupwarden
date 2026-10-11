@@ -13,8 +13,9 @@ import (
 // downloadTimeout bounds one attachment download, the library's retries
 // included. A download that runs out of it got no answer: the fetcher tries
 // the attachments queued behind it first and gives up on it after a few
-// passes (action.MediaFetcher). The largest file kept (50 MiB, the schema's
-// maximum for evidence.max_attachment_mb) arrives within it at 1.5 Mbit/s.
+// tries spread over about half an hour (action.MediaFetcher). The largest
+// file kept (50 MiB, the schema's maximum for evidence.max_attachment_mb)
+// arrives within it at 1.5 Mbit/s.
 const downloadTimeout = 5 * time.Minute
 
 // mediaOverhead is how far an encrypted attachment's body can run past the
