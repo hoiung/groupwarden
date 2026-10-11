@@ -402,16 +402,14 @@ func (a *App) supervise(ctx context.Context) error {
 	var bannedUntil time.Time
 	nextCompanionCheck := time.Time{}
 
-	// ownConnect: the supervisor started the connection that the next
-	// Connected reports. A Connected without it is one the library opened by
-	// itself (its reconnect after a 515 stream error).
-	ownConnect := false
+	// Every connection starts here: the adapter turns the library's own
+	// reconnects off and reports what they served (a 515 stream error, a dead
+	// keepalive) as Disconnected, so this is the one place a connection opens.
 	connect := func() {
 		// Re-armed before the connection starts, not at Connected: the
 		// library does not order Connected and CaughtUp, so a CaughtUp that
 		// overtakes its own Connected still releases this connection's sweep.
 		a.awaitingBacklog()
-		ownConnect = true
 		if err := a.Adapter.Connect(ctx); err != nil {
 			d := b.Next()
 			a.Log.Warn("connect failed; retrying", "in", d, "err", mask.IDs(err.Error()))
@@ -486,12 +484,6 @@ func (a *App) supervise(ctx context.Context) error {
 					b.Reset()
 					bannedUntil = time.Time{}
 					a.mon.onConnected(now)
-					if !ownConnect {
-						// No connect() armed this connection's backlog wait.
-						a.Log.Info("WhatsApp reconnected by itself; the sweep waits for its offline backlog")
-						a.awaitingBacklog()
-					}
-					ownConnect = false
 					a.Log.Info("connected to WhatsApp")
 					nextCompanionCheck = now.Add(a.settings().CompanionCheckEvery)
 					a.Directory.SetSelf(a.Adapter.Self())
