@@ -2,6 +2,7 @@ package telegram_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -49,6 +50,36 @@ func TestPostNotRepeatedWhileItsRecordFails(t *testing.T) {
 		h.k.Deliver(h.k.Msg("K1", modtest.G1, modtest.Member, "anyone into crypto?"))
 		h.drain()
 		h.k.Clock.Advance(24 * time.Hour)
+	}
+	// A report posted while its attachment was being saved, whose download
+	// then failed: the note saying so is due.
+	noteDue := func(t *testing.T, h *harness) {
+		h.k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+			return nil, "", "", errors.New("media server answered 404")
+		}
+		h.k.Deliver(image(h.k.Spam("I1", modtest.G1)))
+		h.k.Fire()
+		h.drain()
+		if _, err := h.k.Media.Fetch(h.k.Ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notePosts := func(h *harness) int {
+		return requests(h, "sendMessage", "Attachment not posted: media server answered 404")
+	}
+	noteRecorded := func(t *testing.T, h *harness) {
+		if due, err := h.k.Store.AttachmentsNotKept(h.k.Ctx, ledger.KindAction, 10); err != nil || len(due) != 0 {
+			t.Fatalf("%d attachment notes still due (%v), want the note recorded as told", len(due), err)
+		}
+		replies := 0
+		for _, m := range h.messages(h.only(ledger.KindAction).ID) {
+			if m.Role == store.RoleReply {
+				replies++
+			}
+		}
+		if replies != 1 {
+			t.Fatalf("%d replies recorded under the report, want the note's", replies)
+		}
 	}
 	summaryRecorded := func(t *testing.T, h *harness) {
 		if got := statusOf(t, h, store.StatusSummaryDay); got != "2026-10-06" {
@@ -99,6 +130,10 @@ func TestPostNotRepeatedWhileItsRecordFails(t *testing.T) {
 					t.Fatal("the attachment post was never recorded")
 				}
 			}},
+		{name: "attachment note", table: "tg_messages", run: postAttachment, setup: noteDue, posts: notePosts,
+			recorded: noteRecorded},
+		{name: "attachment note told", table: "reports", when: "NEW.media_told = 'failed'", run: postAttachment,
+			setup: noteDue, posts: notePosts, recorded: noteRecorded},
 		{name: "attachment take-down", table: "tg_messages", run: step,
 			setup: func(t *testing.T, h *harness) {
 				attachmentReport(t, h)
