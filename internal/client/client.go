@@ -273,7 +273,7 @@ type LifecycleKind string
 
 const (
 	Connected    LifecycleKind = "connected"
-	Disconnected LifecycleKind = "disconnected" // transient: reconnect with backoff
+	Disconnected LifecycleKind = "disconnected" // transient: reconnect with backoff; once per connection
 	// CaughtUp: after a connect, WhatsApp has delivered everything it held
 	// while the bot was offline, each event persisted before this arrives.
 	CaughtUp LifecycleKind = "caught_up"
