@@ -39,7 +39,7 @@ func TestAttachmentOfAForgottenCopyNotKept(t *testing.T) {
 			m := k.Spam("M1", modtest.G1)
 			m.Media = &client.Media{Kind: "image", MimeType: "image/jpeg", FileName: "offer.jpg", Size: 8, Raw: []byte("raw")}
 			k.Deliver(m)
-			pending, err := k.Store.PendingMedia(k.Ctx, 10)
+			pending, err := k.Store.PendingMedia(k.Ctx, 0, 10)
 			if err != nil || len(pending) != 1 {
 				t.Fatalf("pending attachments %d (%v), want 1", len(pending), err)
 			}
@@ -85,6 +85,7 @@ func TestAttachmentWaitsForTheConnection(t *testing.T) {
 			ctx, cancel := context.WithCancel(k.Ctx)
 			defer cancel()
 			interrupted := true
+			k.Media.Connected = func() bool { return !interrupted }
 			k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
 				if interrupted {
 					return nil, "", "", c.fail(cancel, ctx)
@@ -97,7 +98,7 @@ func TestAttachmentWaitsForTheConnection(t *testing.T) {
 			if n, err := k.Media.Fetch(ctx); !errors.Is(err, c.wantErr) || (c.wantErr == nil && err != nil) || n != 0 {
 				t.Fatalf("interrupted: fetched %d (%v), want 0 (%v)", n, err, c.wantErr)
 			}
-			pending, err := k.Store.PendingMedia(k.Ctx, 10)
+			pending, err := k.Store.PendingMedia(k.Ctx, 0, 10)
 			if err != nil || len(pending) != 1 {
 				t.Fatalf("pending attachments %d (%v), want it still pending", len(pending), err)
 			}
@@ -115,6 +116,56 @@ func TestAttachmentWaitsForTheConnection(t *testing.T) {
 				t.Fatalf("media %+v, want saved", e)
 			}
 		})
+	}
+}
+
+// TestAttachmentWithoutAnAnswerDoesNotHoldTheQueue: while WhatsApp is
+// connected, an attachment whose download gets no answer (a file that never
+// finishes in time, a media path no server takes) does not hold up the ones
+// queued after it, and after mediaNoAnswerTries passes it is settled as not
+// available instead of being downloaded again until the evidence purge.
+func TestAttachmentWithoutAnAnswerDoesNotHoldTheQueue(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Media.Connected = func() bool { return true }
+	k.Fake.Download = func(_ context.Context, m *client.Message) ([]byte, string, string, error) {
+		if m.ID == "M1" {
+			return nil, "", "", fmt.Errorf("download: %w: context deadline exceeded", client.ErrNotConnected)
+		}
+		return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+	}
+	for _, id := range []string{"M1", "M2"} {
+		m := k.Spam(id, modtest.G1)
+		m.Media = &client.Media{Kind: "image", MimeType: "image/jpeg", FileName: "offer.jpg", Size: 8, Raw: []byte("raw")}
+		k.Deliver(m)
+	}
+	pending, err := k.Store.PendingMedia(k.Ctx, 0, 10)
+	if err != nil || len(pending) != 2 {
+		t.Fatalf("pending attachments %d (%v), want 2", len(pending), err)
+	}
+	stuck, next := pending[0].ID, pending[1].ID
+	if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 1 {
+		t.Fatalf("first pass: settled %d (%v), want the second attachment", n, err)
+	}
+	if e, _, _ := k.Store.Evidence(k.Ctx, next); e.MediaState != store.MediaSaved {
+		t.Fatalf("the attachment after the stuck one: %+v, want saved", e)
+	}
+	for pass := 2; pass < 5; pass++ {
+		if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 0 {
+			t.Fatalf("pass %d: settled %d (%v), want the stuck one still pending", pass, n, err)
+		}
+	}
+	if e, _, _ := k.Store.Evidence(k.Ctx, stuck); e.MediaState != store.MediaPending {
+		t.Fatalf("after 4 passes: %+v, want still pending", e)
+	}
+	if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 1 {
+		t.Fatalf("fifth pass: settled %d (%v), want the stuck one", n, err)
+	}
+	e, _, _ := k.Store.Evidence(k.Ctx, stuck)
+	if e.MediaState != store.MediaFailed || !strings.Contains(e.MediaError, "no answer in 5 tries") {
+		t.Fatalf("after 5 passes: %+v, want failed saying no answer in 5 tries", e)
+	}
+	if n := k.Fake.Count("DownloadMedia M1"); n != 5 {
+		t.Fatalf("the stuck attachment was asked for %d times, want 5", n)
 	}
 }
 
@@ -162,7 +213,7 @@ func TestAttachmentSaveFailureLoggedAndLeavesNoFile(t *testing.T) {
 			m := k.Spam("M1", modtest.G1)
 			m.Media = &client.Media{Kind: "image", MimeType: "image/jpeg", FileName: "offer.jpg", Size: 8, Raw: []byte("raw")}
 			k.Deliver(m)
-			pending, err := k.Store.PendingMedia(k.Ctx, 10)
+			pending, err := k.Store.PendingMedia(k.Ctx, 0, 10)
 			if err != nil || len(pending) != 1 {
 				t.Fatalf("pending attachments %d (%v), want 1", len(pending), err)
 			}
