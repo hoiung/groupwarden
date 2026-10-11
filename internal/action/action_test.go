@@ -92,6 +92,28 @@ func TestRefusedRemovalReportedNotDone(t *testing.T) {
 	}
 }
 
+// TestNoAnswerForTheMemberSaysSo: a removal WhatsApp's answer did not mention
+// is reported as unknown, not as a refusal with a made-up code.
+func TestNoAnswerForTheMemberSaysSo(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Fake.Results = map[client.JID]client.MemberStatus{modtest.Spammer: client.MemberFailed,
+		modtest.SpammerPhone: client.MemberFailed}
+	k.Fake.Codes = map[client.JID]int{modtest.Spammer: client.CodeNoAnswer, modtest.SpammerPhone: client.CodeNoAnswer}
+	k.Deliver(k.Spam("M1", modtest.G1))
+	k.Fire()
+	want := notDoneText(k, "remove a member", modtest.G1, "WhatsApp's answer did not say whether it was done")
+	found := false
+	for _, r := range k.Reports(ledger.KindNotDone) {
+		found = found || r.Text == want
+		if strings.Contains(r.Text, "refused") || !strings.Contains(r.Text, "did not say whether it was done") {
+			t.Errorf("not-done report %q, want it to say the answer did not say", r.Text)
+		}
+	}
+	if !found {
+		t.Fatalf("no not-done report %q; all: %+v", want, k.Reports(ledger.KindNotDone))
+	}
+}
+
 // TestRecheckPaused: a pause holds the actions it covers in the outbox
 // (deletes only stop for a full pause) and they fire after [Resume].
 func TestRecheckPaused(t *testing.T) {
@@ -329,7 +351,7 @@ func TestBreakerPausesRemovalsNotDeletes(t *testing.T) {
 		t.Fatalf("breaker alerts %+v", al)
 	}
 	// The removal still queued may be one a report already called done.
-	if held := " 1 queued removal(s) go out only after [Resume]; a report may already say they were done."; !strings.HasSuffix(al[0].Text, held) {
+	if held := " 1 queued removal(s) or join-request rejection(s) go out only after [Resume]; a report may already say they were done."; !strings.HasSuffix(al[0].Text, held) {
 		t.Fatalf("breaker alert %q, want it to end %q", al[0].Text, held)
 	}
 	if err := k.Exec.Resume(k.Ctx); err != nil {
