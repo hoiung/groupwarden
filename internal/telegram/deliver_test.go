@@ -546,6 +546,27 @@ func TestLongDisplayNameKeepsTheHeaderInTheFirstPart(t *testing.T) {
 // nameMaxForTest is how much of a display name a report's header shows.
 const nameMaxForTest = 200
 
+// TestHeaderFieldsFromOutsideTheBotAreClipped: every header field the bot does
+// not write (the group's name, the display name, the attachment's file name
+// and its error) is clipped, so the header stays within the first message
+// however long they are.
+func TestHeaderFieldsFromOutsideTheBotAreClipped(t *testing.T) {
+	long := func(c string) string { return strings.Repeat(c, 5000) }
+	clipped := func(c string) string { return strings.Repeat(c, nameMaxForTest-1) + "…" }
+	ev := &store.Evidence{Chat: string(modtest.G1), Sender: string(modtest.Spammer), PushName: long("n"), Rule: "pitch",
+		ConfigHash: "abc", MediaKind: "document", MediaName: long("f"), MediaState: store.MediaFailed, MediaError: long("e")}
+	h := telegram.Header(store.Report{Kind: ledger.KindAction, Text: "Spam deleted"}, ev, long("g"), true)
+	for _, want := range []string{"\nGroup: " + clipped("g") + " (", "\nSender: " + clipped("n") + " (",
+		"\nAttachment: document " + clipped("f") + ", not available: " + clipped("e") + "\n", "\nRule: pitch\n"} {
+		if !strings.Contains(h, want) {
+			t.Errorf("header lacks %.80q", want)
+		}
+	}
+	if n := len(utf16.Encode([]rune(h))); n > telegram.MaxUnits/2 {
+		t.Fatalf("header is %d UTF-16 units, want it well within one message", n)
+	}
+}
+
 // TestRetryAfterARefusedFollowupPostsNoPartTwice: Telegram refuses one
 // follow-up, then tells a later part to wait; the retry resumes after the
 // last part posted, so no part goes twice and the message still ends.
@@ -812,40 +833,59 @@ func TestAttachmentForgottenDuringItsUpload(t *testing.T) {
 
 // TestTakeDownSkipsAPostTakenDownWhileItWaited: a take-down waiting for its
 // turn lets the delivery slot go; when another loop takes the same post down
-// meanwhile, this one sends nothing once its turn comes.
+// meanwhile, this one sends nothing once its turn comes: neither the delete
+// (here told to wait) nor the placeholder that replaces a post Telegram will
+// not delete (here waiting its turn in the shared bucket).
 func TestTakeDownSkipsAPostTakenDownWhileItWaited(t *testing.T) {
-	h := newHarness(t, "")
-	attachmentReport(t, h)
-	post := attachmentPost(t, h)
-	if _, err := h.k.Store.ForgetMember(h.k.Ctx, []string{string(modtest.Spammer), string(modtest.SpammerPhone)}); err != nil {
-		t.Fatal(err)
-	}
-	h.srv.Fail("deleteMessage", telegramtest.Reply{Code: 429, Description: "Too Many Requests: retry after 30", RetryAfter: 30})
-	for i := 0; ; i++ {
-		if _, err := h.chat.Step(h.k.Ctx); err != nil {
-			break // the take-down was told to wait
-		}
-		if i == 10 {
-			t.Fatal("the take-down was never told to wait")
-		}
-	}
-	// The next try waits out the retry_after; meanwhile another loop takes
-	// the post down.
-	h.k.Clock.OnSleep = func(time.Duration) {
-		if err := h.k.Store.MarkTGGone(h.k.Ctx, post.ID); err != nil {
-			t.Error(err)
-		}
-	}
-	h.drain()
-	h.k.Clock.OnSleep = nil
-	if n, m := len(h.srv.Requests("deleteMessage")), len(h.srv.Requests("editMessageMedia")); n != 1 || m != 0 {
-		t.Fatalf("%d deletes and %d replacements, want only the one told to wait", n, m)
-	}
-	if !strings.Contains(h.logs.String(), "attachment post already taken down") {
-		t.Fatal("the skipped take-down was not logged")
-	}
-	if edits, err := h.k.Store.ReportEdits(h.k.Ctx); err != nil || len(edits) != 0 {
-		t.Fatalf("edits left %+v (%v)", edits, err)
+	for _, waits := range []string{"deleteMessage", "editMessageMedia"} {
+		t.Run(waits, func(t *testing.T) {
+			h := newHarness(t, "")
+			attachmentReport(t, h)
+			post := attachmentPost(t, h)
+			if _, err := h.k.Store.ForgetMember(h.k.Ctx, []string{string(modtest.Spammer), string(modtest.SpammerPhone)}); err != nil {
+				t.Fatal(err)
+			}
+			goneOnce := func() {
+				if err := h.k.Store.MarkTGGone(h.k.Ctx, post.ID); err != nil {
+					t.Error(err)
+				}
+			}
+			if waits == "deleteMessage" {
+				h.srv.Fail("deleteMessage", telegramtest.Reply{Code: 429, Description: "Too Many Requests: retry after 30",
+					RetryAfter: 30})
+				for i := 0; ; i++ {
+					if _, err := h.chat.Step(h.k.Ctx); err != nil {
+						break // the take-down was told to wait
+					}
+					if i == 10 {
+						t.Fatal("the take-down was never told to wait")
+					}
+				}
+				// The next try waits out the retry_after; meanwhile another
+				// loop takes the post down.
+				h.k.Clock.OnSleep = func(time.Duration) { goneOnce() }
+			} else {
+				// Telegram will not delete it; while the placeholder waits its
+				// turn, another loop takes the post down.
+				h.srv.Fail("deleteMessage", telegramtest.Reply{Code: 400, Description: "Bad Request: message can't be deleted"})
+				h.k.Clock.OnSleep = func(time.Duration) {
+					if len(h.srv.Requests("deleteMessage")) == 1 {
+						goneOnce()
+					}
+				}
+			}
+			h.drain()
+			h.k.Clock.OnSleep = nil
+			if n, m := len(h.srv.Requests("deleteMessage")), len(h.srv.Requests("editMessageMedia")); n != 1 || m != 0 {
+				t.Fatalf("%d deletes and %d replacements, want only the one delete", n, m)
+			}
+			if !strings.Contains(h.logs.String(), "attachment post already taken down") {
+				t.Fatal("the skipped take-down was not logged")
+			}
+			if edits, err := h.k.Store.ReportEdits(h.k.Ctx); err != nil || len(edits) != 0 {
+				t.Fatalf("edits left %+v (%v)", edits, err)
+			}
+		})
 	}
 }
 
