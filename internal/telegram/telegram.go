@@ -1,8 +1,8 @@
 // Package telegram is the admin chat: one private Telegram group where the
-// bot delivers every stored report and alert, posts (then takes down) a
-// deleted post's attachment, removes members' message text once the evidence
-// window ends, keeps a list of its commands pinned at the top, and takes
-// buttons and commands from that group's admins only.
+// bot delivers every stored report and alert, posts (then takes down) the
+// attachment of a post a rule matched, removes members' message text once the
+// evidence window ends, keeps a list of its commands pinned at the top, and
+// takes buttons and commands from that group's admins only.
 //
 // Everything it still has to do lives in groupwarden.db (undelivered reports,
 // queued edits, posted messages), so a restart picks up where it stopped.
