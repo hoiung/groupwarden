@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -852,10 +853,12 @@ func TestDownloadWithoutAnAnswerIsRetried(t *testing.T) {
 			t.Errorf("%s: %v; retried %v, want %v (wrapping the original)", c.name, got, errors.Is(got, client.ErrNotConnected), c.retry)
 		}
 	}
-	// The bot stopping is not the download's failure, and not a reason to retry.
+	// The bot stopping is not the download's failure, and not a reason to retry,
+	// though the HTTP client reports the cancelled request as a network error.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	f := &fakeWA{downloadErr: fmt.Errorf("failed to download media from last host: %w", context.Canceled)}
+	stopped := &url.Error{Op: "Get", URL: "https://example.org/v/img", Err: context.Canceled}
+	f := &fakeWA{downloadErr: fmt.Errorf("failed to download media from last host: %w", stopped)}
 	if _, _, _, got := newTestAdapter(t, f, nil).DownloadMedia(ctx, msg, 1<<20); errors.Is(got, client.ErrNotConnected) {
 		t.Errorf("a download the bot's stop cut short: %v, want it not marked for a retry", got)
 	}
