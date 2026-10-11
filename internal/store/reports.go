@@ -26,6 +26,10 @@ type Report struct {
 	Action    string
 	CreatedAt time.Time
 	SentAt    time.Time
+	// OwnsAttachment: this is its post's own report, the first one of its
+	// evidence copy, which the post's attachment is shown under. A later
+	// report about the same post (an action not done) only names it.
+	OwnsAttachment bool
 }
 
 // InsertReport writes r and its ledger links inside tx. A report of an alert
@@ -90,15 +94,20 @@ func (s *Store) AddReport(ctx context.Context, r Report, ledgerIDs []int64) (int
 	return id, err
 }
 
+// ownsAttachment is the condition, on a row of reports read unaliased, that
+// it is the first report of its evidence copy (Report.OwnsAttachment).
+const ownsAttachment = `reports.evidence_id IS NOT NULL
+	AND reports.id = (SELECT MIN(o.id) FROM reports o WHERE o.evidence_id = reports.evidence_id)`
+
 const reportCols = `id, kind, priority, community, subject, COALESCE(evidence_id, 0), text, buttons, action, created_at,
-	COALESCE(sent_at, 0)`
+	COALESCE(sent_at, 0), ` + ownsAttachment
 
 func scanReport(sc interface{ Scan(...any) error }) (Report, error) {
 	var r Report
 	var buttons string
 	var created, sent int64
 	err := sc.Scan(&r.ID, &r.Kind, &r.Priority, &r.Community, &r.Subject, &r.EvidenceID, &r.Text, &buttons, &r.Action,
-		&created, &sent)
+		&created, &sent, &r.OwnsAttachment)
 	if buttons != "" {
 		r.Buttons = strings.Split(buttons, ",")
 	}
