@@ -1,16 +1,21 @@
 [Unit]
 Description=groupwarden nightly backup (groupwarden.db, age-encrypted, to backup.target_dir)
 Documentation=https://github.com/hoiung/groupwarden/blob/main/docs/deploy.md
+# A run that fails before the backup records why (systemd could not open the
+# target, the time limit) is recorded and reported by this handler.
+OnFailure=groupwarden-backup-failed.service
 
 [Service]
 Type=oneshot
 User=groupwarden
 Group=groupwarden
 # Only groupwarden.db is copied, never the WhatsApp session store. The target
-# directory (another disk) is made writable by a drop-in deploy/install.sh
-# writes from `groupwarden backup-dir`
+# directory (another disk or a network share) is made writable by a drop-in
+# deploy/install.sh writes from `groupwarden backup-dir`
 # (groupwarden-backup.service.d/target.conf: ReadWritePaths=-<it>; the "-"
-# lets the backup run, and fail loudly, when the target is not there).
+# lets the backup run, and fail loudly, when the target does not exist; any
+# other error opening it stops the unit before the backup, and the OnFailure=
+# handler reports that).
 ExecStart=/usr/local/bin/groupwarden backup --config /var/lib/groupwarden/config/config.yaml
 TimeoutStartSec=30min
 StateDirectory=groupwarden
