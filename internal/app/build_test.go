@@ -83,6 +83,9 @@ func TestBuildWiresEveryWake(t *testing.T) {
 	if a.Executor.Connected == nil || !a.Executor.Connected() {
 		t.Fatal("the executor is not told WhatsApp is connected")
 	}
+	if a.Media.Connected == nil || !a.Media.Connected() {
+		t.Fatal("the attachment fetcher is not told WhatsApp is connected")
+	}
 	// Every worker idle: the start-up posts are out and nothing has moved for
 	// a second.
 	for n := -1; n != len(api.Posted())+len(fake.Calls()); {
