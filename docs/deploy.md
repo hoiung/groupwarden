@@ -6,7 +6,7 @@ groupwarden runs as one systemd service on one always-on machine (a "node"): a L
 |---|---|
 | `groupwarden.service` | `groupwarden run`: the bot. Restarts on a crash, but not on exit code 78 (`groupwarden fatal-exit-code`): logged out, banned or client outdated need a human, and restarting into them only hammers WhatsApp |
 | `groupwarden-sync.timer` → `groupwarden-sync.service` | `groupwarden sync-config` every `config_sync_minutes`: pulls your private config repo, checks it and swaps it in (see [config.md](config.md)) |
-| `groupwarden-backup.timer` → `groupwarden-backup.service` | `groupwarden backup` every night at 03:15: an encrypted copy of `groupwarden.db` on another disk |
+| `groupwarden-backup.timer` → `groupwarden-backup.service` | `groupwarden backup` every night at 03:15: an encrypted copy of `groupwarden.db` on another disk or a network share |
 
 Both timers have `Persistent=true`, so a run missed while the node was off happens as soon as it is back. Upgrades and rollback are in [runbook.md](runbook.md).
 
@@ -16,7 +16,7 @@ Both timers have `Persistent=true`, so a run missed while the node was off happe
 - A Telegram bot token from BotFather, and a private Telegram group for your admins with the bot in it as an admin with the **Pin messages** right. Its chat ID is a negative number; send a message in the group and read it from `https://api.telegram.org/bot<token>/getUpdates`.
 - A private git repo for your config (`config.yaml` at its root, plus your corpus), and a read-only deploy key for it.
 - An [age](https://age-encryption.org) key pair for the backups. Only the public key (`age1…`) goes on the node, in `backup.age_recipient`; keep the private key somewhere else, or the backups are only as safe as the node.
-- A second disk for the backups (`backup.target_dir`). `groupwarden check --secrets` refuses a target on the same disk as the data.
+- A second disk, or a network share (see [Backups to a network share](#backups-to-a-network-share)), for the backups (`backup.target_dir`). `groupwarden check --secrets` and every nightly backup refuse a target on the same disk as the data.
 - Go (the version in `go.mod`) and git on the node, for `deploy/install.sh --version`.
 - The node's clock in your time zone: the daily check is posted at `daily_check_time` (12:00 by default) in the node's local time. `date` shows it; set it with `sudo timedatectl set-timezone Europe/London` (your zone), or `-e TZ=Europe/London` for Docker. The bot logs the zone it uses when it starts.
 
@@ -32,7 +32,7 @@ Both timers have `Persistent=true`, so a run missed while the node was off happe
 | `/var/lib/groupwarden/.ssh/known_hosts` | The git host's key, for the sync's `git pull` | groupwarden, 0600 |
 | `/etc/groupwarden/secrets.env` | `TELEGRAM_TOKEN=…` and `TELEGRAM_CHAT_ID=…`; groupwarden refuses the file if group or others can read it | groupwarden, 0600 |
 | `/etc/groupwarden/deploy_key` | The read-only deploy key's private half | groupwarden, 0600 |
-| `backup.target_dir` (another disk) | `groupwarden-<time>.db.age` files | groupwarden, 0700 |
+| `backup.target_dir` (another disk or a network share) | `groupwarden-<time>.db.age` files | groupwarden, 0700 |
 
 The units run with systemd's sandboxing (`ProtectSystem=strict`, `ProtectHome=yes`, no capabilities, a system-call filter): the service can write only its state directory, and the backup unit only its target as well (the drop-in), with no network at all.
 
@@ -132,6 +132,36 @@ Run these as your own user (with sudo) from a clone of this repo. Each step says
 8. **Test a backup once** rather than waiting for the night: `sudo systemctl start groupwarden-backup.service`, then `sudo ls -l /srv/groupwarden-backup` and `/status` ("Backup: last run …").
 
 Run `deploy/install.sh` again whenever you change `config_sync_minutes` or `backup.target_dir`: those two are baked into the units.
+
+## Backups to a network share
+
+Instead of a second disk, `backup.target_dir` can be a folder on a NAS or another machine, mounted on the node over SMB (CIFS). This works on a Linux node and inside WSL2.
+
+1. **A login on the share that can write only the backup folder.** Keep it in a file only root can read:
+
+   ```bash
+   sudo apt install cifs-utils
+   sudo install -m 0600 -o root -g root /dev/null /etc/groupwarden/share.cred
+   sudo nano /etc/groupwarden/share.cred   # two lines: username=<user> and password=<password>
+   ```
+
+2. **Mount it from `/etc/fstab`**, files owned by the service user. One line, with your share's address (an IP address if its name does not resolve from the node, as is common inside WSL2):
+
+   ```text
+   //<address>/<share> /mnt/share cifs credentials=/etc/groupwarden/share.cred,uid=groupwarden,gid=groupwarden,dir_mode=0700,file_mode=0600,_netdev,x-systemd.automount,x-systemd.mount-timeout=30 0 0
+   ```
+
+   ```bash
+   sudo mkdir -p /mnt/share
+   sudo systemctl daemon-reload
+   ls /mnt/share                            # mounts it (x-systemd.automount mounts it whenever it is first used)
+   sudo -u groupwarden mkdir /mnt/share/groupwarden
+   ```
+
+3. **Point `backup.target_dir` at a folder inside the share**, `/mnt/share/groupwarden` here, never at the mount point itself: while the share is not mounted, the mount point is an empty folder on the node's own disk.
+4. **Install again and test a backup** (steps 6 and 8 above): `deploy/install.sh --version …`, then `sudo systemctl start groupwarden-backup.service` and `/status`.
+
+When the share is not there at night (the NAS is off, the network is down, the password changed), that night's backup fails and the admins get "The nightly backup FAILED: …" with the reason: the folder is missing, or it is on the same disk as the data. Nothing is written to the node's own disk. Earlier backups on the share are kept.
 
 ## Windows node running WSL2
 
