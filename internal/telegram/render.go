@@ -19,8 +19,12 @@ const maxUnits = 4096
 // removedNote replaces a member's message text once it is removed.
 const removedNote = "(message text removed)"
 
-// nameMax bounds the attachment's file name in a report's header (the name
-// is in full under "Message:", as the sender wrote it).
+// nameMax bounds each header field the bot does not write itself: the
+// group's name, the sender's display name, the attachment's file name (in
+// full under "Message:", as the sender wrote it) and an attachment error. The
+// rest come from the bot or the deployer's config (the report line, a rule
+// name, the action, the config hash), so the header fits in the report's
+// first message: a retry posts only the member's text after the posted parts.
 const nameMax = 200
 
 // rendered is a report as it goes to the chat: the report message, then any
@@ -125,7 +129,7 @@ func header(r store.Report, ev *store.Evidence, groupName string, full bool) str
 	h.WriteString(r.Text)
 	h.WriteString("\n\nGroup: ")
 	if groupName != "" {
-		h.WriteString(groupName + " ")
+		h.WriteString(clip(groupName, nameMax) + " ")
 	}
 	h.WriteString("(" + mask.IDs(ev.Chat) + ")")
 	h.WriteString("\nSender: " + sender(ev, full))
@@ -148,8 +152,8 @@ func header(r store.Report, ev *store.Evidence, groupName string, full bool) str
 	return h.String()
 }
 
-// sender names who posted: display name (unless named is false), then the
-// masked number or LID.
+// sender names who posted: display name (clipped; unless named is false),
+// then the masked number or LID.
 func sender(ev *store.Evidence, named bool) string {
 	id := ev.Sender
 	for _, j := range []string{ev.Sender, ev.SenderAlt} {
@@ -158,7 +162,7 @@ func sender(ev *store.Evidence, named bool) string {
 			break
 		}
 	}
-	name := strings.TrimSpace(ev.PushName)
+	name := clip(strings.TrimSpace(ev.PushName), nameMax)
 	switch {
 	case !named:
 		name = "(display name removed)"
@@ -209,7 +213,7 @@ func attachmentNote(ev *store.Evidence, named bool) string {
 	case store.MediaTooLarge:
 		return desc + ", too large to keep"
 	case store.MediaFailed:
-		return desc + ", not available: " + ev.MediaError
+		return desc + ", not available: " + clip(ev.MediaError, nameMax)
 	}
 	return desc + ", being saved"
 }
