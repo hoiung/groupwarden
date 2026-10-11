@@ -398,7 +398,7 @@ func (k *Kit) MarkAllSent() {
 		k.T.Fatal(err)
 	}
 	for _, r := range reps {
-		if err := k.Store.MarkReportSent(k.Ctx, r.ID); err != nil {
+		if err := k.Store.MarkReportSent(k.Ctx, r.ID, ""); err != nil {
 			k.T.Fatal(err)
 		}
 	}
