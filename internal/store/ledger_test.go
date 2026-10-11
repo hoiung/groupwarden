@@ -107,8 +107,9 @@ func TestRetryKeepsAnOverturnedRow(t *testing.T) {
 }
 
 // TestActionReportedOnlyForTheSameAction: a not_done report silences another
-// only for the same action, group and member, and only one written since the
-// given time; a report of another kind on the same action silences nothing.
+// only for the same action, group, member and message, and only one written
+// since the given time; a report of another kind on the same action silences
+// nothing.
 func TestActionReportedOnlyForTheSameAction(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
@@ -146,6 +147,7 @@ func TestActionReportedOnlyForTheSameAction(t *testing.T) {
 		{"another action", "not_done", with(func(r *LedgerRow) { r.Action = ActReject }), now.Add(-time.Hour), false},
 		{"another group", "not_done", with(func(r *LedgerRow) { r.Chat = g2 }), now.Add(-time.Hour), false},
 		{"another member", "not_done", with(func(r *LedgerRow) { r.Target = y }), now.Add(-time.Hour), false},
+		{"another message", "not_done", with(func(r *LedgerRow) { r.MsgID = "M2" }), now.Add(-time.Hour), false},
 		{"written before since", "not_done", told, now.Add(time.Millisecond), false},
 	} {
 		var got bool
