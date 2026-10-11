@@ -384,7 +384,7 @@ func HeldRemovalsNote(ctx context.Context, st *store.Store, log *slog.Logger) st
 	if n == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" %d queued removal(s) go out only after [Resume]; a report may already say they were done.", n)
+	return fmt.Sprintf(" %d queued removal(s) or join-request rejection(s) go out only after [Resume]; a report may already say they were done.", n)
 }
 
 // onceUnpaused says when a removal (or rejection) happens: at once, or once
@@ -437,10 +437,13 @@ func (e *Enforcer) ResolveBans(ctx context.Context) error {
 			continue
 		}
 		if err == nil {
-			err = errors.New("WhatsApp returned no LID")
+			err = fmt.Errorf("%w: WhatsApp returned %s", client.ErrNoLID, mask.IDs(string(lid)))
 		}
-		// WhatsApp gave no answer about the number: the next sweep asks again.
-		if errors.Is(err, client.ErrRateLimited) || errors.Is(err, client.ErrNotConnected) {
+		// Only WhatsApp's answer that the number has no LID settles the ban as
+		// unresolved; anything else (a rate limit, no connection, no answer in
+		// time) says nothing about the number, so the next sweep asks again
+		// (the sweep logs the error).
+		if !errors.Is(err, client.ErrNoLID) {
 			return err
 		}
 		e.Log.Warn("ban phone number not resolved to a LID", "phone", mask.IDs(b.Phone), "err", mask.IDs(err.Error()))
