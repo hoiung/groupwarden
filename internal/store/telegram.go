@@ -176,12 +176,23 @@ func (s *Store) MarkTGStripped(ctx context.Context, id int64) error {
 	})
 }
 
-// MarkTGGone records that a message was deleted or replaced by a placeholder.
+// MarkTGGone records that a message was deleted or replaced by a placeholder
+// (the first time only: a later record keeps when it went).
 func (s *Store) MarkTGGone(ctx context.Context, id int64) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `UPDATE tg_messages SET gone_at = ? WHERE id = ?`, s.now().UnixMilli(), id)
+		_, err := tx.ExecContext(ctx, `UPDATE tg_messages SET gone_at = ? WHERE id = ? AND gone_at IS NULL`, s.now().UnixMilli(), id)
 		return err
 	})
+}
+
+// TGMessage reads one posted message; ok is false when it is no longer
+// there (its report was purged).
+func (s *Store) TGMessage(ctx context.Context, id int64) (TGMessage, bool, error) {
+	ms, err := s.tgMessages(ctx, `SELECT `+tgCols+` FROM tg_messages WHERE id = ?`, id)
+	if err != nil || len(ms) == 0 {
+		return TGMessage{}, false, err
+	}
+	return ms[0], true, nil
 }
 
 // AttachmentToPost is a delivered report whose deleted post's attachment is
@@ -370,10 +381,11 @@ func (s *Store) CountStaleIntended(ctx context.Context, cutoff time.Time) (int, 
 	return n, err
 }
 
-// DeleteReportEdit drops a queued edit once it is done.
-func (s *Store) DeleteReportEdit(ctx context.Context, reportID int64, op string) error {
+// DeleteReportEdit drops a queued edit once it is done: that queuing only, by
+// its ID, so the same edit queued again meanwhile stays queued.
+func (s *Store) DeleteReportEdit(ctx context.Context, id int64) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `DELETE FROM report_edits WHERE report_id = ? AND op = ?`, reportID, op)
+		_, err := tx.ExecContext(ctx, `DELETE FROM report_edits WHERE id = ?`, id)
 		return err
 	})
 }
