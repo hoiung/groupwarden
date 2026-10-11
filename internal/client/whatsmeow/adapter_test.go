@@ -956,3 +956,139 @@ func TestReconnectsGoThroughTheSupervisor(t *testing.T) {
 		t.Fatalf("%d disconnects, want 2", n)
 	}
 }
+
+// TestOneReportPerLostConnection: a connection can end in more than one way at
+// once (a 515 or a keepalive drop, then the server's close; a client version
+// update; in either order). Whatever the signals and their order, the lost
+// connection is reported once, and the next connection can be reported again.
+func TestOneReportPerLostConnection(t *testing.T) {
+	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	ends := []struct {
+		name string
+		evt  any
+	}{
+		{"server close", &events.Disconnected{}},
+		{"fresh login (515)", &events.ManualLoginReconnect{}},
+		{"keepalive", &events.KeepAliveTimeout{ErrorCount: 9, LastSuccess: now.Add(-time.Hour)}},
+		{"version updated", &events.ClientOutdated{}},
+	}
+	for _, first := range ends {
+		for _, second := range ends {
+			if first.name == second.name {
+				continue
+			}
+			t.Run(first.name+" then "+second.name, func(t *testing.T) {
+				ctx := context.Background()
+				sink := &fakeSink{}
+				f := &fakeWA{offline: true}
+				a := newTestAdapter(t, f, sink)
+				a.now = func() time.Time { return now }
+				a.updateVersion = func(context.Context) error { return nil }
+				a.handle(first.evt)
+				a.handle(second.evt)
+				if err := a.waitClosing(ctx); err != nil {
+					t.Fatal(err)
+				}
+				got := sink.lifecycles()
+				if len(got) != 1 || got[0].Kind != client.Disconnected {
+					t.Fatalf("lifecycle %+v, want one disconnect", got)
+				}
+				f.mu.Lock()
+				f.offline = false
+				f.mu.Unlock()
+				if err := a.Connect(ctx); err != nil {
+					t.Fatal(err)
+				}
+				a.handle(&events.Disconnected{})
+				if got := sink.lifecycles(); len(got) != 2 || got[1].Kind != client.Disconnected {
+					t.Fatalf("lifecycle %+v, want the next connection's loss reported too", got)
+				}
+			})
+		}
+	}
+}
+
+// TestEarlierCloseAfterReconnectIgnored: the library sends the server's close
+// from a goroutine of its own, so it can arrive once the next connection is
+// open; that connection was not lost.
+func TestEarlierCloseAfterReconnectIgnored(t *testing.T) {
+	sink := &fakeSink{}
+	f := &fakeWA{offline: true}
+	a := newTestAdapter(t, f, sink)
+	a.handle(&events.ManualLoginReconnect{})
+	if err := a.waitClosing(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.offline, f.connected = false, true
+	f.mu.Unlock()
+	if err := a.Connect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a.handle(&events.Disconnected{})
+	if got := sink.lifecycles(); len(got) != 1 {
+		t.Fatalf("lifecycle %+v, want only the first connection's loss", got)
+	}
+}
+
+// TestConnectWaitsForTheLastClose: the next connection opens only once the
+// work finishing off the last one is done: a drop still closing it (else that
+// close would reach the new socket), and a client version update (else the
+// new connection would use the old version).
+func TestConnectWaitsForTheLastClose(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		evt  any
+	}{
+		{"drop still closing", &events.ManualLoginReconnect{}},
+		{"version update under way", &events.ClientOutdated{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			hold := make(chan struct{})
+			f := &fakeWA{offline: true}
+			a := newTestAdapter(t, f, &fakeSink{})
+			if _, drop := c.evt.(*events.ManualLoginReconnect); drop {
+				f.closeHold = hold
+			} else {
+				a.updateVersion = func(context.Context) error {
+					<-hold
+					f.record("UpdateVersion", false)
+					return nil
+				}
+			}
+			a.handle(c.evt)
+			f.mu.Lock()
+			f.offline = false
+			f.mu.Unlock()
+			// A Connect given up on (its context ended) leaves the work
+			// for the next one to wait for.
+			cancelled, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := a.Connect(cancelled); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Connect with an ended context: %v, want context.Canceled", err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- a.Connect(context.Background()) }()
+			select {
+			case err := <-done:
+				t.Fatalf("connected (%v) while the last connection was still being finished off", err)
+			case <-time.After(100 * time.Millisecond):
+			}
+			close(hold)
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Connect never returned")
+			}
+			f.mu.Lock()
+			calls := append([]string(nil), f.calls...)
+			f.mu.Unlock()
+			if len(calls) != 2 || calls[1] != "Connect" {
+				t.Fatalf("calls %v, want the last connection finished off, then Connect", calls)
+			}
+		})
+	}
+}
