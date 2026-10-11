@@ -119,9 +119,15 @@ func (e *env) backupFailed(ctx context.Context, cfg *config.Config, log *slog.Lo
 	case run == "" && strings.HasPrefix(recorded, "FAILED"):
 		// systemd before 251 does not say which run failed. A failed run
 		// records FAILED or nothing, so a recorded failure may be this run's
-		// own reason: it is kept (its episode was reported already).
+		// own reason: it is kept (its episode was reported already). The
+		// run time is still recorded: the timer did run, and the overdue
+		// check must not blame it for a share that stays unreachable.
 		log.Warn("systemd did not say which backup run failed (before systemd 251); the failure already recorded is kept",
 			"result", recorded)
+		if err := st.SetStatus(ctx, map[string]string{store.StatusBackupLastRun: store.StatusTime(e.now())}); err != nil {
+			fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+			return exitFail
+		}
 		fmt.Fprintln(e.stdout, "a failed backup is already recorded: "+recorded)
 		return exitOK
 	}
