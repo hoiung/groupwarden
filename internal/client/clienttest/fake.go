@@ -36,6 +36,8 @@ type Fake struct {
 	// Results sets a member's outcome in Remove and RejectJoinRequests
 	// (default done).
 	Results map[client.JID]client.MemberStatus
+	// Codes sets a member's code in those results (default 0).
+	Codes map[client.JID]int
 	// OnCall, when set, runs at the start of every recorded call, before the
 	// fake answers (tests check what was stored by then).
 	OnCall func(call string)
@@ -96,7 +98,7 @@ func (f *Fake) results(members []client.JID) []client.MemberResult {
 		if s, ok := f.Results[m]; ok {
 			st = s
 		}
-		out[i] = client.MemberResult{Member: m, Status: st}
+		out[i] = client.MemberResult{Member: m, Status: st, Code: f.Codes[m]}
 	}
 	return out
 }
@@ -342,5 +344,5 @@ func (f *Fake) ResolvePhoneToLID(_ context.Context, phone client.JID) (client.JI
 	if lid, ok := f.LIDs[phone]; ok {
 		return lid, nil
 	}
-	return "", errors.New("unknown number")
+	return "", fmt.Errorf("%w: %s is not on WhatsApp", client.ErrNoLID, phone)
 }
