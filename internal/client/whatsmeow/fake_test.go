@@ -3,7 +3,6 @@ package whatsmeow
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -69,9 +68,12 @@ type fakeWA struct {
 	requestAction             wm.ParticipantRequestChange
 	onWhatsApp                []types.IsOnWhatsAppResponse
 	lids                      map[string]types.JID // phone user -> LID in the local store
+	downloadErr               error
 
-	// down: every network call fails as the library does with no websocket.
-	down bool
+	// down: every network call fails with this error, as the library's calls
+	// do with no websocket (ErrNotConnected) or when the websocket closes
+	// before the answer (DisconnectedError).
+	down error
 }
 
 func (f *fakeWA) record(name string, network bool) {
@@ -83,14 +85,10 @@ func (f *fakeWA) record(name string, network bool) {
 	}
 }
 
-// net records a network call; while f.down it fails with the library's
-// not-connected error, as a call made with no websocket does.
+// net records a network call; while f.down is set it fails with that error.
 func (f *fakeWA) net(name string) error {
 	f.record(name, true)
-	if f.down {
-		return fmt.Errorf("failed to send node: %w", wm.ErrNotConnected)
-	}
-	return nil
+	return f.down
 }
 
 func (f *fakeWA) ConnectContext(context.Context) error { f.record("Connect", true); return nil }
@@ -162,6 +160,9 @@ func (f *fakeWA) GetGroupInfoFromLink(context.Context, string) (*types.GroupInfo
 func (f *fakeWA) Download(ctx context.Context, m wm.DownloadableMessage) ([]byte, error) {
 	if err := f.net("Download"); err != nil {
 		return nil, err
+	}
+	if f.downloadErr != nil {
+		return nil, f.downloadErr
 	}
 	f.downloaded = m
 	f.downloadMax, _ = maxBytesOf(ctx)
