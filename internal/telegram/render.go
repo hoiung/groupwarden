@@ -145,7 +145,7 @@ func header(r store.Report, ev *store.Evidence, groupName string, full bool) str
 	if ev.ConfigHash != "" {
 		h.WriteString("\nConfig: v" + ev.ConfigHash)
 	}
-	if note := attachmentNote(ev, full); note != "" {
+	if note := attachmentNote(ev, full, r.OwnsAttachment); note != "" {
 		h.WriteString("\nAttachment: " + note)
 	}
 	h.WriteString("\nMessage:")
@@ -194,9 +194,11 @@ func messageText(ev *store.Evidence) string {
 	return b.String()
 }
 
-// attachmentNote describes the deleted post's attachment, if it had one, with
-// its file name (clipped) when named, and its size when known.
-func attachmentNote(ev *store.Evidence, named bool) string {
+// attachmentNote describes the post's attachment, if it had one, with its
+// file name (clipped) when named, and its size when known. Only the post's own
+// report (owns) shows the file; a later report about the same post points
+// there instead of promising it again.
+func attachmentNote(ev *store.Evidence, named, owns bool) string {
 	if ev.MediaKind == "" {
 		return ""
 	}
@@ -207,12 +209,14 @@ func attachmentNote(ev *store.Evidence, named bool) string {
 	if ev.MediaSize > 0 {
 		desc += fmt.Sprintf(" (%.1f MB)", float64(ev.MediaSize)/(1<<20))
 	}
-	switch ev.MediaState {
-	case store.MediaSaved:
+	switch {
+	case !owns && (ev.MediaState == store.MediaSaved || ev.MediaState == store.MediaPending):
+		return desc + ", shown under this post's first report"
+	case ev.MediaState == store.MediaSaved:
 		return desc + ", posted below"
-	case store.MediaTooLarge:
+	case ev.MediaState == store.MediaTooLarge:
 		return desc + ", too large to keep"
-	case store.MediaFailed:
+	case ev.MediaState == store.MediaFailed:
 		return desc + ", not available: " + clip(ev.MediaError, nameMax)
 	}
 	return desc + ", being saved"
