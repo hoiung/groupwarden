@@ -20,7 +20,7 @@ The written three-part test for relying on legitimate interests (UK GDPR Article
 - **Reasonable expectations:** members are told in every group before it starts (`member-notice-template.md`). [Is moderation already in your group rules?]
 - **Impact on a member wrongly removed:** loss of access to the community until an admin restores it. Mitigations: combination rules only, watch-only start for new rules, the corpus test, evidence reported to admins, one-step [Undo], a contest route in the notice.
 - **Vulnerable members:** [are any members under 18 or otherwise vulnerable? what extra care?]
-- **Data shown outside the node:** the deleted message and attachment are shown to admins in a private Telegram group (text for [30 days], attachments for [24 hours]).
+- **Data shown outside the node:** every message a rule matched (deleted or only reported) and its attachment are shown to admins in a private Telegram group (text for [30 days], attachments for [24 hours]).
 - **Sharing across communities:** [if the ban list is shared with another community, why that is fair to members of each].
 
 ## Outcome
