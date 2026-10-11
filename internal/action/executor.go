@@ -36,8 +36,9 @@ const (
 	// notConnectedWait: an action that found WhatsApp disconnected is tried
 	// again after this, without counting an attempt.
 	notConnectedWait = time.Minute
-	// notDoneQuiet: the same action (group and member) is reported not done
-	// at most once in this long; each sweep queues it again.
+	// notDoneQuiet: the same action (group, member and, for a delete, message)
+	// is reported not done at most once in this long; each sweep queues the
+	// same removal again.
 	notDoneQuiet = 24 * time.Hour
 )
 
@@ -224,9 +225,9 @@ func (x *Executor) Step(ctx context.Context) (bool, error) {
 // lost after the change committed (nothing decides the row again) or repeated
 // when the change failed after it (the next step decides again). The report
 // is written only when change reports the row was still intended. A not_done
-// report is written at most once per notDoneQuiet for the same action, group
-// and member: a sweep queues the same removal again each time it finds the
-// member still there.
+// report is written at most once per notDoneQuiet for the same action, group,
+// member and message: a sweep queues the same removal again each time it finds
+// the member still there, while each delete is its own message.
 func (x *Executor) settle(ctx context.Context, row store.LedgerRow, change func(tx *sql.Tx, now time.Time) (bool, error),
 	rep *store.Report) (changed bool, err error) {
 	reported := false
@@ -583,9 +584,13 @@ func (x *Executor) send(ctx context.Context, row store.LedgerRow) error {
 	x.Log.Info("action sent", "action", string(row.Action), "chat", mask.IDs(row.Chat), "target", mask.IDs(row.Target),
 		"status", string(status), "code", code, "config", "v"+row.ConfigHash)
 	if status == store.Failed {
-		// WhatsApp refused it for this member: failed for good, and the
-		// admins, told it would happen, are told to do it by hand.
+		// WhatsApp refused it for this member, or did not say: failed for
+		// good, and the admins, told it would happen, are told to check and
+		// do it by hand.
 		reason := fmt.Sprintf("WhatsApp refused it (code %d)", code)
+		if code == client.CodeNoAnswer {
+			reason = "WhatsApp's answer did not say whether it was done"
+		}
 		_, err := x.settle(ctx, row, func(tx *sql.Tx, at time.Time) (bool, error) {
 			return store.FinishIn(ctx, tx, row.ID, store.Failed, reason, code, now, at)
 		}, x.notDone(row, reason))
@@ -615,7 +620,7 @@ func (x *Executor) send(ctx context.Context, row store.LedgerRow) error {
 
 func memberStatus(results []client.MemberResult) (store.Status, int) {
 	if len(results) == 0 {
-		return store.Failed, -1
+		return store.Failed, client.CodeNoAnswer
 	}
 	switch r := results[0]; r.Status {
 	case client.MemberDone:
