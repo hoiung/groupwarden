@@ -57,7 +57,7 @@ On a machine that stays on: a Linux box, a Windows PC running WSL2, or Docker. [
 
 | Path | What |
 |---|---|
-| `cmd/groupwarden/` | The CLI (`pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `ban`, `member`, `ledger`, `corpus`, `sync-config`, `schedule`, `backup`, `restore`) |
+| `cmd/groupwarden/` | The CLI (`pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `ban`, `member`, `ledger`, `corpus`, `sync-config`, `schedule`, `backup`, `backup-failed`, `restore`) |
 | `.claude/skills/spam-intake/` | The Claude Code skill that turns a pasted spam message into a tested rule change |
 | `internal/` | Client layer, store, pipeline, rules, ledger, actions, Telegram, reconcile, backup |
 | `schema/` | JSON Schema for `config.yaml` |
