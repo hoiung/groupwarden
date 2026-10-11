@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -66,7 +67,7 @@ func TestRemoveAlreadyGone(t *testing.T) {
 		{Member: client.JID(spammer.String()), Status: client.MemberDone},
 		{Member: client.JID(member2.String()), Status: client.MemberAlreadyGone, Code: 404},
 		{Member: client.JID(member3.String()), Status: client.MemberFailed, Code: 403},
-		{Member: missing, Status: client.MemberFailed, Code: -1},
+		{Member: missing, Status: client.MemberFailed, Code: client.CodeNoAnswer},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("results\n got %+v\nwant %+v", got, want)
@@ -753,14 +754,15 @@ func TestResolvePhoneToLID(t *testing.T) {
 	if lid, err := newTestAdapter(t, g, nil).ResolvePhoneToLID(ctx, "447700900456@s.whatsapp.net"); err != nil || lid != client.JID(member2.String()) {
 		t.Fatalf("lookup: %s %v", lid, err)
 	}
-	// Not on WhatsApp, or no LID known: an error (the caller raises a priority report).
+	// Not on WhatsApp, or no LID known: WhatsApp's answer, client.ErrNoLID
+	// (the caller raises a priority report).
 	h := &fakeWA{onWhatsApp: []types.IsOnWhatsAppResponse{{IsIn: false}}}
-	if _, err := newTestAdapter(t, h, nil).ResolvePhoneToLID(ctx, "447700900789@s.whatsapp.net"); err == nil {
-		t.Fatal("a number not on WhatsApp resolved")
+	if _, err := newTestAdapter(t, h, nil).ResolvePhoneToLID(ctx, "447700900789@s.whatsapp.net"); !errors.Is(err, client.ErrNoLID) {
+		t.Fatalf("a number not on WhatsApp: %v, want client.ErrNoLID", err)
 	}
 	k := &fakeWA{onWhatsApp: []types.IsOnWhatsAppResponse{{JID: spammerPN, IsIn: true}}}
-	if _, err := newTestAdapter(t, k, nil).ResolvePhoneToLID(ctx, client.JID(spammerPN.String())); !errors.Is(err, ErrNoLID) {
-		t.Fatalf("no LID known: %v", err)
+	if _, err := newTestAdapter(t, k, nil).ResolvePhoneToLID(ctx, client.JID(spammerPN.String())); !errors.Is(err, client.ErrNoLID) {
+		t.Fatalf("no LID known: %v, want client.ErrNoLID", err)
 	}
 }
 
@@ -800,18 +802,144 @@ func TestEveryCallReportsNotConnected(t *testing.T) {
 			return err
 		},
 	}
-	for name, call := range calls {
-		f := &fakeWA{down: true}
-		if err := call(newTestAdapter(t, f, nil)); !errors.Is(err, client.ErrNotConnected) {
-			t.Errorf("%s with no connection: %v, want client.ErrNotConnected", name, err)
+	downs := map[string]error{
+		"no websocket":       fmt.Errorf("failed to send node: %w", wm.ErrNotConnected),
+		"connection dropped": fmt.Errorf("usync: %w", &wm.DisconnectedError{Action: "info query"}),
+	}
+	for how, down := range downs {
+		for name, call := range calls {
+			f := &fakeWA{down: down}
+			if err := call(newTestAdapter(t, f, nil)); !errors.Is(err, client.ErrNotConnected) {
+				t.Errorf("%s, %s: %v, want client.ErrNotConnected", name, how, err)
+			}
+			if len(f.calls) == 0 {
+				t.Errorf("%s made no call to the library", name)
+			}
 		}
-		if len(f.calls) == 0 {
-			t.Errorf("%s made no call to the library", name)
+		// The connection lost between a join and its membership check.
+		f := &fakeWA{infoErr: down}
+		if _, _, err := newTestAdapter(t, f, nil).JoinWithLink(ctx, "INVITECODE"); !errors.Is(err, client.ErrNotConnected) {
+			t.Errorf("JoinWithLink, %s after the join: %v, want client.ErrNotConnected", how, err)
 		}
 	}
-	// The connection lost between a join and its membership check.
-	f := &fakeWA{infoErr: fmt.Errorf("failed to send node: %w", wm.ErrNotConnected)}
-	if _, _, err := newTestAdapter(t, f, nil).JoinWithLink(ctx, "INVITECODE"); !errors.Is(err, client.ErrNotConnected) {
-		t.Errorf("JoinWithLink with the connection lost after the join: %v, want client.ErrNotConnected", err)
+}
+
+// TestDownloadWithoutAnAnswerIsRetried: a download that got no answer from
+// WhatsApp's media servers (the internet down, the download timing out, the
+// media-host query unanswered) reaches the fetcher as client.ErrNotConnected,
+// so the attachment stays pending; an answer (gone, corrupt) does not.
+func TestDownloadWithoutAnAnswerIsRetried(t *testing.T) {
+	raw, err := proto.Marshal(&waE2E.Message{ImageMessage: &waE2E.ImageMessage{DirectPath: ps("/v/img")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := &client.Message{Media: &client.Media{Kind: "image", Raw: raw}}
+	unreachable := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connect: network is unreachable")}
+	for _, c := range []struct {
+		name  string
+		err   error
+		retry bool
+	}{
+		{"network unreachable", fmt.Errorf("failed to download media from last host: %w", unreachable), true},
+		{"download timed out", fmt.Errorf("failed to download media from last host: %w", context.DeadlineExceeded), true},
+		{"media hosts unanswered", fmt.Errorf("failed to refresh media connections: %w", wm.ErrIQTimedOut), true},
+		{"gone", wm.ErrMediaDownloadFailedWith404, false},
+		{"expired", wm.ErrMediaDownloadFailedWith410, false},
+		{"corrupt", wm.ErrInvalidMediaSHA256, false},
+	} {
+		_, _, _, got := newTestAdapter(t, &fakeWA{downloadErr: c.err}, nil).DownloadMedia(context.Background(), msg, 1<<20)
+		if errors.Is(got, client.ErrNotConnected) != c.retry || !errors.Is(got, c.err) {
+			t.Errorf("%s: %v; retried %v, want %v (wrapping the original)", c.name, got, errors.Is(got, client.ErrNotConnected), c.retry)
+		}
+	}
+	// The bot stopping is not the download's failure, and not a reason to retry.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f := &fakeWA{downloadErr: fmt.Errorf("failed to download media from last host: %w", context.Canceled)}
+	if _, _, _, got := newTestAdapter(t, f, nil).DownloadMedia(ctx, msg, 1<<20); errors.Is(got, client.ErrNotConnected) {
+		t.Errorf("a download the bot's stop cut short: %v, want it not marked for a retry", got)
+	}
+}
+
+// TestInviteRefusalIsNotAdminRights: WhatsApp refusing an invite link with
+// 401 or 403 reaches the admin as that refusal, not as the bot lacking admin
+// rights; a rate limit is still marked.
+func TestInviteRefusalIsNotAdminRights(t *testing.T) {
+	ctx := context.Background()
+	for _, code := range []int{401, 403} {
+		refused := &wm.IQError{Code: code, Text: "not-authorized"}
+		_, _, err := newTestAdapter(t, &fakeWA{infoErr: refused}, nil).InviteInfo(ctx, "INVITECODE")
+		if errors.Is(err, client.ErrNotAdmin) || !errors.Is(err, refused) {
+			t.Errorf("invite lookup refused with %d: %v, want the refusal itself", code, err)
+		}
+	}
+	// A 401 on the membership check after a join (a 403 there means a pending request).
+	refused := &wm.IQError{Code: 401}
+	if _, _, err := newTestAdapter(t, &fakeWA{infoErr: refused}, nil).JoinWithLink(ctx, "INVITECODE"); errors.Is(err, client.ErrNotAdmin) || !errors.Is(err, refused) {
+		t.Errorf("join refused with 401: %v, want the refusal itself", err)
+	}
+	limited := &wm.IQError{Code: 429}
+	if _, _, err := newTestAdapter(t, &fakeWA{infoErr: limited}, nil).InviteInfo(ctx, "INVITECODE"); !errors.Is(err, client.ErrRateLimited) {
+		t.Errorf("invite lookup rate limited: %v, want client.ErrRateLimited", err)
+	}
+}
+
+// TestReconnectsGoThroughTheSupervisor: the library's own reconnect is off.
+// When WhatsApp asks for a fresh login, or keepalives go unanswered for
+// longer than the library's own limit, the adapter closes the connection
+// once and reports a disconnect, which the supervisor reconnects from.
+func TestReconnectsGoThroughTheSupervisor(t *testing.T) {
+	cli := newConfiguredClient(t)
+	if !cli.DisableLoginAutoReconnect || cli.EnableAutoReconnect {
+		t.Fatalf("library reconnects: login=%v auto=%v, want both off", !cli.DisableLoginAutoReconnect, cli.EnableAutoReconnect)
+	}
+	now := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	sink := &fakeSink{}
+	f := &fakeWA{offline: true}
+	a := newTestAdapter(t, f, sink)
+	a.now = func() time.Time { return now }
+	waitDrop := func(want int, detail string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if got := sink.lifecycles(); len(got) == want {
+				if l := got[want-1]; l.Kind != client.Disconnected || !strings.Contains(l.Detail, detail) {
+					t.Fatalf("lifecycle %+v, want a disconnect saying %q", l, detail)
+				}
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatalf("lifecycle %+v, want %d events", sink.lifecycles(), want)
+	}
+	disconnects := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		n := 0
+		for _, c := range f.calls {
+			if c == "Disconnect" {
+				n++
+			}
+		}
+		return n
+	}
+	a.handle(&events.ManualLoginReconnect{})
+	waitDrop(1, "stream error 515")
+	// Once per connection: the same request again before it reconnects.
+	a.handle(&events.ManualLoginReconnect{})
+	a.handle(&events.KeepAliveTimeout{ErrorCount: 9, LastSuccess: now.Add(-time.Hour)})
+	if n := disconnects(); n != 1 {
+		t.Fatalf("%d disconnects, want 1", n)
+	}
+	a.handle(&events.Connected{})
+	// Keepalives unanswered for less than the library's limit: kept.
+	a.handle(&events.KeepAliveTimeout{ErrorCount: 3, LastSuccess: now.Add(-wm.KeepAliveMaxFailTime)})
+	if n := len(sink.lifecycles()); n != 2 || disconnects() != 1 {
+		t.Fatalf("lifecycle %+v after a short keepalive gap, want only the Connected", sink.lifecycles())
+	}
+	a.handle(&events.KeepAliveTimeout{ErrorCount: 7, LastSuccess: now.Add(-wm.KeepAliveMaxFailTime - time.Second)})
+	waitDrop(3, "no keepalive for 3m1s")
+	if n := disconnects(); n != 2 {
+		t.Fatalf("%d disconnects, want 2", n)
 	}
 }
