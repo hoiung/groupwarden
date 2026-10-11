@@ -289,7 +289,7 @@ func (k *Kit) open() {
 	k.Exec.Moderator = k.Mod
 	k.Worker = &pipeline.Worker{Store: st, Inbox: pipeline.NewInbox(st), Decider: k.Mod, Config: k.Holder, Log: k.Log}
 	k.Media = &action.MediaFetcher{Store: st, Adapter: k.Fake, Config: k.Holder, Dir: filepath.Join(filepath.Dir(k.DBPath), "evidence"),
-		Log: k.Log}
+		Log: k.Log, Now: k.Clock.Now}
 }
 
 // Reopen closes the store as a crash would and opens it again with fresh
