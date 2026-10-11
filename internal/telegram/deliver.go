@@ -356,15 +356,16 @@ func (c *Chat) reportEdit(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	e := edits[0]
-	msgs, err := c.Store.TGMessagesFor(ctx, e.ReportID)
-	if err != nil {
-		return false, err
-	}
 	ctx, err = c.lock(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer c.unlock(ctx)
+	// Read under the slot: an upload's take-down may have run since.
+	msgs, err := c.Store.TGMessagesFor(ctx, e.ReportID)
+	if err != nil {
+		return false, err
+	}
 	for _, m := range msgs {
 		if !m.GoneAt.IsZero() {
 			continue
@@ -379,7 +380,7 @@ func (c *Chat) reportEdit(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
-	if err := c.Store.DeleteReportEdit(ctx, e.ReportID, e.Op); err != nil {
+	if err := c.Store.DeleteReportEdit(ctx, e.ID); err != nil {
 		return false, err
 	}
 	c.Log.Info("report edit applied", "report", e.ReportID, "op", e.Op)
@@ -591,14 +592,38 @@ func (c *Chat) takeDownDue(ctx context.Context) (bool, error) {
 	return true, c.takeDown(ctx, due[0])
 }
 
+// errDownAlready: the attachment post was taken down while this take-down
+// waited for its turn.
+var errDownAlready = errors.New("the attachment post is already taken down")
+
 // takeDown deletes an attachment post. Telegram lets a bot delete its own
 // messages only within 48 hours; past that the post is replaced by a
-// placeholder file instead. Called with the delivery slot held.
+// placeholder file instead. Called with the delivery slot held. Each request
+// first re-reads the post: a routine wait lets the slot go, and the upload
+// loop, the delivery loop and an admin's button can each be taking the same
+// post down, so only the first sends anything.
 func (c *Chat) takeDown(ctx context.Context, m store.TGMessage) error {
+	up := func(ctx context.Context) error {
+		cur, ok, err := c.Store.TGMessage(ctx, m.ID)
+		switch {
+		case err != nil:
+			return err
+		case !ok || !cur.GoneAt.IsZero():
+			return errDownAlready
+		}
+		return nil
+	}
 	err := c.call(ctx, false, func(ctx context.Context, _ int64) error {
+		if err := up(ctx); err != nil {
+			return err
+		}
 		_, err := c.api.DeleteMessage(ctx, &bot.DeleteMessageParams{ChatID: m.ChatID, MessageID: m.MessageID})
 		return err
 	})
+	if errors.Is(err, errDownAlready) {
+		c.Log.Info("attachment post already taken down", "report", m.ReportID, "message", m.MessageID)
+		return nil
+	}
 	if err == nil {
 		c.Log.Info("attachment post deleted", "report", m.ReportID, "message", m.MessageID)
 		return c.markGone(ctx, m)
@@ -612,11 +637,18 @@ func (c *Chat) takeDown(ctx context.Context, m store.TGMessage) error {
 	note := fmt.Sprintf("This attachment was taken down after %d hours. [Show attachment] on the report posts it again "+
 		"while the evidence copy is kept.\n", hours)
 	err = c.call(ctx, false, func(ctx context.Context, _ int64) error {
+		if err := up(ctx); err != nil {
+			return err
+		}
 		_, err := c.api.EditMessageMedia(ctx, &bot.EditMessageMediaParams{ChatID: m.ChatID, MessageID: m.MessageID,
 			Media: &models.InputMediaDocument{Media: "attach://" + placeholderName,
 				MediaAttachment: strings.NewReader(note)}})
 		return err
 	})
+	if errors.Is(err, errDownAlready) {
+		c.Log.Info("attachment post already taken down", "report", m.ReportID, "message", m.MessageID)
+		return nil
+	}
 	if err != nil && !gone(err) {
 		return err
 	}
@@ -735,11 +767,16 @@ func (c *Chat) summary(ctx context.Context) (bool, error) {
 		}
 	}
 	through := end.AddDate(0, 0, -1).Format(time.DateOnly)
+	text := strings.TrimSpace(b.String())
 	if day != through {
 		upto = 0
 	}
+	if started, t, ok := strings.Cut(st[store.StatusSummaryText].Value, "\n"); ok && started == through && upto > 0 {
+		// Its posted parts were cut from that text: the rest comes from it too.
+		text = t
+	}
 	sent := false
-	if text := strings.TrimSpace(b.String()); text != "" {
+	if text != "" {
 		if err := c.sendSummary(ctx, text, through, upto); err != nil {
 			return false, err
 		}
@@ -749,7 +786,7 @@ func (c *Chat) summary(ctx context.Context) (bool, error) {
 		if err := c.Store.MarkReportsSent(ctx, ids); err != nil {
 			return err
 		}
-		return c.Store.SetStatus(ctx, map[string]string{store.StatusSummaryDay: through})
+		return c.Store.SetStatus(ctx, map[string]string{store.StatusSummaryDay: through, store.StatusSummaryText: ""})
 	}); err != nil {
 		return sent, err
 	}
@@ -815,9 +852,10 @@ func summaryProgress(v string) (day string, upto int) {
 // sendSummary posts the daily summary through the day `through`, in parts
 // when it is long, from the UTF-16 unit offset from on (where an earlier
 // attempt's posted parts reached). Each part is recorded together with how
-// far it reached (StatusSummaryUpto), so a retry after a failed send or a
-// record the store would not take resumes after the last part posted. A part
-// Telegram refuses is skipped (the rest still go).
+// far it reached (StatusSummaryUpto) and the text itself (StatusSummaryText),
+// so a retry after a failed send or a record the store would not take resumes
+// the same text after the last part posted. A part Telegram refuses is
+// skipped (the rest still go).
 func (c *Chat) sendSummary(ctx context.Context, text, through string, from int) error {
 	ctx, err := c.lock(ctx)
 	if err != nil {
@@ -837,7 +875,8 @@ func (c *Chat) sendSummary(ctx context.Context, text, through string, from int) 
 		}
 		upto := from + starts[i] + units(parts[i])
 		m := store.TGMessage{Role: store.RoleSummary, ChatID: msg.Chat.ID, MessageID: msg.ID, Part: i, Upto: upto, SentAt: c.Now()}
-		kv := map[string]string{store.StatusSummaryUpto: through + ":" + strconv.Itoa(upto)}
+		kv := map[string]string{store.StatusSummaryUpto: through + ":" + strconv.Itoa(upto),
+			store.StatusSummaryText: through + "\n" + text}
 		if err := c.record(ctx, fmt.Sprintf("daily summary through %s part %d", through, i),
 			func(ctx context.Context) error { return c.Store.AddTGMessageStatus(ctx, m, kv) }); err != nil {
 			return err
