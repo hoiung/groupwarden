@@ -225,7 +225,8 @@ func (f *MediaFetcher) fetchOne(ctx context.Context, e store.Evidence) error {
 
 // saveFailed records an attachment that downloaded but could not be written
 // to the evidence directory (no space, no permission): it is logged, and the
-// row is settled as failed, which the report shows.
+// row is settled as failed, which the admin chat shows (in the report, or in
+// a reply under it when the report went out first).
 func (f *MediaFetcher) saveFailed(ctx context.Context, e store.Evidence, size uint64, err error) error {
 	f.Log.Error("could not save an attachment", "evidence", e.ID, "err", err)
 	return f.settle(ctx, e.ID, store.MediaFailed, "", "could not save it: "+err.Error(), size)
