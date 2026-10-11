@@ -195,17 +195,18 @@ func (s *Store) TGMessage(ctx context.Context, id int64) (TGMessage, bool, error
 	return ms[0], true, nil
 }
 
-// AttachmentToPost is a delivered report whose deleted post's attachment is
-// saved but has never been posted.
+// AttachmentToPost is a delivered report that owns its post's attachment
+// (Report.OwnsAttachment), with that post's evidence.
 type AttachmentToPost struct {
 	Report   Report
 	Evidence Evidence
 }
 
-// AttachmentsToPost lists delivered reports of kind whose evidence holds a
-// saved file and that never had an attachment post, leaving out the evidence
-// IDs in skip (uploads waiting out a backoff, so they never fill the window).
-func (s *Store) AttachmentsToPost(ctx context.Context, kind string, limit int, skip []int64) ([]AttachmentToPost, error) {
+// AttachmentsToPost lists delivered reports that own their post's attachment
+// (Report.OwnsAttachment), whatever their kind, whose evidence holds a saved
+// file and that never had an attachment post, leaving out the evidence IDs in
+// skip (uploads waiting out a backoff, so they never fill the window).
+func (s *Store) AttachmentsToPost(ctx context.Context, limit int, skip []int64) ([]AttachmentToPost, error) {
 	if skip == nil {
 		skip = []int64{}
 	}
@@ -213,21 +214,24 @@ func (s *Store) AttachmentsToPost(ctx context.Context, kind string, limit int, s
 	if err != nil {
 		return nil, err
 	}
-	return s.attachments(ctx, "attachments to post", `SELECT r.id FROM reports r JOIN evidence e ON e.id = r.evidence_id
-WHERE r.kind = ? AND r.sent_at IS NOT NULL AND e.media_state = 'saved'
+	return s.attachments(ctx, "attachments to post", `SELECT reports.id FROM reports JOIN evidence e ON e.id = reports.evidence_id
+WHERE `+ownsAttachment+` AND reports.sent_at IS NOT NULL AND e.media_state = 'saved'
 	AND e.id NOT IN (SELECT value FROM json_each(?))
-	AND NOT EXISTS (SELECT 1 FROM tg_messages t WHERE t.report_id = r.id AND t.role = 'attachment')
-ORDER BY r.id LIMIT ?`, kind, string(skipped), limit)
+	AND NOT EXISTS (SELECT 1 FROM tg_messages t WHERE t.report_id = reports.id AND t.role = 'attachment')
+ORDER BY reports.id LIMIT ?`, string(skipped), limit)
 }
 
-// AttachmentsNotKept lists delivered reports of kind that told the admins
-// their attachment was being saved or posted below, while it was then not
-// kept (the download failed or was too large, or the saved file was lost).
-func (s *Store) AttachmentsNotKept(ctx context.Context, kind string, limit int) ([]AttachmentToPost, error) {
-	return s.attachments(ctx, "attachments not kept", `SELECT r.id FROM reports r JOIN evidence e ON e.id = r.evidence_id
-WHERE r.kind = ? AND r.sent_at IS NOT NULL AND r.media_told IN ('pending', 'saved')
+// AttachmentsNotKept lists delivered reports that own their post's attachment
+// and told the admins it was being saved or posted below, while it was then
+// not kept (the download failed or was too large, the saved file was lost, or
+// Telegram did not take it) and was never posted: one posted and lost later is
+// answered by the [Show attachment] button that finds it gone.
+func (s *Store) AttachmentsNotKept(ctx context.Context, limit int) ([]AttachmentToPost, error) {
+	return s.attachments(ctx, "attachments not kept", `SELECT reports.id FROM reports JOIN evidence e ON e.id = reports.evidence_id
+WHERE `+ownsAttachment+` AND reports.sent_at IS NOT NULL AND reports.media_told IN ('pending', 'saved')
 	AND e.media_state IN ('failed', 'too_large')
-ORDER BY r.id LIMIT ?`, kind, limit)
+	AND NOT EXISTS (SELECT 1 FROM tg_messages t WHERE t.report_id = reports.id AND t.role = 'attachment')
+ORDER BY reports.id LIMIT ?`, limit)
 }
 
 // attachments reads the reports query selects, each with its evidence.
