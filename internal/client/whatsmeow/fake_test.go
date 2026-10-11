@@ -40,8 +40,10 @@ type fakeWA struct {
 	t       *testing.T
 	offline bool
 
-	mu    sync.Mutex
-	calls []string
+	mu        sync.Mutex
+	calls     []string
+	connected bool
+	closeHold chan struct{}
 
 	revokeChat, revokeSender types.JID
 	revokeID                 types.MessageID
@@ -92,7 +94,24 @@ func (f *fakeWA) net(name string) error {
 }
 
 func (f *fakeWA) ConnectContext(context.Context) error { f.record("Connect", true); return nil }
-func (f *fakeWA) Disconnect()                          { f.record("Disconnect", false) }
+
+// IsConnected is f.connected: whether a socket is open.
+func (f *fakeWA) IsConnected() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.connected
+}
+
+// Disconnect waits on f.closeHold when set: a close still under way.
+func (f *fakeWA) Disconnect() {
+	f.mu.Lock()
+	hold := f.closeHold
+	f.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
+	f.record("Disconnect", false)
+}
 func (f *fakeWA) BuildRevoke(chat, sender types.JID, id types.MessageID) *waE2E.Message {
 	f.record("BuildRevoke", false)
 	f.revokeChat, f.revokeSender, f.revokeID = chat, sender, id
