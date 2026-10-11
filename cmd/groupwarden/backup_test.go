@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -43,6 +44,77 @@ func TestBackupRefusesATargetOnTheDataDisk(t *testing.T) {
 	reps, err := st.UnsentReportsOf(context.Background(), string(alert.BackupFailed), 10)
 	if err != nil || len(reps) != 1 || !strings.Contains(reps[0].Text, "same disk as the data dir") {
 		t.Fatalf("backup failure alerts %+v (%v), want one naming the reason", reps, err)
+	}
+}
+
+// TestBackupUnitFailureRecorded: when the backup unit fails before the
+// backup records anything (systemd could not open a network share it must
+// make writable, status 226), its failure handler records the failure, naming
+// the share, and reports it once per episode; a failed run that recorded its
+// own result is left as it is, also under a systemd too old to say which run
+// failed.
+func TestBackupUnitFailureRecorded(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	st := setStatus(t, te, map[string]string{store.StatusBackupResult: "ok groupwarden-1.age (1 bytes, 0 older deleted)",
+		store.StatusBackupInvocation: "run-1"}, time.Now())
+	monitor := map[string]string{"MONITOR_INVOCATION_ID": "run-2", "MONITOR_SERVICE_RESULT": "exit-code",
+		"MONITOR_EXIT_CODE": "exited", "MONITOR_EXIT_STATUS": "226"}
+	te.getenv = func(k string) string { return monitor[k] }
+	for night := 2; night <= 3; night++ {
+		monitor["MONITOR_INVOCATION_ID"] = "run-" + strconv.Itoa(night)
+		if code := te.cmd("backup-failed"); code != exitOK || !strings.Contains(te.out.String(), "is the network share reachable") {
+			t.Fatalf("night %d: %d %q %q", night, code, te.out.String(), te.errb.String())
+		}
+	}
+	status, err := st.Status(context.Background())
+	if err != nil || status[store.StatusBackupResult].Value != "FAILED: the backup unit stopped before the backup recorded "+
+		"a result (systemd: exit-code, exited 226); systemd could not open "+filepath.Join(te.dir, "backup")+
+		" to start it: is the network share reachable (the NAS on, the network up, the password current)?" {
+		t.Fatalf("recorded result %q (%v)", status[store.StatusBackupResult].Value, err)
+	}
+	reps, err := st.UnsentReportsOf(context.Background(), string(alert.BackupFailed), 10)
+	if err != nil || len(reps) != 1 || !strings.Contains(reps[0].Text, "The nightly backup FAILED: the backup unit stopped") {
+		t.Fatalf("backup failure alerts %+v (%v), want one", reps, err)
+	}
+
+	// The backup ran, failed and said why: the handler adds nothing.
+	te.deviceOf = func(string) (uint64, error) { return 1, nil }
+	te.getenv = func(k string) string { return map[string]string{"INVOCATION_ID": "run-4"}[k] }
+	if code := te.cmd("backup"); code != exitFail {
+		t.Fatalf("backup to the data disk: %d %q", code, te.out.String())
+	}
+	monitor["MONITOR_INVOCATION_ID"], monitor["MONITOR_EXIT_STATUS"] = "run-4", "1"
+	te.getenv = func(k string) string { return monitor[k] }
+	if code := te.cmd("backup-failed"); code != exitOK || !strings.HasPrefix(te.out.String(), "the failed backup recorded its own result") {
+		t.Fatalf("handler after a recorded failure: %d %q", code, te.out.String())
+	}
+	if status, err := st.Status(context.Background()); err != nil ||
+		!strings.Contains(status[store.StatusBackupResult].Value, "same disk as the data dir") {
+		t.Fatalf("recorded result %q (%v), want the backup's own reason kept", status[store.StatusBackupResult].Value, err)
+	}
+
+	// systemd before 251 passes no MONITOR_*: a recorded failure is kept; a
+	// run that recorded nothing is still recorded as failed.
+	te.getenv = func(string) string { return "" }
+	if code := te.cmd("backup-failed"); code != exitOK || !strings.HasPrefix(te.out.String(), "a failed backup is already recorded") {
+		t.Fatalf("handler without MONITOR_* after a recorded failure: %d %q", code, te.out.String())
+	}
+	if status, err := st.Status(context.Background()); err != nil ||
+		!strings.Contains(status[store.StatusBackupResult].Value, "same disk as the data dir") {
+		t.Fatalf("recorded result %q (%v), want the backup's own reason kept", status[store.StatusBackupResult].Value, err)
+	}
+	// The last good run was by hand: no invocation ID, as none reached the handler.
+	if err := st.SetStatus(context.Background(), map[string]string{store.StatusBackupResult: "ok groupwarden-2.age (1 bytes, 0 older deleted)",
+		store.StatusBackupInvocation: ""}); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.cmd("backup-failed"); code != exitOK {
+		t.Fatalf("handler without MONITOR_* after a good night: %d %q", code, te.out.String())
+	}
+	if status, err := st.Status(context.Background()); err != nil || status[store.StatusBackupResult].Value !=
+		"FAILED: the backup unit stopped before the backup recorded a result (systemd did not say how: see journalctl -u groupwarden-backup.service)" {
+		t.Fatalf("recorded result %q (%v)", status[store.StatusBackupResult].Value, err)
 	}
 }
 
