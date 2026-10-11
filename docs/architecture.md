@@ -27,7 +27,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                so never "succeeded"); an action WhatsApp refuses for that
                member, or one given up on ► a priority "do it by hand" report
                naming the group and the member (once a day for the same
-               action, group and member)
+               action, group and member, and for a delete the same message)
 
            internal/reconcile sweep (at connect, every reconcile interval, and
            when the bot joins a group; the group list is read from WhatsApp first,
