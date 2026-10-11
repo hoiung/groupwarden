@@ -160,7 +160,9 @@ func (s *Sweep) autoJoin(ctx context.Context, res *Result, lists []listing, prev
 			})
 			res.Joins++
 			if errors.Is(err, client.ErrNotConnected) {
-				// Never reached WhatsApp: not tried, so the next sweep asks again.
+				// No answer from WhatsApp (no connection, or the connection lost
+				// before the answer): not recorded as tried, so the next sweep
+				// asks again; a join that did go through arrives as JoinedGroup.
 				s.Log.Warn("sweep: self-joins wait for the WhatsApp connection", "community", mask.IDs(l.community),
 					"group", mask.IDs(string(r.JID)))
 				return out
