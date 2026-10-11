@@ -224,7 +224,7 @@ func TestFatalStopsAndAlerts(t *testing.T) {
 }
 
 // heldNote is how a pause alert ends with one removal queued.
-const heldNote = " 1 queued removal(s) go out only after [Resume]; a report may already say they were done."
+const heldNote = " 1 queued removal(s) or join-request rejection(s) go out only after [Resume]; a report may already say they were done."
 
 // queueRemoval queues one removal before the bot starts (no executor runs in
 // these tests, so it stays queued).
