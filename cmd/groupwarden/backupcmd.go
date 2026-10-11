@@ -47,28 +47,97 @@ func (e *env) backup(ctx context.Context, cfg *config.Config, log *slog.Logger) 
 		result = "FAILED: " + err.Error()
 	}
 	fmt.Fprintln(e.stdout, result)
-	status, serr := st.Status(ctx)
-	if serr != nil {
-		fmt.Fprintf(e.stderr, "groupwarden: %v\n", serr)
-		return exitFail
-	}
-	var report *store.Report
-	if err != nil && !strings.HasPrefix(status[store.StatusBackupResult].Value, "FAILED") {
-		report = &store.Report{Kind: string(alert.BackupFailed),
-			Text: "The nightly backup FAILED: " + err.Error() + ". Earlier backups in " + cfg.Backup.TargetDir +
-				" are kept; it tries again tomorrow night (docs/runbook.md)."}
-	}
-	if serr := st.SetStatusReporting(ctx, map[string]string{
-		store.StatusBackupLastRun: store.StatusTime(e.now()),
-		store.StatusBackupResult:  result,
-	}, report); serr != nil {
-		fmt.Fprintf(e.stderr, "groupwarden: %v\n", serr)
-		return exitFail
-	}
-	if err != nil {
+	// INVOCATION_ID: systemd's ID of this run, which the failure handler
+	// compares (empty when run by hand).
+	if code := e.recordBackup(ctx, st, cfg, result, err, e.getenv("INVOCATION_ID")); code != exitOK || err != nil {
 		return exitFail
 	}
 	return exitOK
+}
+
+// recordBackup records a backup run's result line and time, for /status and
+// the overdue check, and reports a failure to the admins once per failure
+// episode.
+func (e *env) recordBackup(ctx context.Context, st *store.Store, cfg *config.Config, result string, failure error,
+	invocation string) int {
+	status, err := st.Status(ctx)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+		return exitFail
+	}
+	var report *store.Report
+	if failure != nil && !strings.HasPrefix(status[store.StatusBackupResult].Value, "FAILED") {
+		report = &store.Report{Kind: string(alert.BackupFailed),
+			Text: "The nightly backup FAILED: " + failure.Error() + ". Earlier backups in " + cfg.Backup.TargetDir +
+				" are kept; it tries again tomorrow night (docs/runbook.md)."}
+	}
+	if err := st.SetStatusReporting(ctx, map[string]string{
+		store.StatusBackupLastRun:    store.StatusTime(e.now()),
+		store.StatusBackupResult:     result,
+		store.StatusBackupInvocation: invocation,
+	}, report); err != nil {
+		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+		return exitFail
+	}
+	return exitOK
+}
+
+// exitNamespace is systemd's exit status for a unit it could not set up:
+// one of the paths it must make writable could not be opened.
+const exitNamespace = "226"
+
+// backupFailed is the backup unit's failure handler: systemd runs it
+// (OnFailure=) with the failed run's outcome in MONITOR_*. A run that recorded
+// its own result (a backup that failed and said why) needs nothing more; the
+// run is matched by its invocation ID (systemd 251 and later pass it).
+// Otherwise the unit stopped before the backup recorded anything: systemd
+// could not open backup.target_dir to start it (a network share that cannot
+// be reached: the NAS is off, the network is down, the password changed), or
+// the run was stopped at its time limit. That is recorded and reported the
+// same way as a failed backup, the same night.
+func (e *env) backupFailed(ctx context.Context, cfg *config.Config, log *slog.Logger) int {
+	if _, err := os.Stat(cfg.StoreDB()); err != nil { // #nosec G703 -- operator-configured data dir
+		fmt.Fprintf(e.stderr, "groupwarden: no groupwarden.db to record the failure in (%v)\n", err)
+		return exitFail
+	}
+	st, err := store.Open(ctx, cfg.StoreDB(), store.Options{})
+	if err != nil {
+		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+		return exitFail
+	}
+	defer func() { _ = st.Close() }()
+	status, err := st.Status(ctx)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+		return exitFail
+	}
+	run, recorded := e.getenv("MONITOR_INVOCATION_ID"), status[store.StatusBackupResult].Value
+	switch {
+	case run != "" && status[store.StatusBackupInvocation].Value == run:
+		fmt.Fprintln(e.stdout, "the failed backup recorded its own result: "+recorded)
+		return exitOK
+	case run == "" && strings.HasPrefix(recorded, "FAILED"):
+		// systemd before 251 does not say which run failed. A failed run
+		// records FAILED or nothing, so a recorded failure may be this run's
+		// own reason: it is kept (its episode was reported already).
+		log.Warn("systemd did not say which backup run failed (before systemd 251); the failure already recorded is kept",
+			"result", recorded)
+		fmt.Fprintln(e.stdout, "a failed backup is already recorded: "+recorded)
+		return exitOK
+	}
+	detail := "systemd did not say how: see journalctl -u groupwarden-backup.service"
+	if result := e.getenv("MONITOR_SERVICE_RESULT"); result != "" {
+		detail = fmt.Sprintf("systemd: %s, %s %s", result, e.getenv("MONITOR_EXIT_CODE"), e.getenv("MONITOR_EXIT_STATUS"))
+	}
+	why := "the backup unit stopped before the backup recorded a result (" + detail + ")"
+	if e.getenv("MONITOR_EXIT_STATUS") == exitNamespace {
+		why += "; systemd could not open " + cfg.Backup.TargetDir + " to start it: is the network share reachable " +
+			"(the NAS on, the network up, the password current)?"
+	}
+	log.Error("backup unit failed", "err", why)
+	result := "FAILED: " + why
+	fmt.Fprintln(e.stdout, result)
+	return e.recordBackup(ctx, st, cfg, result, errors.New(why), run)
 }
 
 // restore puts a backup back as groupwarden.db. It takes the data-dir lock,
