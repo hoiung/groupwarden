@@ -40,7 +40,6 @@ func (a *Adapter) handle(evt any) bool {
 		return a.persist(sink, &client.JoinedGroup{Group: jid(e.JID), Reason: e.Reason, Actor: ptrJID(e.Sender), Time: a.now(),
 			Info: group(&e.GroupInfo)})
 	case *events.Connected:
-		a.dropping.Store(false)
 		sink.Lifecycle(client.Lifecycle{Kind: client.Connected})
 	case *events.ManualLoginReconnect:
 		a.drop(sink, "WhatsApp asked for a fresh login (stream error 515)")
@@ -75,6 +74,7 @@ func (a *Adapter) handle(evt any) bool {
 // handler's goroutine, because closing the socket waits for the handlers.
 func (a *Adapter) drop(sink client.Sink, why string) {
 	if !a.dropping.CompareAndSwap(false, true) {
+		a.log.Debug("the WhatsApp connection is already being closed", "reason", why)
 		return
 	}
 	a.log.Warn("closing the WhatsApp connection to reconnect", "reason", why)
