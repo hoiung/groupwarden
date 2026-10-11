@@ -107,13 +107,19 @@ var ErrRateLimited = errors.New("WhatsApp rate limit")
 // bot is not an admin there.
 var ErrNotAdmin = errors.New("the bot is not an admin there")
 
-// ErrNotConnected is returned (wrapped) when a call could not be made
-// because the connection to WhatsApp is down; it never reached WhatsApp.
+// ErrNotConnected is returned (wrapped) when a call got no answer for want of
+// a connection: none when it was made, the connection lost before the answer,
+// or (downloads) WhatsApp's media servers not reached.
 var ErrNotConnected = errors.New("not connected to WhatsApp")
 
 // ErrMediaTooLarge is returned (wrapped) by DownloadMedia for an attachment
 // over the size it was allowed.
 var ErrMediaTooLarge = errors.New("attachment over the size limit")
+
+// ErrNoLID is returned (wrapped) by ResolvePhoneToLID when WhatsApp answered
+// and the number has no LID (it is not on WhatsApp, or no LID came back).
+// Any other error is no answer about the number.
+var ErrNoLID = errors.New("no WhatsApp LID for that number")
 
 // MentionMarker replaces every @-mention of a listed member in a field's
 // matching view, so a mention is never read as a phone number or a handle.
@@ -374,8 +380,12 @@ const (
 type MemberResult struct {
 	Member JID
 	Status MemberStatus
-	Code   int // WhatsApp's per-participant error code (0 when none)
+	Code   int // WhatsApp's per-participant error code (0 when none; CodeNoAnswer)
 }
+
+// CodeNoAnswer is a failed MemberResult's code when WhatsApp's answer did not
+// mention the member at all: whether it was done is unknown.
+const CodeNoAnswer = -1
 
 // Self is the bot's own account.
 type Self struct {
