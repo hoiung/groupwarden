@@ -279,7 +279,7 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 				// on, so one bad report never holds up the rest.
 				c.Log.Error("telegram refused a report; skipping it", "report", r.ID, "kind", r.Kind, "part", i,
 					"err", err.Error())
-				return true, c.Store.MarkReportSent(ctx, r.ID)
+				return true, c.Store.MarkReportSent(ctx, r.ID, "")
 			}
 			return false, err
 		}
@@ -294,7 +294,18 @@ func (c *Chat) deliverReport(ctx context.Context, id int64) (bool, error) {
 			return false, err
 		}
 	}
-	if err := c.Store.MarkReportSent(ctx, r.ID); err != nil {
+	// What the header told the admins about the attachment, so one not kept
+	// after this is told too (noteNotKept). A header posted by an earlier
+	// attempt may have shown it as being saved: counted so, at worst it is
+	// told twice.
+	told := ""
+	if ev != nil && ev.MediaKind != "" {
+		told = ev.MediaState
+		if next > 0 {
+			told = store.MediaPending
+		}
+	}
+	if err := c.Store.MarkReportSent(ctx, r.ID, told); err != nil {
 		return false, err
 	}
 	c.Log.Info("report delivered", "report", r.ID, "kind", r.Kind, "priority", r.Priority, "parts", next+len(out.parts))
@@ -400,11 +411,15 @@ type uploadRetry struct {
 // (idlePoll, doubling, at most an hour; held in memory) while the others go
 // ahead. One still failing after report.attachment_show_hours (as long as it
 // would have been shown), or one Telegram refuses, is marked failed, its file
-// kept for the purge, and a reply under the report says why. Nothing is posted
-// while a record of an earlier post is still owed.
+// kept for the purge, and a reply under the report says why (noteNotKept,
+// which tells the chat of every attachment not kept). Nothing is posted while
+// a record of an earlier post is still owed.
 func (c *Chat) postAttachment(ctx context.Context) (bool, error) {
 	if err := c.settle(ctx); err != nil {
 		return false, err
+	}
+	if did, err := c.noteNotKept(ctx); did || err != nil {
+		return did, err
 	}
 	now := c.Now()
 	giveUp := time.Duration(c.Config.Current().Config.Report.AttachmentShowHours) * time.Hour
@@ -432,23 +447,59 @@ func (c *Chat) postAttachment(ctx context.Context) (bool, error) {
 	if !errors.As(err, &up) || ctx.Err() != nil {
 		c.forgetUpload(a.Evidence.ID)
 		if errors.Is(err, errFileRefused) {
-			c.attachmentNotPosted(ctx, a.Report, err.Error())
-			return true, nil // settled and logged: the rest of the work goes on
+			// Settled and logged; noteNotKept tells the chat. The rest of
+			// the work goes on.
+			return true, nil
 		}
 		return true, err
 	}
 	return true, c.uploadFailed(ctx, a, retry, giveUp, up)
 }
 
-// attachmentNotPosted replies under report r that its attachment will not be
-// posted, and why (best effort: a failure is logged).
-func (c *Chat) attachmentNotPosted(ctx context.Context, r store.Report, why string) {
+// noteNotKept replies under one delivered action report that told the admins
+// its attachment was being saved (or posted below), when the attachment was
+// then not kept, and why: the download failed or was too large (settled long
+// after the report went out), the saved file was lost, or Telegram refused
+// the file or did not take it. A transient failure is tried again by the
+// loop; the chat is told once.
+func (c *Chat) noteNotKept(ctx context.Context) (bool, error) {
+	due, err := c.Store.AttachmentsNotKept(ctx, ledger.KindAction, 1)
+	if err != nil || len(due) == 0 {
+		return false, err
+	}
+	r, ev := due[0].Report, due[0].Evidence
+	why := ev.MediaError
+	if ev.MediaState == store.MediaTooLarge {
+		why = "too large to keep"
+	}
 	head, err := c.reportMessage(ctx, r.ID)
 	if err != nil {
-		c.Log.Error("could not say an attachment will not be posted", "report", r.ID, "err", err)
-		return
+		return false, err
 	}
-	c.reply(ctx, head, r.ID, "Attachment not posted: "+why)
+	if head != 0 {
+		// One message (clipped as the header clips the reason), so a retry
+		// never posts part of it twice.
+		msg, err := c.sendText(ctx, false, mask.IDs("Attachment not posted: "+clip(why, nameMax)), quote{}, head, nil)
+		switch {
+		case badRequest(err):
+			c.Log.Error("telegram refused the note that an attachment was not kept", "report", r.ID, "err", err.Error())
+		case err != nil:
+			return false, err
+		default:
+			m := store.TGMessage{ReportID: r.ID, Role: store.RoleReply, ChatID: msg.Chat.ID, MessageID: msg.ID,
+				SentAt: c.Now()}
+			if err := c.record(ctx, fmt.Sprintf("note on the attachment of report %d", r.ID), func(ctx context.Context) error {
+				return c.Store.AddTGMessage(ctx, m)
+			}); err != nil {
+				return false, err
+			}
+		}
+	}
+	if err := c.Store.SetMediaTold(ctx, r.ID, ev.MediaState); err != nil {
+		return false, err
+	}
+	c.Log.Info("told the admins an attachment was not kept", "report", r.ID, "evidence", ev.ID, "state", ev.MediaState)
+	return true, nil
 }
 
 // uploadFailed records a failed upload of a's file: tried again after a
@@ -469,8 +520,7 @@ func (c *Chat) uploadFailed(ctx context.Context, a store.AttachmentToPost, r upl
 			return err
 		}
 		c.forgetUpload(a.Evidence.ID)
-		c.attachmentNotPosted(ctx, a.Report, why)
-		return nil
+		return nil // noteNotKept tells the chat
 	}
 	r.next = now.Add(min(idlePoll<<min(r.tries, 7), time.Hour))
 	c.mu.Lock()
