@@ -24,6 +24,9 @@ func (a *Adapter) Pair(ctx context.Context, phone string, out io.Writer) error {
 		p, _ := a.cli.ownIDs()
 		return fmt.Errorf("already paired as %s: unlink that device on the bot phone and delete whatsmeow.db first", mask.IDs(p.User))
 	}
+	// WhatsApp ends a pairing with a stream error 515: the library's own
+	// reconnect then makes the new device's first login.
+	a.real.DisableLoginAutoReconnect = false
 	qr, err := a.real.GetQRChannel(ctx)
 	if err != nil {
 		return fmt.Errorf("start pairing: %w", err)
