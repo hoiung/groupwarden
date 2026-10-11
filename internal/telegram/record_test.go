@@ -68,7 +68,7 @@ func TestPostNotRepeatedWhileItsRecordFails(t *testing.T) {
 		return requests(h, "sendMessage", "Attachment not posted: media server answered 404")
 	}
 	noteRecorded := func(t *testing.T, h *harness) {
-		if due, err := h.k.Store.AttachmentsNotKept(h.k.Ctx, ledger.KindAction, 10); err != nil || len(due) != 0 {
+		if due, err := h.k.Store.AttachmentsNotKept(h.k.Ctx, 10); err != nil || len(due) != 0 {
 			t.Fatalf("%d attachment notes still due (%v), want the note recorded as told", len(due), err)
 		}
 		replies := 0
