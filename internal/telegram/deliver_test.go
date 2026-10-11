@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -240,7 +241,7 @@ func TestRefusedAttachmentDoesNotBlock(t *testing.T) {
 			if n := len(h.srv.Requests("sendDocument")); n != 1 {
 				t.Fatalf("%d sendDocument calls, want 1", n)
 			}
-			if n := saidNotPosted(h, r.ID, "refused by Telegram"); n != 1 {
+			if n := saidNotPosted(h, r.ID, "Telegram refused the file"); n != 1 {
 				t.Fatalf("%d replies under the report saying the attachment was refused, want 1", n)
 			}
 			h.press(adminUser, "show", r.ID)
@@ -502,6 +503,11 @@ func TestFollowupsResumeWhereTheTextStopped(t *testing.T) {
 	if !strings.Contains(all, "THE END") {
 		t.Fatal("the message's end was not posted")
 	}
+	// The header went out in the first attempt, saying the attachment was
+	// being saved: the chat is told it was not kept.
+	if n := saidNotPosted(h, h.only(ledger.KindAction).ID, "the media host kept failing"); n != 1 {
+		t.Fatalf("%d replies saying the attachment was not kept, want 1", n)
+	}
 }
 
 // TestLongDisplayNameKeepsTheHeaderInTheFirstPart: a sender's display name
@@ -686,6 +692,84 @@ func saidNotPosted(h *harness, reportID int64, why string) int {
 		}
 	}
 	return n
+}
+
+// TestAttachmentNotKeptAfterTheReport: a report posts at once, so it says
+// its attachment is being saved; when the attachment is then not kept (the
+// download failed or was too large, or the saved file went missing before
+// its post), one reply under the report says why, and only once. A report
+// posted after the outcome already says it in its header and gets no reply.
+func TestAttachmentNotKeptAfterTheReport(t *testing.T) {
+	saved := func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+	}
+	refused := func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return nil, "", "", errors.New("media server answered 404")
+	}
+	for _, tc := range []struct {
+		name     string
+		download func(context.Context, *client.Message) ([]byte, string, string, error)
+		missing  bool // the saved file is deleted before its post
+		why      string
+	}{
+		{"download failed", refused, false, "media server answered 404"},
+		{"too large", func(context.Context, *client.Message) ([]byte, string, string, error) {
+			return nil, "", "", fmt.Errorf("download: %w", client.ErrMediaTooLarge)
+		}, false, "too large to keep"},
+		{"saved file missing", saved, true, "the saved file is missing"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, "")
+			h.k.Fake.Download = tc.download
+			h.k.Deliver(image(h.k.Spam("I1", modtest.G1)))
+			h.k.Fire()
+			h.drain()
+			r := h.only(ledger.KindAction)
+			if n := requests(h, "sendMessage", "\nAttachment: image offer.jpg (0.0 MB), being saved"); n != 1 {
+				t.Fatalf("%d reports saying the attachment is being saved, want 1", n)
+			}
+			if _, err := h.k.Media.Fetch(h.k.Ctx); err != nil {
+				t.Fatal(err)
+			}
+			if tc.missing {
+				full, _, err := h.k.Store.Report(h.k.Ctx, r.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ev, ok, err := h.k.Store.Evidence(h.k.Ctx, full.EvidenceID)
+				if err != nil || !ok || ev.MediaPath == "" {
+					t.Fatalf("evidence %+v (%v %v), want a saved file", ev, ok, err)
+				}
+				if err := os.Remove(ev.MediaPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.drain()
+			h.drain()
+			if n := saidNotPosted(h, r.ID, tc.why); n != 1 {
+				t.Fatalf("%d replies under the report saying why its attachment was not kept, want 1", n)
+			}
+		})
+	}
+
+	t.Run("settled before the report", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.Download = refused
+		h.k.Deliver(image(h.k.Spam("I1", modtest.G1)))
+		h.k.Fire()
+		if _, err := h.k.Media.Fetch(h.k.Ctx); err != nil {
+			t.Fatal(err)
+		}
+		h.drain()
+		h.drain()
+		r := h.only(ledger.KindAction)
+		if n := requests(h, "sendMessage", "\nAttachment: image offer.jpg (0.0 MB), not available: media server answered 404"); n != 1 {
+			t.Fatalf("%d reports saying the attachment is not available, want 1", n)
+		}
+		if n := saidNotPosted(h, r.ID, ""); n != 0 {
+			t.Fatalf("%d replies under a report whose header already said it, want 0", n)
+		}
+	})
 }
 
 // TestPriorityAlertNotHeldByAnUpload: while the automatic post of an
