@@ -45,22 +45,44 @@ type MediaFetcher struct {
 	// is, only that attachment's media servers failed.
 	Connected func() bool
 	Log       *slog.Logger
+	// Now is the clock (nil: time.Now).
+	Now func() time.Time
 
 	// initOnce: Wake is called from the inbox worker while Run starts.
 	initOnce sync.Once
 	wake     chan struct{}
-	// noAnswer counts, per evidence row, the downloads that got no answer
-	// while WhatsApp was connected. Fetch runs on one goroutine. In memory:
-	// a restart gives each attachment its tries again.
-	noAnswer map[int64]int
+	// noAnswer records, per evidence row, the downloads that got no answer
+	// while WhatsApp was connected and when the next may go. Fetch runs on
+	// one goroutine. In memory: a restart gives each attachment its tries
+	// again.
+	noAnswer map[int64]noAnswerState
 }
 
-// mediaNoAnswerTries bounds the downloads of one attachment that get no
-// answer from WhatsApp's media servers while WhatsApp itself is connected (a
-// file that never finishes within the download timeout, a media path no
-// server takes): after that many it is recorded as not available, instead of
-// being downloaded again every pass until the evidence purge.
-const mediaNoAnswerTries = 5
+// noAnswerState is one attachment's downloads without an answer.
+type noAnswerState struct {
+	tries int
+	next  time.Time
+}
+
+// An attachment whose download gets no answer from WhatsApp's media servers
+// while WhatsApp itself is connected (a file that never finishes within the
+// download timeout, a media path no server takes) is tried again after
+// mediaNoAnswerWait, doubling each time (2, 4, 8 and 16 minutes), and after
+// mediaNoAnswerTries is recorded as not available instead of being
+// downloaded again until the evidence purge. Spacing the tries in time, not
+// passes (every new attachment wakes a pass), means only an outage of about
+// half an hour gives an attachment up.
+const (
+	mediaNoAnswerTries = 5
+	mediaNoAnswerWait  = 2 * time.Minute
+)
+
+func (f *MediaFetcher) now() time.Time {
+	if f.Now == nil {
+		return time.Now()
+	}
+	return f.Now()
+}
 
 func (f *MediaFetcher) init() {
 	f.initOnce.Do(func() { f.wake = make(chan struct{}, 1) })
@@ -93,12 +115,12 @@ func (f *MediaFetcher) Run(ctx context.Context) {
 
 // Fetch downloads every pending attachment once, in order, and returns how
 // many it settled. An attachment that gets no answer never holds up the ones
-// after it: while WhatsApp is connected it stays pending for the next pass
-// (and is settled as failed after mediaNoAnswerTries); while WhatsApp is not
-// connected the pass ends, and the supervisor wakes it at Connected.
+// after it: while WhatsApp is connected it stays pending and waits before its
+// next try (and is settled as failed after mediaNoAnswerTries); while WhatsApp
+// is not connected the pass ends, and the supervisor wakes it at Connected.
 func (f *MediaFetcher) Fetch(ctx context.Context) (int, error) {
 	if f.noAnswer == nil {
-		f.noAnswer = map[int64]int{}
+		f.noAnswer = map[int64]noAnswerState{}
 	}
 	n := 0
 	var after int64
@@ -121,6 +143,9 @@ func (f *MediaFetcher) Fetch(ctx context.Context) (int, error) {
 		for _, e := range pending {
 			after = e.ID
 			seen[e.ID] = true
+			if s, ok := f.noAnswer[e.ID]; ok && f.now().Before(s.next) {
+				continue
+			}
 			err := f.fetchOne(ctx, e)
 			if errors.Is(err, client.ErrNotConnected) {
 				if f.Connected != nil && !f.Connected() {
@@ -142,17 +167,21 @@ func (f *MediaFetcher) Fetch(ctx context.Context) (int, error) {
 }
 
 // unanswered handles a download of e that got no answer while WhatsApp is
-// connected: it stays pending until its mediaNoAnswerTries-th such answer,
-// which settles it as failed. It reports whether e was settled.
+// connected: it stays pending, waiting longer after each such answer, until
+// its mediaNoAnswerTries-th, which settles it as failed. It reports whether e
+// was settled.
 func (f *MediaFetcher) unanswered(ctx context.Context, e store.Evidence, cause error) (bool, error) {
-	f.noAnswer[e.ID]++
-	tries := f.noAnswer[e.ID]
-	if tries < mediaNoAnswerTries {
-		f.Log.Warn("attachment download got no answer; the others go first, it is tried again next pass",
-			"evidence", e.ID, "tries", tries, "err", mask.IDs(cause.Error()))
+	s := f.noAnswer[e.ID]
+	s.tries++
+	if s.tries < mediaNoAnswerTries {
+		wait := mediaNoAnswerWait << (s.tries - 1)
+		s.next = f.now().Add(wait)
+		f.noAnswer[e.ID] = s
+		f.Log.Warn("attachment download got no answer; the others go first, it is tried again later",
+			"evidence", e.ID, "tries", s.tries, "wait", wait.String(), "err", mask.IDs(cause.Error()))
 		return false, nil
 	}
-	why := fmt.Sprintf("WhatsApp's media servers gave no answer in %d tries: %s", tries, mask.IDs(cause.Error()))
+	why := fmt.Sprintf("WhatsApp's media servers gave no answer in %d tries: %s", s.tries, mask.IDs(cause.Error()))
 	f.Log.Warn("attachment download failed", "evidence", e.ID, "err", why)
 	return true, f.settle(ctx, e.ID, store.MediaFailed, "", why, e.MediaSize)
 }
