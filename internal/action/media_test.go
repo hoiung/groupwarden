@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/modtest"
@@ -122,8 +123,10 @@ func TestAttachmentWaitsForTheConnection(t *testing.T) {
 // TestAttachmentWithoutAnAnswerDoesNotHoldTheQueue: while WhatsApp is
 // connected, an attachment whose download gets no answer (a file that never
 // finishes in time, a media path no server takes) does not hold up the ones
-// queued after it, and after mediaNoAnswerTries passes it is settled as not
-// available instead of being downloaded again until the evidence purge.
+// queued after it. It is tried again only after a wait that doubles each
+// time (2, 4, 8, 16 minutes), however many passes run meanwhile, and after
+// its fifth try without an answer it is settled as not available instead of
+// being downloaded again until the evidence purge.
 func TestAttachmentWithoutAnAnswerDoesNotHoldTheQueue(t *testing.T) {
 	k := modtest.New(t, "")
 	k.Media.Connected = func() bool { return true }
@@ -143,26 +146,43 @@ func TestAttachmentWithoutAnAnswerDoesNotHoldTheQueue(t *testing.T) {
 		t.Fatalf("pending attachments %d (%v), want 2", len(pending), err)
 	}
 	stuck, next := pending[0].ID, pending[1].ID
-	if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 1 {
+	// A pass that never ends (one that keeps reading the waiting attachment)
+	// fails here, not at the test binary's timeout.
+	pass := func() (int, error) {
+		ctx, cancel := context.WithTimeout(k.Ctx, 20*time.Second)
+		defer cancel()
+		return k.Media.Fetch(ctx)
+	}
+	if n, err := pass(); err != nil || n != 1 {
 		t.Fatalf("first pass: settled %d (%v), want the second attachment", n, err)
 	}
 	if e, _, _ := k.Store.Evidence(k.Ctx, next); e.MediaState != store.MediaSaved {
 		t.Fatalf("the attachment after the stuck one: %+v, want saved", e)
 	}
-	for pass := 2; pass < 5; pass++ {
-		if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 0 {
-			t.Fatalf("pass %d: settled %d (%v), want the stuck one still pending", pass, n, err)
+	for try, wait := range []time.Duration{2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute} {
+		// Passes before the wait is over (every new attachment wakes one) do
+		// not ask again.
+		k.Clock.Advance(wait - time.Second)
+		for range 3 {
+			if n, err := pass(); err != nil || n != 0 {
+				t.Fatalf("before try %d: settled %d (%v), want nothing", try+2, n, err)
+			}
 		}
-	}
-	if e, _, _ := k.Store.Evidence(k.Ctx, stuck); e.MediaState != store.MediaPending {
-		t.Fatalf("after 4 passes: %+v, want still pending", e)
-	}
-	if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 1 {
-		t.Fatalf("fifth pass: settled %d (%v), want the stuck one", n, err)
+		if n := k.Fake.Count("DownloadMedia M1"); n != try+1 {
+			t.Fatalf("before try %d (%s after the last): asked for %d times, want %d", try+2, wait-time.Second, n, try+1)
+		}
+		k.Clock.Advance(time.Second)
+		n, err := pass()
+		if err != nil || k.Fake.Count("DownloadMedia M1") != try+2 {
+			t.Fatalf("try %d after %s: settled %d (%v), asked %d times", try+2, wait, n, err, k.Fake.Count("DownloadMedia M1"))
+		}
+		if last := try == 3; (n == 1) != last {
+			t.Fatalf("try %d: settled %d, want the stuck one settled only at the fifth try", try+2, n)
+		}
 	}
 	e, _, _ := k.Store.Evidence(k.Ctx, stuck)
 	if e.MediaState != store.MediaFailed || !strings.Contains(e.MediaError, "no answer in 5 tries") {
-		t.Fatalf("after 5 passes: %+v, want failed saying no answer in 5 tries", e)
+		t.Fatalf("after 5 tries: %+v, want failed saying no answer in 5 tries", e)
 	}
 	if n := k.Fake.Count("DownloadMedia M1"); n != 5 {
 		t.Fatalf("the stuck attachment was asked for %d times, want 5", n)
