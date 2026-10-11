@@ -80,7 +80,13 @@ func (s onceSink) Lifecycle(l client.Lifecycle) {
 	}
 }
 
-// connect opens a one-off connection and waits until it is ready.
+// connect opens a one-off connection and waits until it is ready. The
+// library does not reconnect by itself: the adapter reports a reconnect it
+// needs (a client version it has just updated, a 515 fresh login) as
+// Disconnected, so the first one is answered with one new connection, as the
+// bot's supervisor would. The version update holds only in this process, so
+// a reconnect is the only way it takes effect. A second Disconnected ends the
+// command.
 func (e *env) connect(ctx context.Context, w *whatsApp) error {
 	s := onceSink{inbox: w.inbox, ch: make(chan client.Lifecycle, 8)}
 	w.adapter.Events(s)
@@ -88,6 +94,7 @@ func (e *env) connect(ctx context.Context, w *whatsApp) error {
 		return err
 	}
 	timeout := time.After(e.connectTimeout)
+	reconnected := false
 	for {
 		select {
 		case l := <-s.ch:
@@ -98,10 +105,17 @@ func (e *env) connect(ctx context.Context, w *whatsApp) error {
 				return &app.FatalError{Kind: l.Kind, Detail: l.Detail}
 			case l.Kind == client.TemporaryBan:
 				return fmt.Errorf("the bot number is temporarily banned: %s", l.Detail)
+			case l.Kind == client.Disconnected && !reconnected:
+				reconnected = true
+				w.log.Warn("WhatsApp closed the connection before it was ready; reconnecting once", "detail", l.Detail)
+				// The socket may still be closing: connecting over an
+				// open one is refused.
+				w.adapter.Disconnect()
+				if err := w.adapter.Connect(ctx); err != nil {
+					return err
+				}
 			case l.Kind == client.Disconnected:
-				// The library does not reconnect by itself (the bot's
-				// supervisor does), so a one-off connection lost here is over.
-				return fmt.Errorf("WhatsApp closed the connection before it was ready (%s): run the command again", l.Detail)
+				return fmt.Errorf("WhatsApp closed the connection before it was ready, twice (%s): run the command again", l.Detail)
 			}
 		case <-timeout:
 			return fmt.Errorf("no connection to WhatsApp within %s", e.connectTimeout)
