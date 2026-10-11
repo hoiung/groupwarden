@@ -82,7 +82,7 @@
     "backup": {
       "type": "object", "additionalProperties": false, "required": ["target_dir"],
       "properties": {
-        "target_dir": {"description": "Where encrypted nightly backups of groupwarden.db go (a different disk).", "type": "string", "minLength": 1},
+        "target_dir": {"description": "Where encrypted nightly backups of groupwarden.db go (a different disk, or a folder inside a mounted network share).", "type": "string", "minLength": 1},
         "age_recipient": {"description": "age public key the backups are encrypted to; checked by age itself (groupwarden check --secrets).", "type": "string", "default": ""},
         "keep": {"description": "Nightly backups kept.", "type": "integer", "default": 14, "minimum": 1, "maximum": 365}
       }
