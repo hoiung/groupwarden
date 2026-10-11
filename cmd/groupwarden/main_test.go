@@ -357,16 +357,54 @@ func TestGroupsListsIDs(t *testing.T) {
 	lock.Release()
 }
 
-// TestOneOffConnectionLostEndsTheCommand: a one-off connection WhatsApp
-// closes before it is ready (the library no longer logs in again by itself)
-// ends the command at once with that reason, not after the connect timeout.
-func TestOneOffConnectionLostEndsTheCommand(t *testing.T) {
+// TestOneOffConnectionReconnectsOnce: the adapter reports a reconnect it
+// needs as Disconnected (a client version it has just updated, a 515 fresh
+// login), so a one-off command closed before it is ready connects once more
+// and then works.
+func TestOneOffConnectionReconnectsOnce(t *testing.T) {
+	for _, detail := range []string{
+		"client outdated: updated to WhatsApp's current web version, reconnecting",
+		"WhatsApp asked for a fresh login (stream error 515)",
+	} {
+		t.Run(detail, func(t *testing.T) {
+			fake := &clienttest.Fake{
+				Groups: []client.Group{{JID: "99999000000111@g.us", Name: "General"}},
+				OnConnect: func(f *clienttest.Fake) {
+					if f.Count("Connect") == 1 {
+						f.Emit(client.Lifecycle{Kind: client.Disconnected, Detail: detail})
+						return
+					}
+					f.Emit(client.Lifecycle{Kind: client.Connected})
+				},
+			}
+			te := newTestEnv(t, fake)
+			if code := te.cmd("groups"); code != 0 {
+				t.Fatalf("exit %d, stderr %q", code, te.errb)
+			}
+			if !strings.Contains(te.out.String(), "99999000000111@g.us") {
+				t.Fatalf("output %q: the groups were not listed", te.out)
+			}
+			calls := fake.Calls()
+			if fake.Count("Connect") != 2 || len(calls) < 3 || calls[0] != "Connect" || calls[1] != "Disconnect" || calls[2] != "Connect" {
+				t.Fatalf("calls %v: want Connect, Disconnect (the closed socket), Connect", calls)
+			}
+		})
+	}
+}
+
+// TestOneOffConnectionLostTwiceEndsTheCommand: the one reconnect is the
+// limit, so a connection WhatsApp keeps closing ends the command at once with
+// the reason, not after the connect timeout and not in a loop.
+func TestOneOffConnectionLostTwiceEndsTheCommand(t *testing.T) {
 	fake := &clienttest.Fake{OnConnect: func(f *clienttest.Fake) {
-		f.Emit(client.Lifecycle{Kind: client.Disconnected, Detail: "WhatsApp asked for a fresh login (stream error 515)"})
+		f.Emit(client.Lifecycle{Kind: client.Disconnected, Detail: "connection closed by the server"})
 	}}
 	te := newTestEnv(t, fake)
-	if code := te.cmd("groups"); code == 0 || !strings.Contains(te.errb.String(), "closed the connection before it was ready") {
+	if code := te.cmd("groups"); code == 0 || !strings.Contains(te.errb.String(), "closed the connection before it was ready, twice (connection closed by the server)") {
 		t.Fatalf("exit %d, stderr %q", code, te.errb)
+	}
+	if fake.Count("Connect") != 2 {
+		t.Fatalf("calls %v: want exactly one reconnect", fake.Calls())
 	}
 }
 
