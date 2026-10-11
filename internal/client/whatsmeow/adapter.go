@@ -142,7 +142,7 @@ type Adapter struct {
 	// client-outdated refusal.
 	updateVersion func(ctx context.Context) error
 	outdatedTried atomic.Bool
-	// dropping: drop closed this connection; cleared at the next Connected.
+	// dropping: drop closed this connection; cleared when the next one opens.
 	dropping atomic.Bool
 	now      func() time.Time
 }
@@ -218,6 +218,9 @@ func (a *Adapter) Connect(ctx context.Context) error {
 	if !a.Paired() {
 		return errors.New("this device is not paired: run `groupwarden pair` first")
 	}
+	// A new connection can be dropped again, even one that never logs in
+	// (no Connected): its keepalives are watched from the start.
+	a.dropping.Store(false)
 	return a.cli.ConnectContext(ctx)
 }
 
