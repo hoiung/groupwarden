@@ -207,6 +207,12 @@ ALTER TABLE reports ADD COLUMN action TEXT NOT NULL DEFAULT '';
 	`
 ALTER TABLE tg_messages ADD COLUMN upto INTEGER NOT NULL DEFAULT 0;
 `,
+	// 8: what the admin chat was last told about the report's attachment (the
+	// media state its header showed: 'pending' is "being saved"), so an
+	// attachment not kept after the report went out gets one reply saying so.
+	`
+ALTER TABLE reports ADD COLUMN media_told TEXT NOT NULL DEFAULT '';
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
