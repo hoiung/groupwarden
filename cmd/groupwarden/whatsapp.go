@@ -98,6 +98,10 @@ func (e *env) connect(ctx context.Context, w *whatsApp) error {
 				return &app.FatalError{Kind: l.Kind, Detail: l.Detail}
 			case l.Kind == client.TemporaryBan:
 				return fmt.Errorf("the bot number is temporarily banned: %s", l.Detail)
+			case l.Kind == client.Disconnected:
+				// The library does not reconnect by itself (the bot's
+				// supervisor does), so a one-off connection lost here is over.
+				return fmt.Errorf("WhatsApp closed the connection before it was ready (%s): run the command again", l.Detail)
 			}
 		case <-timeout:
 			return fmt.Errorf("no connection to WhatsApp within %s", e.connectTimeout)
