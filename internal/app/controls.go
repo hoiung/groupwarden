@@ -91,10 +91,14 @@ func banReply(res pipeline.Banned, reportID int64, by telegram.Actor, message bo
 		}
 	}
 	who := mask.IDs(res.Member.Key())
-	switch {
-	case res.Shadow: // no ban is applied and nothing is sent, paused or not
+	if res.Shadow {
+		// No ban is applied and nothing is sent, paused or not: the reply
+		// neither says "banned" nor offers an /unban of a ban that is not there.
 		parts = append(parts, fmt.Sprintf("%s would be removed from %d group(s) and banned, but the community is in "+
-			"shadow mode: this is recorded only, nothing is sent", who, res.Removals))
+			"shadow mode: nothing is banned or sent", who, res.Removals))
+		return fmt.Sprintf("Recorded by %s (#%d): %s.", by.Name, reportID, strings.Join(parts, "; "))
+	}
+	switch {
 	case res.Paused != "":
 		parts = append(parts, fmt.Sprintf("%s is banned; their removal from %d group(s) waits for the pause to end",
 			who, res.Removals))
