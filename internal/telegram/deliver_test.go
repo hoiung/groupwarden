@@ -428,6 +428,46 @@ func TestSummaryCutShortFinishesOnALaterDay(t *testing.T) {
 	}
 }
 
+// TestSummaryResumesTheTextItStarted: a community renamed between a daily
+// summary cut short and its retry does not move where the retry resumes:
+// the rest of the text it began goes out, every line exactly once, under the
+// name it began with.
+func TestSummaryResumesTheTextItStarted(t *testing.T) {
+	h := newHarness(t, "")
+	h.drain() // the first run starts the summaries with today
+	summaryCounters(t, h)
+	day := h.k.Clock.Now().UTC().Format(time.DateOnly)
+	if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
+		return store.IncrCounter(h.k.Ctx, tx, day, "keyword_only|"+string(modtest.Community)+"|crypto")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.k.Clock.Advance(24 * time.Hour)
+	h.srv.Fail("sendMessage", telegramtest.Reply{})
+	h.srv.Fail("sendMessage", telegramtest.Reply{Code: 500, Description: "Internal Server Error"})
+	if _, err := h.chat.Step(h.k.Ctx); err == nil {
+		t.Fatal("no error from the step whose send failed")
+	}
+	h.k.ReloadConfig(strings.Replace(modtest.Config, "name: community a", "name: community a, renamed to a much longer name", 1))
+	h.drain()
+	texts := postedOnce(t, h.srv.Requests("sendMessage"))
+	all := strings.Join(texts, "\n")
+	for i := 0; i < 300; i++ {
+		if n := strings.Count(all, fmt.Sprintf("number %03d\n", i)) + strings.Count(all, fmt.Sprintf("number %03d: ", i)); n != 1 {
+			t.Fatalf("counter %03d posted %d times", i, n)
+		}
+	}
+	if n := strings.Count(all, "Keyword-only posts not acted on in community a: crypto 1\n"); n != 1 {
+		t.Fatalf("the keyword-only line posted %d times under the name the summary began with", n)
+	}
+	if strings.Contains(all, "renamed") {
+		t.Fatal("the retry rebuilt the summary with the new name")
+	}
+	if got := statusOf(t, h, store.StatusSummaryText); got != "" {
+		t.Fatalf("summary text %.40q kept after the day was done", got)
+	}
+}
+
 // TestFollowupsResumeWhereTheTextStopped: a report's header changes between
 // attempts (its attachment line, once the download settles). A retry posts
 // the member's text from where the posted parts stopped, so every line goes
@@ -463,6 +503,48 @@ func TestFollowupsResumeWhereTheTextStopped(t *testing.T) {
 		t.Fatal("the message's end was not posted")
 	}
 }
+
+// TestLongDisplayNameKeepsTheHeaderInTheFirstPart: a sender's display name
+// far longer than a Telegram message is clipped in the report's header, so a
+// report whose second part Telegram tells to wait still shows the rule, the
+// action and the config version once the retry posts the rest.
+func TestLongDisplayNameKeepsTheHeaderInTheFirstPart(t *testing.T) {
+	h := newHarness(t, "")
+	var b strings.Builder
+	b.WriteString("crypto https://example.org/x\n")
+	for i := 0; i < 1500; i++ {
+		fmt.Fprintf(&b, "line %04d\n", i)
+	}
+	b.WriteString("THE END")
+	msg := h.k.Msg("N1", modtest.G1, modtest.Spammer, b.String())
+	msg.PushName = strings.Repeat("n", 5000)
+	h.srv.Fail("sendMessage", telegramtest.Reply{})
+	h.srv.Fail("sendMessage", telegramtest.Reply{Code: 429, Description: "Too Many Requests: retry after 1", RetryAfter: 1})
+	h.k.Deliver(msg)
+	if _, err := h.chat.Step(h.k.Ctx); err == nil {
+		t.Fatal("no error from the step Telegram told to wait")
+	}
+	h.drain()
+	texts := postedOnce(t, h.srv.Posted())
+	if len(texts) == 0 {
+		t.Fatal("nothing posted")
+	}
+	for _, line := range []string{"\nRule: pitch\n", "\nAction: deleted for everyone; sender removed and banned\n", "\nConfig: v",
+		"\nSender: " + strings.Repeat("n", nameMaxForTest-1) + "… ("} {
+		if !strings.Contains(texts[0], line) {
+			t.Fatalf("the report's first part lacks %.60q", line)
+		}
+	}
+	all := strings.Join(texts, "\n")
+	for i := 0; i < 1500; i++ {
+		if n := strings.Count(all, fmt.Sprintf("line %04d\n", i)); n != 1 {
+			t.Fatalf("line %04d posted %d times", i, n)
+		}
+	}
+}
+
+// nameMaxForTest is how much of a display name a report's header shows.
+const nameMaxForTest = 200
 
 // TestRetryAfterARefusedFollowupPostsNoPartTwice: Telegram refuses one
 // follow-up, then tells a later part to wait; the retry resumes after the
@@ -725,6 +807,45 @@ func TestAttachmentForgottenDuringItsUpload(t *testing.T) {
 				t.Fatal("the take-down was not logged")
 			}
 		})
+	}
+}
+
+// TestTakeDownSkipsAPostTakenDownWhileItWaited: a take-down waiting for its
+// turn lets the delivery slot go; when another loop takes the same post down
+// meanwhile, this one sends nothing once its turn comes.
+func TestTakeDownSkipsAPostTakenDownWhileItWaited(t *testing.T) {
+	h := newHarness(t, "")
+	attachmentReport(t, h)
+	post := attachmentPost(t, h)
+	if _, err := h.k.Store.ForgetMember(h.k.Ctx, []string{string(modtest.Spammer), string(modtest.SpammerPhone)}); err != nil {
+		t.Fatal(err)
+	}
+	h.srv.Fail("deleteMessage", telegramtest.Reply{Code: 429, Description: "Too Many Requests: retry after 30", RetryAfter: 30})
+	for i := 0; ; i++ {
+		if _, err := h.chat.Step(h.k.Ctx); err != nil {
+			break // the take-down was told to wait
+		}
+		if i == 10 {
+			t.Fatal("the take-down was never told to wait")
+		}
+	}
+	// The next try waits out the retry_after; meanwhile another loop takes
+	// the post down.
+	h.k.Clock.OnSleep = func(time.Duration) {
+		if err := h.k.Store.MarkTGGone(h.k.Ctx, post.ID); err != nil {
+			t.Error(err)
+		}
+	}
+	h.drain()
+	h.k.Clock.OnSleep = nil
+	if n, m := len(h.srv.Requests("deleteMessage")), len(h.srv.Requests("editMessageMedia")); n != 1 || m != 0 {
+		t.Fatalf("%d deletes and %d replacements, want only the one told to wait", n, m)
+	}
+	if !strings.Contains(h.logs.String(), "attachment post already taken down") {
+		t.Fatal("the skipped take-down was not logged")
+	}
+	if edits, err := h.k.Store.ReportEdits(h.k.Ctx); err != nil || len(edits) != 0 {
+		t.Fatalf("edits left %+v (%v)", edits, err)
 	}
 }
 
