@@ -357,6 +357,19 @@ func TestGroupsListsIDs(t *testing.T) {
 	lock.Release()
 }
 
+// TestOneOffConnectionLostEndsTheCommand: a one-off connection WhatsApp
+// closes before it is ready (the library no longer logs in again by itself)
+// ends the command at once with that reason, not after the connect timeout.
+func TestOneOffConnectionLostEndsTheCommand(t *testing.T) {
+	fake := &clienttest.Fake{OnConnect: func(f *clienttest.Fake) {
+		f.Emit(client.Lifecycle{Kind: client.Disconnected, Detail: "WhatsApp asked for a fresh login (stream error 515)"})
+	}}
+	te := newTestEnv(t, fake)
+	if code := te.cmd("groups"); code == 0 || !strings.Contains(te.errb.String(), "closed the connection before it was ready") {
+		t.Fatalf("exit %d, stderr %q", code, te.errb)
+	}
+}
+
 func TestResolveLinkDoesNotJoin(t *testing.T) {
 	fake := &clienttest.Fake{Invites: map[string]client.Group{
 		"INVITECODE": {JID: "99999000000111@g.us", Name: "General", Parent: "99999000000333@g.us"},
