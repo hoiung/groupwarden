@@ -290,7 +290,8 @@ func (s *Store) Retry(ctx context.Context, id int64, notBefore time.Time, reason
 }
 
 // Hold keeps a row queued until notBefore without counting an attempt: the
-// call never reached WhatsApp (not connected).
+// call got no answer from WhatsApp (not connected, or the connection lost
+// before the answer); a delete or removal sent twice does no harm.
 func (s *Store) Hold(ctx context.Context, id int64, notBefore time.Time, reason string) error {
 	return s.requeue(ctx, id, notBefore, reason, 0)
 }
