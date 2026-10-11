@@ -134,6 +134,8 @@ Store commands (work beside run):
   backup                       write an encrypted backup of groupwarden.db to backup.target_dir
                                and keep the newest backup.keep (run nightly by the backup timer)
   backup-dir                   print backup.target_dir (the install script lets the backup unit write there)
+  backup-failed                record and report a backup unit that failed before the backup said why
+                               (run by systemd when the backup unit fails)
   fatal-exit-code             print the exit code that means "a human must act"
 
 Every command except fatal-exit-code and corpus add takes --config <file> (default: $GROUPWARDEN_CONFIG).
@@ -150,7 +152,7 @@ func (e *env) run(args []string) int {
 		fmt.Fprintln(e.stdout, app.ExitFatal)
 		return exitOK
 	case "pair", "run", "groups", "resolve-link", "check", "healthcheck", "sync-config", "schedule", "backup",
-		"backup-dir", "restore":
+		"backup-dir", "backup-failed", "restore":
 	case "corpus", "ledger", "ban", "member":
 		subs := map[string][]string{"corpus": {"test", "add"}, "ledger": {"summary"}, "ban": {"add", "remove", "list"},
 			"member": {"show", "forget"}}[cmd]
@@ -218,6 +220,8 @@ func (e *env) run(args []string) int {
 		return e.healthcheck(ctx, cfg)
 	case "backup":
 		return e.backup(ctx, cfg, log)
+	case "backup-failed":
+		return e.backupFailed(ctx, cfg, log)
 	case "backup-dir":
 		fmt.Fprintln(e.stdout, cfg.Backup.TargetDir)
 		return exitOK
