@@ -49,6 +49,10 @@ const (
 	StatusSyncResult    = "sync_result"
 	StatusBackupLastRun = "backup_last_run"
 	StatusBackupResult  = "backup_result"
+	// The systemd invocation ID of the backup run that recorded the result
+	// (empty when run by hand): the unit's failure handler leaves a result
+	// the failed run recorded itself.
+	StatusBackupInvocation = "backup_invocation"
 )
 
 // StatusValue is one status entry.
