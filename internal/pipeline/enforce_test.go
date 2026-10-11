@@ -403,6 +403,26 @@ func TestPhoneToLIDFailureReported(t *testing.T) {
 	}
 }
 
+// TestNonLIDAnswerLeavesTheBanUnresolved: WhatsApp answering the lookup with
+// something other than a LID (here the phone number itself) is an answer that
+// the number has no LID: the phone key stays and the admins get one report.
+func TestNonLIDAnswerLeavesTheBanUnresolved(t *testing.T) {
+	k := modtest.New(t, "")
+	m := client.Member{Phone: "447700900456@s.whatsapp.net"}
+	k.Ban(m)
+	k.Fake.LIDs = map[client.JID]client.JID{m.Phone: m.Phone}
+	if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
+		t.Fatal(err)
+	}
+	b, ok, _ := k.Store.FindBan(k.Ctx, m.IDs(), "")
+	if !ok || b.Member != string(m.Phone) || b.LID != "" || !b.LIDFailed {
+		t.Fatalf("ban %+v, want the phone key kept and marked unresolved", b)
+	}
+	if reps := k.Reports(ledger.KindLIDUnresolved); len(reps) != 1 || !reps[0].Priority {
+		t.Fatalf("reports %+v, want one priority report", reps)
+	}
+}
+
 // TestBanLookupNotFailedWhenWhatsAppCannotAnswer: a lookup WhatsApp did not
 // answer (rate limit, no connection, no answer in time, any other error) is no
 // answer about the number: the ban is not marked unresolved or reported, and
