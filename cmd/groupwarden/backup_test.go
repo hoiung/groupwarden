@@ -94,15 +94,26 @@ func TestBackupUnitFailureRecorded(t *testing.T) {
 		t.Fatalf("recorded result %q (%v), want the backup's own reason kept", status[store.StatusBackupResult].Value, err)
 	}
 
-	// systemd before 251 passes no MONITOR_*: a recorded failure is kept; a
-	// run that recorded nothing is still recorded as failed.
+	// systemd before 251 passes no MONITOR_*: a recorded failure is kept,
+	// with no second report, but each night still counts as a run, so the
+	// overdue check never blames the timer for a share that stays down.
 	te.getenv = func(string) string { return "" }
-	if code := te.cmd("backup-failed"); code != exitOK || !strings.HasPrefix(te.out.String(), "a failed backup is already recorded") {
-		t.Fatalf("handler without MONITOR_* after a recorded failure: %d %q", code, te.out.String())
+	for night := 5; night <= 7; night++ {
+		at := time.Date(2026, 10, night, 3, 20, 0, 0, time.UTC)
+		te.now = func() time.Time { return at }
+		if code := te.cmd("backup-failed"); code != exitOK || !strings.HasPrefix(te.out.String(), "a failed backup is already recorded") {
+			t.Fatalf("night %d: handler without MONITOR_* after a recorded failure: %d %q", night, code, te.out.String())
+		}
+		status, err := st.Status(context.Background())
+		if err != nil || !strings.Contains(status[store.StatusBackupResult].Value, "same disk as the data dir") {
+			t.Fatalf("night %d: recorded result %q (%v), want the backup's own reason kept", night, status[store.StatusBackupResult].Value, err)
+		}
+		if got := status[store.StatusBackupLastRun].Value; got != store.StatusTime(at) {
+			t.Fatalf("night %d: last run %q, want %q", night, got, store.StatusTime(at))
+		}
 	}
-	if status, err := st.Status(context.Background()); err != nil ||
-		!strings.Contains(status[store.StatusBackupResult].Value, "same disk as the data dir") {
-		t.Fatalf("recorded result %q (%v), want the backup's own reason kept", status[store.StatusBackupResult].Value, err)
+	if reps, err := st.UnsentReportsOf(context.Background(), string(alert.BackupFailed), 10); err != nil || len(reps) != 1 {
+		t.Fatalf("backup failure alerts %+v (%v), want still the one", reps, err)
 	}
 	// The last good run was by hand: no invocation ID, as none reached the handler.
 	if err := st.SetStatus(context.Background(), map[string]string{store.StatusBackupResult: "ok groupwarden-2.age (1 bytes, 0 older deleted)",
