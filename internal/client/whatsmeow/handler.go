@@ -56,10 +56,18 @@ func (a *Adapter) handle(evt any) bool {
 		// goroutine after two round trips: either may come first.
 		sink.Lifecycle(client.Lifecycle{Kind: client.CaughtUp, Detail: fmt.Sprintf("%d offline events", e.Count)})
 	case *events.Disconnected:
-		sink.Lifecycle(client.Lifecycle{Kind: client.Disconnected, Detail: "connection closed by the server"})
+		// The library sends this from a goroutine of its own, so it can
+		// arrive after the next connection opened: an open connection is
+		// not the one that closed. (IsConnected waits while a connect is
+		// under way.)
+		if a.cli.IsConnected() {
+			a.log.Debug("a close of an earlier WhatsApp connection arrived after the next one opened")
+			break
+		}
+		a.lost(sink, "connection closed by the server")
 	case *events.ClientOutdated:
 		// The version fetch is a network call: never inside the handler.
-		go a.clientOutdated(sink)
+		a.background(func() { a.clientOutdated(sink) })
 	case events.PermanentDisconnect:
 		sink.Lifecycle(classify(e))
 	case *events.HistorySync:
@@ -70,18 +78,30 @@ func (a *Adapter) handle(evt any) bool {
 
 // drop closes a connection WhatsApp no longer serves and reports it as a
 // disconnect, so the supervisor reconnects through its own connect() (which
-// re-arms the wait for the offline backlog). Once per connection; off the
-// handler's goroutine, because closing the socket waits for the handlers.
+// re-arms the wait for the offline backlog). Not when the connection was
+// already reported lost; off the handler's goroutine, because closing the
+// socket waits for the handlers.
 func (a *Adapter) drop(sink client.Sink, why string) {
-	if !a.dropping.CompareAndSwap(false, true) {
-		a.log.Debug("the WhatsApp connection is already being closed", "reason", why)
+	if !a.gone.CompareAndSwap(false, true) {
+		a.log.Debug("the WhatsApp connection was already reported lost", "reason", why)
 		return
 	}
 	a.log.Warn("closing the WhatsApp connection to reconnect", "reason", why)
-	go func() {
+	a.background(func() {
 		a.cli.Disconnect()
 		sink.Lifecycle(client.Lifecycle{Kind: client.Disconnected, Detail: why})
-	}()
+	})
+}
+
+// lost reports the current connection as lost, once: a connection can end in
+// more than one way at once (a 515 is followed by the server's close), and a
+// second report would be taken for the loss of the next connection.
+func (a *Adapter) lost(sink client.Sink, why string) {
+	if !a.gone.CompareAndSwap(false, true) {
+		a.log.Debug("the WhatsApp connection was already reported lost", "reason", why)
+		return
+	}
+	sink.Lifecycle(client.Lifecycle{Kind: client.Disconnected, Detail: why})
 }
 
 func (a *Adapter) persist(sink client.Sink, ev client.Event) bool {
@@ -120,7 +140,7 @@ func (a *Adapter) clientOutdated(sink client.Sink) {
 	if a.outdatedTried.CompareAndSwap(false, true) {
 		err := a.updateVersion(context.Background())
 		if err == nil {
-			sink.Lifecycle(client.Lifecycle{Kind: client.Disconnected, Detail: "client outdated: updated to WhatsApp's current web version, reconnecting"})
+			a.lost(sink, "client outdated: updated to WhatsApp's current web version, reconnecting")
 			return
 		}
 		a.log.Error("client version update failed", "err", err)
