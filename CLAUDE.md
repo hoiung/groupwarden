@@ -183,7 +183,7 @@ groupwarden/
 │   ├── store/ backup/      # groupwarden.db; nightly encrypted backup and restore
 │   └── corpus/ mask/       # labelled samples; masking IDs in logs
 ├── deploy/                 # systemd units, install.sh (+ its tests), Dockerfile
-├── docs/                   # architecture, config, deploy, runbook, privacy templates, research
+├── docs/                   # architecture, config, deploy, runbook, research
 ├── schema/ examples/       # config JSON Schema; example config
 ├── tests/corpus/           # public synthetic corpus
 ├── .claude/skills/         # the spam-intake skill
