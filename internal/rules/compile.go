@@ -31,6 +31,9 @@ type rule struct {
 	confirmed bool
 	on        string
 	when      Node
+	// branches: every way an acting rule can match (expand), each checked
+	// by checkActing; the decision reads them (prepared.acts).
+	branches []branch
 }
 
 // scope is one configured community's effective settings.
@@ -159,10 +162,12 @@ func (c *compiler) compileRules() {
 		if !c.checkNode(rs.Name, rs.When, append(path, "when")) {
 			continue
 		}
+		var branches []branch
 		if rs.Action == DeleteRemoveBan {
-			c.checkActing(rs, append(path, "when"))
+			branches = c.checkActing(rs, append(path, "when"))
 		}
-		c.rs.rules = append(c.rs.rules, &rule{name: rs.Name, action: rs.Action, confirmed: rs.Confirmed, on: on, when: rs.When})
+		c.rs.rules = append(c.rs.rules, &rule{name: rs.Name, action: rs.Action, confirmed: rs.Confirmed, on: on, when: rs.When,
+			branches: branches})
 	}
 }
 
@@ -277,12 +282,14 @@ func merge(a, b branch) branch {
 }
 
 // checkActing enforces the operator's combination rule on every way an
-// acting rule can match, so an `any:` group cannot slip a weak branch past.
-func (c *compiler) checkActing(rs RuleSpec, path []string) {
+// acting rule can match, so an `any:` group cannot slip a weak branch past,
+// and returns those ways. Two lists can share a word, so the decision also
+// needs a lure's words to be different words of the post (prepared.acts).
+func (c *compiler) checkActing(rs RuleSpec, path []string) []branch {
 	branches, ok := expand(rs.When)
 	if !ok {
 		c.fail(path, "rule %q has more than %d ways to match; split it into smaller rules", rs.Name, maxBranches)
-		return
+		return nil
 	}
 	for _, b := range branches {
 		if len(b.lists) >= 2 {
@@ -295,8 +302,9 @@ func (c *compiler) checkActing(rs RuleSpec, path []string) {
 			"contact detail (%s), or keywords from two different word lists; it can match on %s alone. "+
 			"Make it action: log, or add the missing condition",
 			rs.Name, strings.Join(sortedKeys(artefacts), ", "), describe(b))
-		return
+		return nil
 	}
+	return branches
 }
 
 func anyArtefact(has map[string]bool) bool {
