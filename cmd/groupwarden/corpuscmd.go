@@ -9,6 +9,7 @@ import (
 
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/corpus"
+	"github.com/hoiung/groupwarden/internal/pipeline"
 	publiccorpus "github.com/hoiung/groupwarden/tests/corpus"
 )
 
@@ -16,7 +17,8 @@ import (
 // labelled samples in dir. One `CLASS legit/<class> <n> hits=<h>` line per
 // legit class, the rule hits, every missed spam (with the acting rule that
 // came closest and the conditions it failed) and every legit false hit (with
-// the rules that would delete it), then one TOTAL line. Exit 1 when any legit
+// the rules that would delete it, and the community when only that
+// community's own words do), then one TOTAL line. Exit 1 when any legit
 // sample would be deleted, any spam is missed, or there are no spam or no
 // legit samples.
 func (e *env) corpusTest(cfgPath, dir string) int {
@@ -54,7 +56,11 @@ func (e *env) corpusTest(cfgPath, dir string) int {
 			strings.Join(m.Closest.Failed, " | "))
 	}
 	for _, f := range r.FalseHits {
-		fmt.Fprintf(e.stdout, "FALSE-HIT legit/%s %s: deleted by %s\n", f.Sample.Class, f.Sample.Path, strings.Join(f.Rules, ", "))
+		where := ""
+		if f.Community != "" {
+			where = " in community " + pipeline.CommunityLabel(l.Config, f.Community)
+		}
+		fmt.Fprintf(e.stdout, "FALSE-HIT legit/%s %s: deleted by %s%s\n", f.Sample.Class, f.Sample.Path, strings.Join(f.Rules, ", "), where)
 	}
 	fmt.Fprintf(e.stdout, "TOTAL spam=%d legit=%d legit_hits=%d spam_missed=%d\n", r.Spam, r.Legit, r.LegitHits, r.SpamMissed)
 	if err := r.Err(); err != nil {
