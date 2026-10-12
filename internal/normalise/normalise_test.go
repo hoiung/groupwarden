@@ -1,6 +1,11 @@
 package normalise
 
-import "testing"
+import (
+	"fmt"
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func mustCompile(t *testing.T, s string) Pattern {
 	t.Helper()
@@ -202,6 +207,113 @@ func TestCompileRejectsBadWildcards(t *testing.T) {
 	for _, s := range []string{"broker*", "*coin", "stock photo*", "*crypto*"} {
 		if _, err := Compile(s); err != nil {
 			t.Errorf("%q refused: %v", s, err)
+		}
+	}
+}
+
+// collapseWhole is the spaced-letter join applied to a whole string: the
+// reference the traced views are checked against.
+func collapseWhole(s string) (string, bool) {
+	idx := spaced.FindAllStringSubmatchIndex(s, -1)
+	if len(idx) == 0 {
+		return s, false
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range idx {
+		b.WriteString(s[last:m[2]])
+		b.WriteString(spacer.ReplaceAllString(s[m[2]:m[3]], ""))
+		last = m[3]
+	}
+	b.WriteString(s[last:])
+	return b.String(), true
+}
+
+// TestViewsReadTheWholeText: building every view one source piece at a time
+// (to know which word each match came from) reads exactly the words the
+// whole text gives, so no keyword matches more or less than before.
+func TestViewsReadTheWholeText(t *testing.T) {
+	for _, s := range []string{
+		"сrурtо profits", "CRYPTO profits", "ｃｒｙｐｔｏ profits", "çrÿptö profits",
+		"🇨🇷🇾🇵🇹🇴 now", "ᴄʀʏᴘᴛᴏ now", "₿itcoin giveaway", "cry\u200bpto", "c̲r̲y̲p̲t̲o̲",
+		"c r y p t o dm me", "c.r.y.p.t.o", "F R E E  U S D T", "b u y\tb t c",
+		"$tocks risk free", "e@sy m0ney", "b1tcoin d0gecoin", "anyone still holding DOGECOIN?",
+		"price\u00a0list 10\u3000days", "bit¨coin", "  leading and trailing  ", "", "Stockholm is lovely",
+	} {
+		parts, ids := sourcePieces(s)
+		var source traced
+		for i, p := range parts {
+			source.add(p, ids[i])
+		}
+		if got := string(apply(source, base).runes); got != base(s) {
+			t.Errorf("%q: base view %q, whole text gives %q", s, got, base(s))
+		}
+		want := []string{fmt.Sprint(tokens(base(s))), fmt.Sprint(tokens(skeleton(s))), fmt.Sprint(tokens(leet.Replace(base(s))))}
+		if c, ok := collapseWhole(base(s)); ok {
+			want = append(want, fmt.Sprint(tokens(c)), fmt.Sprint(tokens(skeleton(c))), fmt.Sprint(tokens(leet.Replace(c))))
+		}
+		got := map[string]bool{}
+		for _, v := range Prepare(s, nil).views {
+			got[fmt.Sprint(v.words)] = true
+		}
+		for _, w := range want {
+			if !got[w] {
+				t.Errorf("%q: no view reads %s", s, w)
+			}
+		}
+		if len(got) > len(want) {
+			t.Errorf("%q: %d views, the whole text gives %d", s, len(got), len(want))
+		}
+	}
+}
+
+// TestWordsAcrossReadings: a keyword's source pieces are the same whichever
+// reading it matched in, so a second keyword on the same word is never
+// counted as a different word, while words split only by punctuation stay
+// different words. Pieces count from 0 and include the spaces and
+// punctuation between words.
+func TestWordsAcrossReadings(t *testing.T) {
+	cases := []struct {
+		text, first, second string
+		leet                bool
+		used                []int
+		secondElsewhere     bool
+	}{
+		// capitals: the look-alike reading of DOGECOIN is "dogecoln"
+		{"anyone still holding DOGECOIN?", "*coin", "doge*", false, []int{6}, false},
+		{"anyone still holding dogecoin?", "*coin", "doge*", false, []int{6}, false},
+		// a digit swap read only by the second list
+		{"anyone still holding b1tcoin?", "*coin", "bitcoin", true, []int{6}, false},
+		// spaced letters span every letter and space they came from
+		{"c r y p t o dm me", "crypto", "dm me", false, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, true},
+		// a joined word overlaps every letter it was made from, not just the first
+		{"b i t c o i n", "c", "bitcoin", false, []int{6}, false},
+		{"cryp7o dm me", "crypto", "dm me", true, []int{0}, true},
+		{"$tocks risk free", "stocks", "risk free", true, []int{0, 1}, true},
+		{"сrурtо crypto", "crypto", "crypto", false, []int{0, 2}, false},
+		// punctuation with no space still separates two words
+		{"crypto,dm me", "crypto", "dm me", false, []int{0}, true},
+		{"bitcoin/guaranteed", "bitcoin", "guaranteed", false, []int{0}, true},
+	}
+	for _, c := range cases {
+		text := Prepare(c.text, nil)
+		used := map[int]bool{}
+		mustCompile(t, c.first).Words(text, c.leet, used)
+		var got []int
+		for w := range 20 {
+			if used[w] {
+				got = append(got, w)
+			}
+		}
+		if !reflect.DeepEqual(got, c.used) {
+			t.Errorf("%q: %q uses source pieces %v, want %v", c.text, c.first, got, c.used)
+		}
+		second := mustCompile(t, c.second)
+		if !second.MatchIn(text, c.leet) {
+			t.Errorf("%q: %q does not match at all", c.text, c.second)
+		}
+		if got := second.MatchAvoiding(text, c.leet, used); got != c.secondElsewhere {
+			t.Errorf("%q: %q away from %q's words = %v, want %v", c.text, c.second, c.first, got, c.secondElsewhere)
 		}
 	}
 }
