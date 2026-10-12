@@ -60,39 +60,93 @@ type prepared struct {
 	fields  []client.Field
 	signals signals
 	allowed map[string]bool
+	never   []normalise.Pattern
 	hits    map[string]bool // word list → found (memoised)
 }
 
 func (rs *Ruleset) prepare(fields []client.Field) *prepared {
-	p := &prepared{fields: fields, allowed: rs.allowed, hits: map[string]bool{}}
-	for _, f := range fields {
+	p := &prepared{fields: fields, allowed: rs.allowed, never: rs.never, hits: map[string]bool{}}
+	p.texts = p.prepareTexts(rs.never)
+	return p
+}
+
+// prepareTexts prepares every field with the given phrases blanked.
+func (p *prepared) prepareTexts(never []normalise.Pattern) []normalise.Text {
+	texts := make([]normalise.Text, 0, len(p.fields))
+	for _, f := range p.fields {
 		text := f.Match
 		if text == "" {
 			text = f.Text
 		}
-		p.texts = append(p.texts, normalise.Prepare(text, rs.never))
+		texts = append(texts, normalise.Prepare(text, never))
 	}
-	return p
+	return texts
 }
 
 func (p *prepared) list(wl *wordList) bool {
 	if hit, ok := p.hits[wl.name]; ok {
 		return hit
 	}
-	hit := false
-	for _, pat := range wl.patterns {
-		for _, t := range p.texts {
-			if pat.MatchIn(t, wl.leet) {
-				hit = true
-				break
-			}
-		}
-		if hit {
-			break
-		}
-	}
+	hit := listIn(wl, p.texts)
 	p.hits[wl.name] = hit
 	return hit
+}
+
+func listIn(wl *wordList, texts []normalise.Text) bool {
+	for _, pat := range wl.patterns {
+		for _, t := range texts {
+			if pat.MatchIn(t, wl.leet) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// acts reports whether an acting rule matches: one of the ways it can match
+// holds, and a way without a link or contact detail (a lure: keywords from
+// two word lists) has those keywords in different words of the post. One
+// keyword that two lists share, or that a wildcard of each list matches,
+// never deletes, removes and bans on its own.
+func (p *prepared) acts(r *rule, sc *scope) bool {
+	for _, b := range r.branches {
+		if p.branchHolds(b, sc) && (anyArtefact(b.has) || p.differentWords(b.lists, sc)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *prepared) branchHolds(b branch, sc *scope) bool {
+	for h := range b.has {
+		if !p.has(h) {
+			return false
+		}
+	}
+	for l := range b.lists {
+		if wl, ok := sc.lists[l]; !ok || !p.list(wl) {
+			return false
+		}
+	}
+	return true
+}
+
+// differentWords reports whether two of lists match different words: with
+// every word one list matches blanked, another list still matches. A pair
+// whose words overlap phrases of both lists on every reading is not
+// counted, which can only leave a post unactioned, never action one.
+func (p *prepared) differentWords(lists map[string]bool, sc *scope) bool {
+	names := sortedKeys(lists)
+	for _, a := range names {
+		never := append(append([]normalise.Pattern{}, p.never...), sc.lists[a].patterns...)
+		rest := p.prepareTexts(never)
+		for _, b := range names {
+			if b != a && listIn(sc.lists[b], rest) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *prepared) has(name string) bool {
@@ -162,7 +216,13 @@ func (rs *Ruleset) matchAll(in Input, sc *scope) ([]Match, []string) {
 			}
 			input = name
 		}
-		if input.holds(r.when, sc) {
+		var matched bool
+		if r.action == DeleteRemoveBan {
+			matched = input.acts(r, sc)
+		} else {
+			matched = input.holds(r.when, sc)
+		}
+		if matched {
 			matches = append(matches, Match{
 				Rule: r.name, Action: r.action,
 				Enforced: r.action == DeleteRemoveBan && r.confirmed && sc.mode == Enforce,
