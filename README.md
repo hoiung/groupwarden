@@ -19,10 +19,6 @@ Spam is defined by rules you write in a config file: a keyword from one of your 
 
 Moderating communities **you administer**. It is not for bulk messaging, member scraping or exporting member lists, and it sends nothing on WhatsApp except deletes, removals, join-request rejections and group joins.
 
-## Who is responsible for the data
-
-Whoever deploys groupwarden is the **data controller** for the members' data it processes. Templates for a privacy assessment (DPIA), a legitimate-interests assessment, a member notice and a record of processing are in `docs/privacy/`.
-
 ## What it cannot see
 
 - **View-once** posts (WhatsApp never delivers them to linked devices).
@@ -64,7 +60,7 @@ On a machine that stays on: a Linux box, a Windows PC running WSL2, or Docker. [
 | `examples/` | Example config with English word lists |
 | `tests/corpus/` | Synthetic, redacted spam and look-alike samples |
 | `deploy/` | systemd units, install script, Dockerfile |
-| `docs/` | Deploy guide, runbook, config reference, privacy templates, research |
+| `docs/` | Deploy guide, runbook, config reference, research |
 
 Runtime state (`data/`, `evidence/`, `backups/`, `secrets/`) is never committed.
 
