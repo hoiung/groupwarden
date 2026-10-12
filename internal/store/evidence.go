@@ -64,6 +64,16 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	return res.LastInsertId()
 }
 
+// DeleteEvidence removes a copy InsertEvidence wrote earlier in tx that
+// nothing came to refer to. It has no file yet: a download starts only once
+// the transaction commits.
+func DeleteEvidence(ctx context.Context, tx *sql.Tx, id int64) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM evidence WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("evidence delete: %w", err)
+	}
+	return nil
+}
+
 const evidenceCols = `id, chat, community, sender, sender_alt, subject, push_name, msg_id, target_id, msg_time, fields,
 	normalised, rule, config_hash, media_kind, media_mime, media_name, media_size, media_raw, media_state, media_path,
 	media_error, created_at`
