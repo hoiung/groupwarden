@@ -60,47 +60,58 @@ type prepared struct {
 	fields  []client.Field
 	signals signals
 	allowed map[string]bool
-	never   []normalise.Pattern
 	hits    map[string]bool // word list → found (memoised)
 }
 
 func (rs *Ruleset) prepare(fields []client.Field) *prepared {
-	p := &prepared{fields: fields, allowed: rs.allowed, never: rs.never, hits: map[string]bool{}}
-	p.texts = p.prepareTexts(rs.never)
-	return p
-}
-
-// prepareTexts prepares every field with the given phrases blanked.
-func (p *prepared) prepareTexts(never []normalise.Pattern) []normalise.Text {
-	texts := make([]normalise.Text, 0, len(p.fields))
-	for _, f := range p.fields {
+	p := &prepared{fields: fields, allowed: rs.allowed, hits: map[string]bool{}}
+	for _, f := range fields {
 		text := f.Match
 		if text == "" {
 			text = f.Text
 		}
-		texts = append(texts, normalise.Prepare(text, never))
+		p.texts = append(p.texts, normalise.Prepare(text, rs.never))
 	}
-	return texts
+	return p
 }
 
 func (p *prepared) list(wl *wordList) bool {
 	if hit, ok := p.hits[wl.name]; ok {
 		return hit
 	}
-	hit := listIn(wl, p.texts)
+	hit := p.listAvoiding(wl, nil)
 	p.hits[wl.name] = hit
 	return hit
 }
 
-func listIn(wl *wordList, texts []normalise.Text) bool {
+// listAvoiding reports whether a keyword of wl occurs in a field using none
+// of that field's source pieces in avoid (nil avoids nothing).
+func (p *prepared) listAvoiding(wl *wordList, avoid []map[int]bool) bool {
 	for _, pat := range wl.patterns {
-		for _, t := range texts {
-			if pat.MatchIn(t, wl.leet) {
+		for i, t := range p.texts {
+			var a map[int]bool
+			if avoid != nil {
+				a = avoid[i]
+			}
+			if pat.MatchAvoiding(t, wl.leet, a) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// words is, per field, every source piece a keyword of wl matches in any
+// reading (plain, look-alike letters, digit swaps, spaced letters joined).
+func (p *prepared) words(wl *wordList) []map[int]bool {
+	used := make([]map[int]bool, len(p.texts))
+	for i, t := range p.texts {
+		used[i] = map[int]bool{}
+		for _, pat := range wl.patterns {
+			pat.Words(t, wl.leet, used[i])
+		}
+	}
+	return used
 }
 
 // acts reports whether an acting rule matches: one of the ways it can match
@@ -131,17 +142,18 @@ func (p *prepared) branchHolds(b branch, sc *scope) bool {
 	return true
 }
 
-// differentWords reports whether two of lists match different words: with
-// every word one list matches blanked, another list still matches. A pair
-// whose words overlap phrases of both lists on every reading is not
-// counted, which can only leave a post unactioned, never action one.
+// differentWords reports whether two of lists match different words: one
+// list matches on a word of the post that another list matches in no
+// reading. Words are those of the original text, so a keyword read one way
+// by one list and another way by the other (DOGECOIN, d0gecoin) is one word.
+// A phrase of one list overlapping a phrase of another on every reading is
+// not counted, which can only leave a post unactioned, never action one.
 func (p *prepared) differentWords(lists map[string]bool, sc *scope) bool {
 	names := sortedKeys(lists)
 	for _, a := range names {
-		never := append(append([]normalise.Pattern{}, p.never...), sc.lists[a].patterns...)
-		rest := p.prepareTexts(never)
+		used := p.words(sc.lists[a])
 		for _, b := range names {
-			if b != a && listIn(sc.lists[b], rest) {
+			if b != a && p.listAvoiding(sc.lists[b], used) {
 				return true
 			}
 		}
