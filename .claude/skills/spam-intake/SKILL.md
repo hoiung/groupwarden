@@ -92,6 +92,9 @@ Rules for every candidate:
 - Never remove a condition from a rule, never loosen a `has:` list, never touch
   `mode`, `confirmed`, `never_match` or `allowed_domains` to catch spam.
 - No single common word that ordinary members use; prefer a phrase.
+- Never add a word that the rule's other list already matches (a crypto word
+  to `lures`): a rule's two lists must match different words of a message, so
+  one word in both lists catches nothing.
 - Words are quoted; a `*` only at the start or end of a word (docs/config.md
   "Writing words and rules").
 - Test each candidate:
