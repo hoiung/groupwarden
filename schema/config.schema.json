@@ -55,7 +55,7 @@
       "type": "object", "additionalProperties": false, "default": {},
       "properties": {
         "evidence_days": {"description": "Evidence copies (and their attachments) are purged after this many days.", "type": "integer", "default": 30, "minimum": 1, "maximum": 365},
-        "action_log_months": {"description": "The action log is purged after this many months.", "type": "integer", "default": 12, "minimum": 1, "maximum": 120},
+        "action_log_months": {"description": "The action log is purged after this many months (at least evidence_days plus report.attachment_show_hours and a day, a month counted as 28 days, so a report outlasts what the bot posted about it).", "type": "integer", "default": 12, "minimum": 1, "maximum": 120},
         "announcement_secret_days": {"description": "Announcement-group message secrets are kept this long so replies still decrypt (at least evidence_days).", "type": "integer", "default": 90, "minimum": 1, "maximum": 3650}
       }
     },
@@ -96,7 +96,7 @@
     "report": {
       "type": "object", "additionalProperties": false, "default": {},
       "properties": {
-        "attachment_show_hours": {"description": "A deleted post's attachment stays in the admin chat this long (Telegram lets a bot delete its own message within 48 hours).", "type": "integer", "default": 24, "minimum": 1, "maximum": 47}
+        "attachment_show_hours": {"description": "A matched post's attachment stays in the admin chat this long (Telegram lets a bot delete its own message within 48 hours).", "type": "integer", "default": 24, "minimum": 1, "maximum": 47}
       }
     },
     "bans": {
