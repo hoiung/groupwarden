@@ -825,12 +825,17 @@ func TestAttachmentNotKeptAfterTheReport(t *testing.T) {
 	})
 }
 
-// TestAttachmentShownUnderThePostsOwnReport: every report about a post shows
-// the post's attachment the same way, whatever its kind (a watch-only match,
-// an exempt sender, as a spam report does): posted below once saved, or one
-// reply saying why it was not kept. A later report about the same post (an
-// action not done) names the attachment and points to the first report,
-// rather than promising it again.
+// TestAttachmentShownUnderThePostsOwnReport: a post's own report shows its
+// attachment the same way whatever its kind (spam, a watch-only match, Meta
+// AI, an admin's post whether or not the rules saw the admin, a sender the
+// bot cannot address): posted below once
+// saved, taken down after attachment_show_hours and posted again by its
+// [Show attachment] (which a post with no attachment does not carry), or one
+// reply saying why it was not kept. A later report
+// about the same post (an action not done) names the attachment and points to
+// the first report, rather than promising it again, even once the first is
+// purged. A log rule's match (only counted in the summary) and a report
+// Telegram refused have no message to post it under.
 func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
 	saved := func(context.Context, *client.Message) ([]byte, string, string, error) {
 		return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
@@ -839,21 +844,51 @@ func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
 		return nil, "", "", errors.New("media server answered 404")
 	}
 	for _, p := range []struct {
-		kind string
-		msg  func(k *modtest.Kit) *client.Message
+		name, kind string
+		msg        func(k *modtest.Kit) *client.Message
 	}{
-		{ledger.KindWouldHaveActed, func(k *modtest.Kit) *client.Message {
+		{"spam", ledger.KindAction, func(k *modtest.Kit) *client.Message { return k.Spam("S1", modtest.G1) }},
+		{"watch-only", ledger.KindWouldHaveActed, func(k *modtest.Kit) *client.Message {
 			m := k.Msg("W1", modtest.G1, modtest.Spammer, "crypto: inbox me")
 			m.SenderAlt = modtest.SpammerPhone
 			return m
 		}},
-		{ledger.KindExempt, func(k *modtest.Kit) *client.Message {
+		{"meta ai", ledger.KindExempt, func(k *modtest.Kit) *client.Message {
 			m := k.Msg("AI1", modtest.G1, modtest.Other2, "crypto tips, inbox me")
 			m.FromMetaAI = true
 			return m
 		}},
+		{"an admin's post", ledger.KindExempt, func(k *modtest.Kit) *client.Message {
+			return k.Msg("AD1", modtest.G1, modtest.Admin, "crypto: inbox me")
+		}},
+		{"an admin known by another address", ledger.KindExempt, func(k *modtest.Kit) *client.Message {
+			// The post names its sender by phone number only. The directory
+			// pairs that number with a LID in the groups where they are a
+			// plain member, and holds their admin role in the jobs group
+			// under the LID alone: the rules (the post's own addresses) see
+			// no admin, the removal plan (both addresses) does.
+			groups := modtest.Groups()
+			for _, g := range groups {
+				for i, p := range g.Participants {
+					if p.JID != modtest.Admin {
+						continue
+					}
+					if g.JID == modtest.G2 {
+						g.Participants[i].Phone = ""
+					} else {
+						g.Participants[i].IsAdmin = false
+					}
+				}
+			}
+			modtest.Load(k.T, k.Dir, groups)
+			return k.Msg("AD2", modtest.G1, modtest.AdminPhone, "crypto: inbox me")
+		}},
+		{"a sender the bot cannot address", ledger.KindUnaddressable, func(k *modtest.Kit) *client.Message {
+			hosted := client.JID(strings.TrimSuffix(string(modtest.Spammer), "@lid") + "@hosted")
+			return k.Msg("HOST1", modtest.G1, hosted, modtest.SpamText)
+		}},
 	} {
-		t.Run(p.kind+", saved", func(t *testing.T) {
+		t.Run(p.name+", saved", func(t *testing.T) {
 			h := newHarness(t, "")
 			h.k.Fake.Download = saved
 			h.k.Deliver(image(p.msg(h.k)))
@@ -863,7 +898,10 @@ func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
 			}
 			h.drain()
 			h.drain()
-			r := h.only(p.kind)
+			r, _, err := h.k.Store.Report(h.k.Ctx, h.only(p.kind).ID)
+			if err != nil || !r.OwnsAttachment || !strings.Contains(strings.Join(r.Buttons, ","), ledger.ButtonShowAttachment) {
+				t.Fatalf("report %+v, want it to own the attachment and carry [%s]", r, ledger.ButtonShowAttachment)
+			}
 			if n := requests(h, "sendMessage", "\nAttachment: image offer.jpg (0.0 MB), posted below"); n != 1 {
 				t.Fatalf("%d reports saying the attachment is posted below, want 1", n)
 			}
@@ -871,8 +909,28 @@ func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
 			if len(docs) != 1 || !strings.Contains(docs[0].Params["reply_parameters"], `"message_id":`+strconv.Itoa(h.head(r.ID))) {
 				t.Fatalf("attachment posts %+v, want the file as a reply to the report", docs)
 			}
+			// Taken down after attachment_show_hours, then shown again by the
+			// button while the evidence copy is kept.
+			h.k.Clock.Advance(25 * time.Hour)
+			h.drain()
+			h.press(adminUser, "show", r.ID)
+			if got := h.lastReply(); !strings.Contains(got, "Attachment posted again") {
+				t.Fatalf("[Show attachment] answered %q, want the attachment posted again", got)
+			}
+			if n := len(h.srv.Requests("sendDocument")); n != 2 {
+				t.Fatalf("%d attachment posts, want 2 (the first and the one shown again)", n)
+			}
 		})
-		t.Run(p.kind+", not kept", func(t *testing.T) {
+		t.Run(p.name+", no attachment", func(t *testing.T) {
+			h := newHarness(t, "")
+			h.k.Deliver(p.msg(h.k))
+			h.k.Fire()
+			r, _, err := h.k.Store.Report(h.k.Ctx, h.only(p.kind).ID)
+			if err != nil || strings.Contains(strings.Join(r.Buttons, ","), ledger.ButtonShowAttachment) {
+				t.Fatalf("report %+v (%v), want no [%s] on a post with no attachment", r, err, ledger.ButtonShowAttachment)
+			}
+		})
+		t.Run(p.name+", not kept", func(t *testing.T) {
 			h := newHarness(t, "")
 			h.k.Fake.Download = refused
 			h.k.Deliver(image(p.msg(h.k)))
@@ -899,6 +957,7 @@ func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
 		if err != nil || !full.OwnsAttachment {
 			t.Fatalf("report %+v (%v), want it to own its post's attachment", full, err)
 		}
+		h.k.Clock.Advance(time.Hour)
 		later := h.report(store.Report{Kind: ledger.KindNotDone, Priority: true, EvidenceID: full.EvidenceID,
 			Text: "The bot could not delete a message in the group. Do it by hand."})
 		h.drain()
@@ -911,6 +970,63 @@ func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
 		}
 		if n := saidNotPosted(h, later, ""); n != 0 {
 			t.Fatalf("%d notes under the later report, want 0", n)
+		}
+		// The first report purged before the evidence copy (a short
+		// retention.action_log_months) leaves the later one pointing at it,
+		// never the attachment's owner.
+		if n, err := h.k.Store.PurgeReports(h.k.Ctx, full.CreatedAt.Add(time.Millisecond)); err != nil || n != 1 {
+			t.Fatalf("purged %d reports (%v), want the first only", n, err)
+		}
+		h.drain()
+		h.drain()
+		if n := len(h.srv.Requests("sendDocument")); n != 1 {
+			t.Fatalf("%d attachment posts after the first report was purged, want still 1", n)
+		}
+	})
+	// A log rule's match is only counted in the daily summary: there is no
+	// report message to post its attachment under.
+	t.Run("a log rule's match", func(t *testing.T) {
+		h := newHarnessKit(t, modtest.NewConfig(t, logRuleConfig))
+		h.k.Fake.Download = saved
+		h.k.Deliver(image(h.k.Msg("L1", modtest.G1, modtest.Other2, "nasdaq today")))
+		h.k.Fire()
+		if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != 1 {
+			t.Fatalf("fetched %d (%v)", n, err)
+		}
+		h.drain()
+		h.k.Clock.Advance(25 * time.Hour)
+		h.drain()
+		h.drain()
+		r, _, err := h.k.Store.Report(h.k.Ctx, h.only(ledger.KindLog).ID)
+		if err != nil || r.OwnsAttachment || r.SentAt.IsZero() || len(r.Buttons) != 0 {
+			t.Fatalf("log report %+v, want it summarised, with no button, owning nothing", r)
+		}
+		if n := requests(h, "sendMessage", "Rule stocktalk matched a post in"); n != 1 {
+			t.Fatalf("%d summary lines for the log rule, want 1", n)
+		}
+		if n := len(h.srv.Requests("sendDocument")); n != 0 {
+			t.Fatalf("%d attachment posts for a log rule's match, want 0", n)
+		}
+	})
+	// A report Telegram refused was never posted: its attachment has nothing
+	// to be posted under, so it is not posted on its own.
+	t.Run("a report Telegram refused", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.Download = saved
+		h.k.Deliver(image(h.k.Spam("I1", modtest.G1)))
+		h.k.Fire()
+		if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != 1 {
+			t.Fatalf("fetched %d (%v)", n, err)
+		}
+		h.srv.Fail("sendMessage", telegramtest.Reply{Code: 400, Description: "Bad Request: can't parse entities"})
+		h.drain()
+		h.drain()
+		r, _, err := h.k.Store.Report(h.k.Ctx, h.only(ledger.KindAction).ID)
+		if err != nil || r.SentAt.IsZero() || len(h.messages(r.ID)) != 0 {
+			t.Fatalf("report %+v with messages %+v, want it refused and settled", r, h.messages(r.ID))
+		}
+		if n := len(h.srv.Requests("sendDocument")); n != 0 {
+			t.Fatalf("%d attachment posts for a refused report, want 0", n)
 		}
 	})
 }
