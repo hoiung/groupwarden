@@ -85,7 +85,7 @@ func (p *prepared) list(wl *wordList) bool {
 }
 
 // listAvoiding reports whether a keyword of wl occurs in a field using none
-// of that field's source pieces in avoid (nil avoids nothing).
+// of that field's characters in avoid (nil avoids nothing).
 func (p *prepared) listAvoiding(wl *wordList, avoid []map[int]bool) bool {
 	for _, pat := range wl.patterns {
 		for i, t := range p.texts {
@@ -101,8 +101,9 @@ func (p *prepared) listAvoiding(wl *wordList, avoid []map[int]bool) bool {
 	return false
 }
 
-// words is, per field, every source piece a keyword of wl matches in any
-// reading (plain, look-alike letters, digit swaps, spaced letters joined).
+// words is, per field, every character of the original text a keyword of wl
+// matches in any reading (plain, look-alike letters, digit swaps, spaced
+// letters joined).
 func (p *prepared) words(wl *wordList) []map[int]bool {
 	used := make([]map[int]bool, len(p.texts))
 	for i, t := range p.texts {
@@ -143,9 +144,9 @@ func (p *prepared) branchHolds(b branch, sc *scope) bool {
 }
 
 // differentWords reports whether two of lists match different words: one
-// list matches on a word of the post that another list matches in no
-// reading. Words are those of the original text, so a keyword read one way
-// by one list and another way by the other (DOGECOIN, d0gecoin) is one word.
+// list matches on characters of the post that another list matches in no
+// reading. A keyword read one way by one list and another way by the other
+// (DOGECOIN, d0gecoin) is the same characters, so it is one word.
 // A phrase of one list overlapping a phrase of another on every reading is
 // not counted, which can only leave a post unactioned, never action one.
 func (p *prepared) differentWords(lists map[string]bool, sc *scope) bool {
