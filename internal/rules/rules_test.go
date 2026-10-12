@@ -304,6 +304,59 @@ func TestLureMatchBans(t *testing.T) {
 	}
 }
 
+// TestOneKeywordNeverActsAlone: a lure needs keywords from two word lists in
+// different words of the post. Each case is a way one keyword can satisfy
+// both lists of a lure; in each, a second, different lure word in the post
+// makes it act again.
+func TestOneKeywordNeverActsAlone(t *testing.T) {
+	addLure := func(entry string) func(*Spec) {
+		return func(s *Spec) { s.WordLists["lures"] = append(s.WordLists["lures"], entry) }
+	}
+	for name, tc := range map[string]struct {
+		edit         func(*Spec)
+		alone, again Input
+	}{
+		"the same word in both lists": {edit: addLure("bitcoin"),
+			alone: Input{Fields: body("anyone still holding bitcoin?")},
+			again: Input{Fields: body("anyone still holding bitcoin? guaranteed")}},
+		"a community's own lure word": {edit: func(s *Spec) { s.Communities[0].WordLists = map[string][]string{"lures": {"bitcoin"}} },
+			alone: Input{Fields: body("anyone still holding bitcoin?")},
+			again: Input{Fields: body("anyone still holding bitcoin? guaranteed")}},
+		"a wildcard of each list": {edit: addLure("doge*"), // crypto has "*coin"
+			alone: Input{Fields: body("anyone still holding dogecoin?")},
+			again: Input{Fields: body("anyone still holding dogecoin? dm me")}},
+		"a lure phrase holding the crypto word": {edit: addLure("bitcoin giveaway"),
+			alone: Input{Fields: body("bitcoin giveaway tonight")},
+			again: Input{Fields: body("bitcoin giveaway tonight, guaranteed")}},
+		"the push name": {edit: func(s *Spec) {
+			addLure("bitcoin")(s)
+			s.Rules = append(s.Rules, RuleSpec{Name: "name-lure", Action: DeleteRemoveBan, Confirmed: true, On: OnPushName,
+				When: Node{All: []Node{{Words: Names{"crypto"}}, {Words: Names{"lures"}}}}})
+		},
+			alone: Input{PushName: "Bitcoin", Fields: body("hello all")},
+			again: Input{PushName: "Bitcoin Guaranteed", Fields: body("hello all")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := testSpec()
+			tc.edit(&spec)
+			rs := compile(t, spec)
+			tc.alone.Community, tc.again.Community = communityA, communityA
+			if d := rs.Decide(tc.alone); d.Action != ActionNone {
+				t.Fatalf("one keyword decision = %+v", d)
+			}
+			if acting, _ := rs.ActsOn(tc.alone); len(acting) != 0 {
+				t.Fatalf("corpus view of one keyword acts: %v", acting)
+			}
+			if c, _ := rs.Closest(tc.alone); len(c.Failed) != 1 || !strings.Contains(c.Failed[0], "different words") {
+				t.Fatalf("closest = %+v, want the different-words reason", c)
+			}
+			if d := rs.Decide(tc.again); d.Action != DeleteRemoveBan {
+				t.Fatalf("two lure words decision = %+v", d)
+			}
+		})
+	}
+}
+
 func TestAdminAnywhereReportOnly(t *testing.T) {
 	rs := compile(t, testSpec())
 	d := rs.Decide(Input{Community: communityA, SenderIsAdmin: true, Fields: body("crypto pump t.me/+AbCd")})
