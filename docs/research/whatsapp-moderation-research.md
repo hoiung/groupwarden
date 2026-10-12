@@ -2,7 +2,7 @@
 domain: whatsapp-community-moderation
 type: decision
 topics: [whatsapp, communities, moderation, whatsmeow, uk-gdpr, automated-decisions, spam-rules]
-use_when: "Changing how groupwarden talks to WhatsApp, its rule engine, its deployment, or its privacy templates"
+use_when: "Changing how groupwarden talks to WhatsApp, its rule engine or its deployment"
 github_issue: 1
 created_date: 2026-10-05
 last_reviewed: 2026-10-06
@@ -108,8 +108,6 @@ Both whatsmeow and Baileys depend on GPL-3.0 Signal libraries, so any binary or 
 - **Automated decisions.** Removing someone from a community with no human involved is likely a significant decision based solely on automated processing. Since 5 February 2026, UK GDPR Articles 22A–22D require safeguards: telling the person, letting them make representations, human intervention and a way to contest. "Recognised legitimate interest" (Article 6(1)(ea)) cannot be the basis for such decisions (Article 22B(4)).
 - **Minimisation.** Decide on content, not on who the person is; keep copies only of posts acted on; set retention (groupwarden's defaults: evidence 30 days, action log 12 months, bans until lifted).
 - **Children.** If any members may be under 18, the ICO expects extra care and its Children's code may apply.
-
-The templates in `docs/privacy/` turn these points into a DPIA, a legitimate-interests assessment, a member notice and a record of processing.
 
 ## Sources
 
