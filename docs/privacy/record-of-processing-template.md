@@ -9,8 +9,8 @@ The entry for groupwarden in your record of processing activities (UK GDPR Artic
 | Purpose | Removing scam and spam posts, and the accounts posting them, from the WhatsApp groups of [community/communities] |
 | Lawful basis | Legitimate interests, Article 6(1)(f) (assessment dated [date]); solely automated significant decisions with the Article 22C safeguards (DPIA dated [date]) |
 | Categories of people | Members of the moderated groups; people who join or ask to join them |
-| Categories of data | WhatsApp IDs (LID, phone number where shown) and display names; the content of new group messages; for posts a rule matched (acted on or only reported), a copy of the message and any attachment; for posts acted on, the action record and the ban list entry |
-| Special category data | Not sought. A deleted post may happen to contain some; it is kept only as evidence for [30 days] |
+| Categories of data | WhatsApp IDs (LID, phone number where shown) and display names; the content of new group messages; for posts a rule matched (acted on, only reported or only counted), a copy of the message and any attachment (for a log rule's match, the attachment's type, name and size only); for posts acted on, the action record and the ban list entry |
+| Special category data | Not sought. A matched post may happen to contain some; it is kept only as evidence for [30 days] |
 | Recipients | The community's admins, through a private Telegram group (Telegram processes the reports and attachments posted there); [anyone else] |
 | Transfers outside the UK | Telegram's servers [location as stated by Telegram]; [any other] |
 | Retention | Evidence copies [30 days]; action log [12 months]; ban list until lifted; announcement message secrets [90 days]; encrypted backups the last [14] nights |
