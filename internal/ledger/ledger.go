@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/client"
@@ -159,11 +160,18 @@ func revokesOnly(p Plan) bool {
 	return true
 }
 
+// ShowsAttachment reports whether a report of kind shows its post's
+// attachment: a log rule's report is only counted in the daily summary, so it
+// has no message to show it under.
+func ShowsAttachment(kind string) bool {
+	return kind != KindLog
+}
+
 // Write stores p inside tx: the evidence copy first, then every action row
 // (intended; enforce rows queued), the ban (in the same transaction as the
 // removal rows, or held by a pause) or its lifting, then the reports linked
 // to the rows. A row that would repeat an existing one reuses it, and a plan
-// whose rows all already existed writes no report.
+// whose rows all already existed writes no report and keeps no copy.
 func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, error) {
 	var w Written
 	target := p.Target.Key()
@@ -178,6 +186,13 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 	if p.Evidence != nil {
 		e := *p.Evidence
 		e.Rule, e.ConfigHash, e.Subject = p.Rule, p.ConfigHash, target
+		if e.MediaState == store.MediaPending && !slices.ContainsFunc(p.Reports, func(r store.Report) bool {
+			return ShowsAttachment(r.Kind)
+		}) {
+			// No report of this plan can show the attachment, so it is
+			// described (kind, name, size) and never downloaded.
+			e.MediaState, e.MediaRaw = store.MediaNone, nil
+		}
 		id, err := store.InsertEvidence(ctx, tx, e, now)
 		if err != nil {
 			return w, err
@@ -272,16 +287,23 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 		}
 	}
 	if w.New == 0 && (len(p.Intents) > 0 || len(p.Ban) > 0 || p.Lift) {
-		// Every row already existed (a redelivery, or a sweep retrying the
-		// same episode): the admins were already told.
+		// Every row already existed (a redelivery, an edit of a post already
+		// acted on, or a sweep retrying the same episode): the admins were
+		// already told, and the rows keep the copy they were written with, so
+		// this one is not kept.
+		if w.EvidenceID != 0 {
+			if err := store.DeleteEvidence(ctx, tx, w.EvidenceID); err != nil {
+				return w, err
+			}
+			w.EvidenceID = 0
+		}
 		return w, nil
 	}
 	for _, rep := range p.Reports {
 		rep.EvidenceID = w.EvidenceID
 		// The post's own report, written with its evidence copy, is the one its
-		// attachment is shown under; a log rule's report is only counted in the
-		// daily summary, so there is no message to show it under.
-		rep.OwnsAttachment = w.EvidenceID != 0 && rep.Kind != KindLog
+		// attachment is shown under.
+		rep.OwnsAttachment = w.EvidenceID != 0 && ShowsAttachment(rep.Kind)
 		if rep.Subject == "" {
 			rep.Subject = target
 		}
