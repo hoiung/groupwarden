@@ -990,8 +990,8 @@ func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
 		h.k.Fake.Download = saved
 		h.k.Deliver(image(h.k.Msg("L1", modtest.G1, modtest.Other2, "nasdaq today")))
 		h.k.Fire()
-		if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != 1 {
-			t.Fatalf("fetched %d (%v)", n, err)
+		if n, err := h.k.Media.Fetch(h.k.Ctx); err != nil || n != 0 {
+			t.Fatalf("fetched %d (%v), want nothing downloaded for a log rule's match", n, err)
 		}
 		h.drain()
 		h.k.Clock.Advance(25 * time.Hour)
@@ -1000,6 +1000,10 @@ func TestAttachmentShownUnderThePostsOwnReport(t *testing.T) {
 		r, _, err := h.k.Store.Report(h.k.Ctx, h.only(ledger.KindLog).ID)
 		if err != nil || r.OwnsAttachment || r.SentAt.IsZero() || len(r.Buttons) != 0 {
 			t.Fatalf("log report %+v, want it summarised, with no button, owning nothing", r)
+		}
+		ev, ok, err := h.k.Store.Evidence(h.k.Ctx, r.EvidenceID)
+		if err != nil || !ok || ev.MediaState != store.MediaNone || ev.MediaKind != "image" || ev.MediaPath != "" {
+			t.Fatalf("evidence %+v (%v, %v), want the attachment described and not downloaded", ev, ok, err)
 		}
 		if n := requests(h, "sendMessage", "Rule stocktalk matched a post in"); n != 1 {
 			t.Fatalf("%d summary lines for the log rule, want 1", n)
