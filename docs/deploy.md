@@ -6,7 +6,7 @@ groupwarden runs as one systemd service on one always-on machine (a "node"): a L
 |---|---|
 | `groupwarden.service` | `groupwarden run`: the bot. Restarts on a crash, but not on exit code 78 (`groupwarden fatal-exit-code`): logged out, banned or client outdated need a human, and restarting into them only hammers WhatsApp |
 | `groupwarden-sync.timer` → `groupwarden-sync.service` | `groupwarden sync-config` every `config_sync_minutes`: pulls your private config repo, checks it and swaps it in (see [config.md](config.md)) |
-| `groupwarden-backup.timer` → `groupwarden-backup.service` | `groupwarden backup` every night at 03:15: an encrypted copy of `groupwarden.db` on another disk or a network share |
+| `groupwarden-backup.timer` → `groupwarden-backup.service` | `groupwarden backup` every night between 03:15 and 03:25 (the timer adds up to 10 minutes): an encrypted copy of `groupwarden.db` on another disk or a network share |
 | `groupwarden-backup-failed.service` | Run by systemd when the backup unit fails before the backup could say why (its target could not be opened, or it ran out of time): `groupwarden backup-failed` records and reports it the same night |
 
 Both timers have `Persistent=true`, so a run missed while the node was off happens as soon as it is back. Upgrades and rollback are in [runbook.md](runbook.md).
