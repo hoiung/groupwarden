@@ -169,3 +169,61 @@ func TestRunCountsAndErr(t *testing.T) {
 		}
 	}
 }
+
+// TestLegitTestedUnderEveryCommunity: a legit sample that only one
+// community's own words would delete fails the corpus and names that
+// community; a sample the global rules delete is reported once; spam is
+// judged under the global rules, so a community disabling a rule does not
+// count it missed.
+func TestLegitTestedUnderEveryCommunity(t *testing.T) {
+	const community, set = "99999000000999@g.us", "Standalone chats"
+	spec := func(extra []string) rules.Spec {
+		return rules.Spec{
+			Mode: rules.Shadow, BanScope: rules.AllCommunities, MinWordLength: 3,
+			WordLists: map[string][]string{"crypto": {"crypto", "bitcoin"}, "lures": {"inbox me"}},
+			Rules: []rules.RuleSpec{
+				{Name: "pitch", Action: rules.DeleteRemoveBan, When: rules.Node{All: []rules.Node{
+					{Words: rules.Names{"crypto"}}, {Has: rules.Names{rules.AnyLink}}}}},
+				{Name: "lure", Action: rules.DeleteRemoveBan, When: rules.Node{All: []rules.Node{
+					{Words: rules.Names{"crypto"}}, {Words: rules.Names{"lures"}}}}},
+			},
+			Communities: []rules.CommunitySpec{
+				{ID: community, WordLists: map[string][]string{"crypto": extra}},
+				{ID: set, Groups: []string{"99999000000888@g.us"}, DisableRules: []string{"lure"}},
+			},
+		}
+	}
+	dir := t.TempDir()
+	write(t, dir, "spam/1.yaml", "text: \"crypto signals, inbox me\"\n")
+	write(t, dir, "legit/selling/1.yaml", "text: \"selling my old bike, inbox me\"\n")
+
+	clean, err := rules.Compile(spec(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := Run(clean, dir); r.Err() != nil || r.SpamMissed != 0 {
+		t.Fatalf("without the community word: %+v err %v", r, r.Err())
+	}
+
+	withBike, err := rules.Compile(spec([]string{"bike"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _ := Run(withBike, dir)
+	if r.LegitHits != 1 || r.Err() == nil || r.SpamMissed != 0 || len(r.FalseHits) != 1 ||
+		r.FalseHits[0].Community != community || strings.Join(r.FalseHits[0].Rules, ",") != "lure" {
+		t.Fatalf("community word: %+v err %v", r, r.Err())
+	}
+
+	write(t, dir, "legit/selling/2.yaml", "text: \"crypto meetup t.me/x\"\n")
+	r, _ = Run(withBike, dir)
+	var global int
+	for _, f := range r.FalseHits {
+		if f.Community == "" {
+			global++
+		}
+	}
+	if r.LegitHits != 2 || len(r.FalseHits) != 2 || global != 1 {
+		t.Fatalf("a global hit is reported once: %+v", r.FalseHits)
+	}
+}
