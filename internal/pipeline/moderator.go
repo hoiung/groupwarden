@@ -263,7 +263,7 @@ func withShowAttachment(p ledger.Plan) ledger.Plan {
 		return p
 	}
 	for i := range p.Reports {
-		if p.Reports[i].Kind != ledger.KindLog {
+		if ledger.ShowsAttachment(p.Reports[i].Kind) {
 			p.Reports[i].Buttons = append(p.Reports[i].Buttons, ledger.ButtonShowAttachment)
 		}
 	}
