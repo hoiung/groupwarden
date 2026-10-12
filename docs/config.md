@@ -6,8 +6,8 @@ How a config is read (`internal/config`):
 
 1. YAML 1.2 is parsed by hand over `go.yaml.in/yaml/v3` nodes, so `NO`, `0800` and `1.10` are never turned into a boolean or a number. A duplicate key, an anchor, an alias, a tag, a `<<` merge, a second document, and any key named `regex` or `pattern` are refused (`yamltree.go`).
 2. The schema's defaults are filled in, then the tree is validated against the schema (`schema.go`). Errors read `line L: <what is wrong> (column C)`.
-3. Words and phrases must be quoted, and the rules are compiled (`config.go` `Parse` → `rules.Compile`), which checks that every rule that deletes, removes and bans needs a keyword plus a link or contact detail, or keywords from two word lists, on every way it can match.
-4. When `corpus_dir` is set, the compiled rules must catch every spam sample and no legit sample (`reload.go` `checkCorpus`).
+3. Words and phrases must be quoted, and the rules are compiled (`config.go` `Parse` → `rules.Compile`), which checks that every rule that deletes, removes and bans needs a keyword plus a link or contact detail, or keywords from two word lists, on every way it can match. When a message is decided, those two lists must match different words of it, so a word that two lists share (or that a wildcard in each matches) is still one keyword (`decide.go` `acts`).
+4. When `corpus_dir` is set, the compiled rules must catch every spam sample and no legit sample (`reload.go` `checkCorpus`). Legit samples are also tested under each community's own words and disabled rules; spam is judged under the global rules, since a community may disable a rule (`corpus.go` `legitHits`).
 
 A reload (SIGHUP) runs the same steps on the new file and swaps the whole result in at once; if any step fails, the bot keeps the last good config, which is also kept on disk as `data_dir/config.last-good.yaml` (`reload.go` `Holder`).
 
