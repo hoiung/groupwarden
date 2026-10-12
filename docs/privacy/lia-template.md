@@ -12,7 +12,7 @@ The written three-part test for relying on legitimate interests (UK GDPR Article
 ## 2. Necessity test: is the processing necessary for it?
 
 - **Could you do it with less?** WhatsApp's own tools (approving new members, resetting the invite link) cannot tell a spammer from a real person at join time, and admins cannot watch every group at every hour; spam is often posted at night. [Your experience.]
-- **Minimisation in the design:** it decides on the content of the post, not on who the person is; it keeps a copy only of posts a rule matched; message text is only logged at debug level and phone numbers and IDs are masked in logs; it reads only the groups it is configured for.
+- **Minimisation in the design:** it decides on the content of the post, not on who the person is; it keeps a copy only of posts a rule matched, and downloads an attachment only for a report that shows it to the admins; message text is only logged at debug level and phone numbers and IDs are masked in logs; it reads only the groups it is configured for.
 - **Is the bot's response proportionate?** [Your reasons for delete + remove + ban everywhere with no warning, e.g. the accounts posting these are almost always fake or hijacked, and a warning gives a scammer more time in the group.]
 
 ## 3. Balancing test: do members' interests override yours?
@@ -20,7 +20,7 @@ The written three-part test for relying on legitimate interests (UK GDPR Article
 - **Reasonable expectations:** members are told in every group before it starts (`member-notice-template.md`). [Is moderation already in your group rules?]
 - **Impact on a member wrongly removed:** loss of access to the community until an admin restores it. Mitigations: combination rules only, watch-only start for new rules, the corpus test, evidence reported to admins, one-step [Undo], a contest route in the notice.
 - **Vulnerable members:** [are any members under 18 or otherwise vulnerable? what extra care?]
-- **Data shown outside the node:** every message a rule matched (deleted, or only reported: a rule still watch-only, an admin's post) and its attachment are shown to admins in a private Telegram group (text for [30 days], attachments for [24 hours]); a log rule's matches are only counted there, once a day.
+- **Data shown outside the node:** every message a rule matched (deleted, or only reported: a rule still watch-only, an admin's post, a post too old to act on, a sender the bot cannot remove) and its attachment are shown to admins in a private Telegram group (text for [30 days], attachments for [24 hours]); a log rule's matches are only counted there, once a day.
 - **Sharing across communities:** [if the ban list is shared with another community, why that is fair to members of each].
 
 ## Outcome
