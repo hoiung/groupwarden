@@ -25,7 +25,7 @@ import (
 )
 
 // ExitFatal is the process exit code when WhatsApp needs a human (re-pair,
-// update, a refused config). systemd's RestartPreventExitStatus names it, so
+// update; a refused config exits 1). systemd's RestartPreventExitStatus names it, so
 // a restart loop never hammers WhatsApp with a dead session.
 const ExitFatal = 78
 
