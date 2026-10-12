@@ -30,7 +30,7 @@ The rules are written by people, combine a keyword with a link or contact detail
 
 ## 4. What admins see in Telegram
 
-The full message and any attachment of every post a rule matched (deleted, or only reported: a rule still watch-only, an admin's post, a report-only rule) are shown to the admins in a private Telegram group (operated by Telegram, outside the node). The message text stays in the chat for [30 days] (`retention.evidence_days`), then the bot removes it from its reports, with the sender's display name and the attachment's file name (`groupwarden member forget` does the same at once); an attachment is posted for [24 hours] (`report.attachment_show_hours`) and can be shown again while the evidence copy is kept. Record: who is in that group, that it is private, and that admins must not forward evidence elsewhere.
+The full message and any attachment of every post a rule matched (deleted, or only reported: a rule still watch-only, an admin's post) are shown to the admins in a private Telegram group (operated by Telegram, outside the node); a log rule's matches are only counted there, in a daily summary line naming the rule and the community. The message text stays in the chat for [30 days] (`retention.evidence_days`), then the bot removes it from its reports, with the sender's display name and the attachment's file name (`groupwarden member forget` does the same at once); an attachment is posted for [24 hours] (`report.attachment_show_hours`) and can be shown again while the evidence copy is kept. Record: who is in that group, that it is private, and that admins must not forward evidence elsewhere.
 
 ## 5. Retention
 
