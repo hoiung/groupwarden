@@ -304,6 +304,17 @@ func TestLureMatchBans(t *testing.T) {
 			t.Fatalf("%q decision = %+v", text, d)
 		}
 	}
+	// A letter the look-alike reading turns into punctuation separates words
+	// there too, and letters merged across an invisible character read as
+	// the whole word.
+	ko := testSpec()
+	ko.WordLists["crypto"] = append(ko.WordLists["crypto"], "\ube44\ud2b8\ucf54\uc778")
+	rk := compile(t, ko)
+	for _, text := range []string{"crypto\u01c3dm me", "\ube44\ud2b8\u110f\u00ad\u1169\uc778 dm me"} {
+		if d := rk.Decide(Input{Community: communityA, Fields: body(text)}); d.Action != DeleteRemoveBan || d.Rule != "crypto-lure" {
+			t.Fatalf("%+q decision = %+v", text, d)
+		}
+	}
 	// A lure phrase with no crypto or stock word does nothing.
 	if d := rs.Decide(Input{Community: communityA, Fields: body("inbox me for salsa lesson times")}); d.Action != ActionNone {
 		t.Fatalf("lure-only decision = %+v", d)
