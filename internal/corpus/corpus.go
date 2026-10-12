@@ -195,10 +195,13 @@ type Miss struct {
 	NoRule  bool
 }
 
-// FalseHit is a legit sample the named acting rules would delete.
+// FalseHit is a legit sample the named acting rules would delete, under the
+// global rules (Community "") or, when those leave it alone, under one
+// configured community's rules (its own words and disabled rules).
 type FalseHit struct {
-	Sample Sample
-	Rules  []string
+	Sample    Sample
+	Community string
+	Rules     []string
 }
 
 // Result is a corpus test: every rule evaluated as if confirmed and enforced.
@@ -211,7 +214,8 @@ type Result struct {
 	FalseHits []FalseHit
 }
 
-// Run tests rs against every sample in dir.
+// Run tests rs against every sample in dir: spam under the global rules,
+// legit under the global rules and every configured community's (legitHits).
 func Run(rs *rules.Ruleset, dir string) (*Result, error) {
 	samples, err := Load(dir)
 	if err != nil {
@@ -241,10 +245,11 @@ func Run(rs *rules.Ruleset, dir string) (*Result, error) {
 			classes[s.Class] = c
 		}
 		c.Samples++
-		if len(acting) > 0 {
+		hits := legitHits(rs, s, in, acting)
+		if len(hits) > 0 {
 			c.Hits++
 			r.LegitHits++
-			r.FalseHits = append(r.FalseHits, FalseHit{Sample: s, Rules: acting})
+			r.FalseHits = append(r.FalseHits, hits...)
 		}
 	}
 	for _, c := range classes {
@@ -252,6 +257,25 @@ func Run(rs *rules.Ruleset, dir string) (*Result, error) {
 	}
 	sort.Slice(r.Classes, func(i, j int) bool { return r.Classes[i].Class < r.Classes[j].Class })
 	return r, nil
+}
+
+// legitHits lists where a legit sample would be deleted: under the global
+// rules, or else under each community whose own words make it act. A
+// community can only add words to the global lists or disable rules, so a
+// global hit is reported once rather than again for every community. Spam
+// is judged under the global rules only: a community may disable a rule.
+func legitHits(rs *rules.Ruleset, s Sample, in rules.Input, acting []string) []FalseHit {
+	if len(acting) > 0 {
+		return []FalseHit{{Sample: s, Rules: acting}}
+	}
+	var hits []FalseHit
+	for _, community := range rs.Communities() {
+		in.Community = community
+		if acting, _ := rs.ActsOn(in); len(acting) > 0 {
+			hits = append(hits, FalseHit{Sample: s, Community: community, Rules: acting})
+		}
+	}
+	return hits
 }
 
 // Err is nil only when there are both spam and legit samples, no legit
