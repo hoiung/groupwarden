@@ -100,8 +100,10 @@ func base(s string) string {
 	s = strings.Map(dropIgnorable, s)
 	s = stripMarks(s)
 	s = cases.Fold().String(s)
-	return strings.NewReplacer("。", ".", "｡", ".").Replace(s)
+	return fullStops.Replace(s)
 }
+
+var fullStops = strings.NewReplacer("。", ".", "｡", ".")
 
 // skeleton is the UTS #39 skeleton of the folded text (invisible characters
 // removed first, NFD after mapping, as the algorithm defines), then case
@@ -154,72 +156,157 @@ type view struct {
 	kind  kind
 	leet  bool
 	words []string
-	src   []span // the source pieces each word came from
+	src   []span // the characters of the original text each word came from
 	blank []bool // words inside a never-match phrase
 }
 
-// span is the range of source pieces one word of a view came from. A source
-// piece is a run of letters and digits of the original text (with their
-// accents), or a run of the other characters between them, numbered from 0.
-// Every view of a word maps back to the same pieces, so two keywords can be
-// told apart whichever reading each matched in, and "crypto,dm me" is still
-// three words.
+// span is the range of characters of the original text (rune indexes) one
+// word of a view came from. Every reading of a word maps back to the same
+// characters, so two keywords can be told apart whichever reading each
+// matched in, and "crypto,dm me" is still three words.
 type span struct{ lo, hi int }
 
-// Text is one piece of text prepared for matching.
+// Text is one piece of text prepared for matching. one maps each character
+// of the original text to the character it became one with in a reading
+// (see reader.form); characters with the same entry count as one.
 type Text struct {
 	views []view
+	one   []int
 }
 
-// traced is a view under construction: each rune with the source piece it
-// came from.
+// traced is a reading under construction: each rune with the index of the
+// character of the original text it came from.
 type traced struct {
 	runes []rune
 	src   []int
 }
 
-func (t *traced) add(s string, id int) {
-	for _, r := range s {
-		t.runes = append(t.runes, r)
-		t.src = append(t.src, id)
-	}
+// reader builds the readings of one text, each the same steps as base or
+// skeleton, so a reading has exactly the runes base or skeleton gives for the
+// whole text. A step either converts each rune on its own (each) or is a
+// Unicode normal form (form).
+type reader struct {
+	joined []int // characters a normal form made one: union-find parents
+	fold   cases.Caser
 }
 
-// sourcePieces splits s into runs of letters, digits and accents and runs of
-// everything else, numbering the runs from 0.
-func sourcePieces(s string) (parts []string, ids []int) {
-	inWord := func(r rune) bool { return isWordRune(r) || unicode.Is(unicode.M, r) }
-	for s != "" {
-		r, _ := utf8.DecodeRuneInString(s)
-		word := inWord(r)
-		end := strings.IndexFunc(s, func(r rune) bool { return inWord(r) != word })
-		if end < 0 {
-			end = len(s)
+func newReader(n int) *reader {
+	r := &reader{joined: make([]int, n), fold: cases.Fold()}
+	for i := range r.joined {
+		r.joined[i] = i
+	}
+	return r
+}
+
+func (r *reader) root(i int) int {
+	for r.joined[i] != i {
+		r.joined[i] = r.joined[r.joined[i]]
+		i = r.joined[i]
+	}
+	return i
+}
+
+func (r *reader) join(a, b int) {
+	a, b = r.root(a), r.root(b)
+	r.joined[max(a, b)] = min(a, b)
+}
+
+// mapped is f as strings.Map applies it: a negative result drops the rune.
+func mapped(f func(rune) rune) func(rune) string {
+	return func(c rune) string {
+		if m := f(c); m >= 0 {
+			return string(m)
 		}
-		parts, ids = append(parts, s[:end]), append(ids, len(ids))
-		s = s[end:]
+		return ""
 	}
-	return parts, ids
 }
 
-// apply converts t one source piece at a time (every conversion here works
-// rune by rune, so the pieces join up to the conversion of the whole text).
-func apply(t traced, conv func(string) string) traced {
+// each converts every rune on its own, keeping where it came from.
+func each(t traced, conv func(rune) string) traced {
 	var out traced
-	for i := 0; i < len(t.runes); {
-		j := i
-		for j < len(t.runes) && t.src[j] == t.src[i] {
-			j++
+	for i, c := range t.runes {
+		for _, o := range conv(c) {
+			out.runes = append(out.runes, o)
+			out.src = append(out.src, t.src[i])
 		}
-		out.add(conv(string(t.runes[i:j])), t.src[i])
-		i = j
 	}
 	return out
 }
 
-// collapseTraced joins spaced-out single letters, keeping each letter's
-// source piece: "c r y p t o" becomes one word spanning every letter and
-// space it was made from. ok is false when there were none.
+// form applies a Unicode normal form one normalisation segment at a time, as
+// the standard defines it, so the result is f of the whole reading. A segment
+// can merge characters ("ᄀ" and "ᅡ" become "가", also when an invisible
+// character stood between them), so the characters of a segment are joined.
+func (r *reader) form(t traced, f norm.Form) traced {
+	s := string(t.runes)
+	starts := make([]int, 0, len(t.runes))
+	for off := range s {
+		starts = append(starts, off)
+	}
+	var out traced
+	var it norm.Iter
+	it.InitString(f, s)
+	k := 0
+	for !it.Done() {
+		seg := string(it.Next())
+		first := k
+		for k < len(starts) && starts[k] < it.Pos() {
+			r.join(t.src[first], t.src[k])
+			k++
+		}
+		if len(t.src) == 0 {
+			continue
+		}
+		// first is past the end only if a segment consumed nothing; its output
+		// then goes with the last rune.
+		id := t.src[min(first, len(t.src)-1)]
+		for _, o := range seg {
+			out.runes = append(out.runes, o)
+			out.src = append(out.src, id)
+		}
+	}
+	return out
+}
+
+func (r *reader) stripMarks(t traced) traced {
+	t = r.form(t, norm.NFD)
+	t = each(t, mapped(func(c rune) rune {
+		if unicode.Is(unicode.Mn, c) {
+			return -1
+		}
+		return c
+	}))
+	return r.form(t, norm.NFC)
+}
+
+func (r *reader) caseFold(c rune) string { return r.fold.String(string(c)) }
+
+// base is the traced base: the same steps in the same order.
+func (r *reader) base(t traced) traced {
+	t = each(t, mapped(fold))
+	t = r.form(t, norm.NFKC)
+	t = each(t, mapped(dropIgnorable))
+	t = r.stripMarks(t)
+	t = each(t, r.caseFold)
+	return each(t, func(c rune) string { return fullStops.Replace(string(c)) })
+}
+
+// skeleton is the traced skeleton: the same steps in the same order
+// (confusables.ToSkeleton is NFD, then each rune mapped on its own).
+func (r *reader) skeleton(t traced) traced {
+	t = each(t, mapped(fold))
+	t = r.form(t, norm.NFKC)
+	t = each(t, mapped(dropIgnorable))
+	t = r.form(t, norm.NFD)
+	t = each(t, func(c rune) string { return confusables.ToSkeleton(string(c)) })
+	t = r.form(t, norm.NFD)
+	t = r.stripMarks(t)
+	return each(t, r.caseFold)
+}
+
+// collapseTraced joins spaced-out single letters, keeping where each letter
+// came from: "c r y p t o" becomes one word spanning every letter and space
+// it was made from. ok is false when there were none.
 func collapseTraced(t traced) (traced, bool) {
 	s := string(t.runes)
 	idx := spaced.FindAllStringSubmatchIndex(s, -1)
@@ -246,11 +333,13 @@ func collapseTraced(t traced) (traced, bool) {
 // in each, before any keyword is looked at.
 func Prepare(s string, never []Pattern) Text {
 	var source traced
-	parts, ids := sourcePieces(s)
-	for i, p := range parts {
-		source.add(p, ids[i])
+	for _, c := range s {
+		source.runes = append(source.runes, c)
+		source.src = append(source.src, len(source.src))
 	}
-	b := apply(source, base)
+	r := newReader(len(source.runes))
+	leetRune := func(c rune) string { return leet.Replace(string(c)) }
+	b := r.base(source)
 	var t Text
 	seen := map[string]bool{}
 	add := func(k kind, leetView bool, v traced) {
@@ -268,17 +357,22 @@ func Prepare(s string, never []Pattern) Text {
 		t.views = append(t.views, vw)
 	}
 	add(plain, false, b)
-	add(skel, false, apply(source, skeleton))
-	add(plain, true, apply(b, leet.Replace))
+	add(skel, false, r.skeleton(source))
+	add(plain, true, each(b, leetRune))
 	if c, ok := collapseTraced(b); ok {
 		add(plain, false, c)
-		add(skel, false, apply(c, skeleton))
-		add(plain, true, apply(c, leet.Replace))
+		add(skel, false, r.skeleton(c))
+		add(plain, true, each(c, leetRune))
+	}
+	t.one = make([]int, len(source.runes))
+	for i := range t.one {
+		t.one[i] = r.root(i)
 	}
 	return t
 }
 
-// tokensTraced is tokens on a traced view, with each word's source pieces.
+// tokensTraced is tokens on a traced view, with the characters of the
+// original text each word came from.
 func tokensTraced(t traced) (words []string, src []span) {
 	for i := 0; i < len(t.runes); {
 		if !isWordRune(t.runes[i]) {
@@ -403,7 +497,8 @@ func (p Pattern) MatchIn(t Text, useLeet bool) bool {
 	return p.MatchAvoiding(t, useLeet, nil)
 }
 
-// MatchAvoiding is MatchIn using none of the source pieces in avoid.
+// MatchAvoiding is MatchIn using none of the characters in avoid (as Words
+// records them).
 func (p Pattern) MatchAvoiding(t Text, useLeet bool, avoid map[int]bool) bool {
 	for i := range t.views {
 		v := &t.views[i]
@@ -412,7 +507,7 @@ func (p Pattern) MatchAvoiding(t Text, useLeet bool, avoid map[int]bool) bool {
 		}
 		n := len(p.forms[v.kind])
 		for w := range v.words {
-			if p.at(v, w) && !v.uses(w, w+n, avoid) {
+			if p.at(v, w) && !t.uses(v, w, w+n, avoid) {
 				return true
 			}
 		}
@@ -420,8 +515,8 @@ func (p Pattern) MatchAvoiding(t Text, useLeet bool, avoid map[int]bool) bool {
 	return false
 }
 
-// Words adds to used every source piece the pattern matches in any view of t
-// it may search.
+// Words adds to used every character of the original text the pattern
+// matches in any view of t it may search.
 func (p Pattern) Words(t Text, useLeet bool, used map[int]bool) {
 	for i := range t.views {
 		v := &t.views[i]
@@ -435,18 +530,18 @@ func (p Pattern) Words(t Text, useLeet bool, used map[int]bool) {
 			}
 			for _, sp := range v.src[w : w+n] {
 				for s := sp.lo; s <= sp.hi; s++ {
-					used[s] = true
+					used[t.one[s]] = true
 				}
 			}
 		}
 	}
 }
 
-// uses reports whether words [from, to) of v came from any source piece in set.
-func (v *view) uses(from, to int, set map[int]bool) bool {
+// uses reports whether words [from, to) of v came from any character in set.
+func (t Text) uses(v *view, from, to int, set map[int]bool) bool {
 	for _, sp := range v.src[from:to] {
 		for s := sp.lo; s <= sp.hi; s++ {
-			if set[s] {
+			if set[t.one[s]] {
 				return true
 			}
 		}
