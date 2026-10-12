@@ -390,6 +390,23 @@ func TestPerCommunityRetention(t *testing.T) {
 	refused(t, "retention:\n  evidence_days: 40\n  announcement_secret_days: 31\n", `line 7: retention.announcement_secret_days \(31\)`)
 }
 
+// TestActionLogOutlastsEvidence: the action log (a month counted as 28 days)
+// must outlast evidence_days plus attachment_show_hours and a day, globally
+// and per community, so no report is purged while the bot still has its text
+// to strip or an attachment to take down.
+func TestActionLogOutlastsEvidence(t *testing.T) {
+	parse(t, "retention:\n  action_log_months: 1\n  evidence_days: 26\n") // 26 days + 24 h + a day = 28 days
+	parse(t, "retention:\n  action_log_months: 2\n")
+	refused(t, "retention:\n  action_log_months: 1\n  evidence_days: 27\n",
+		`retention.action_log_months \(1, a month counted as 28 days\) must outlast retention.evidence_days \(27\) `+
+			`plus report.attachment_show_hours \(24\) and a day`)
+	refused(t, "retention:\n  action_log_months: 1\n  evidence_days: 26\nreport:\n  attachment_show_hours: 25\n",
+		`retention.evidence_days \(26\) plus report.attachment_show_hours \(25\)`)
+	refused(t, "retention:\n  action_log_months: 1\n", `retention.evidence_days \(30\)`)
+	refused(t, "communities:\n  "+communityA+":\n    retention:\n      action_log_months: 1\n",
+		`communities.`+communityA+`: retention.action_log_months \(1, a month counted as 28 days\)`)
+}
+
 func TestStandaloneGroupSet(t *testing.T) {
 	l := parse(t, "communities:\n  Chats:\n    groups: [\""+groupSet+"\"]\n  "+communityA+": {}\n")
 	if got := l.Rules.CommunityOf(groupSet, ""); got != "Chats" {
