@@ -189,7 +189,7 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 			rep.Action = action
 		}
 		p.Reports = []store.Report{rep}
-		return p, nil
+		return withShowAttachment(p), nil
 	}
 	if act {
 		banIn := d.BanIn
@@ -205,7 +205,7 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 			p.Intents = nil
 			p.Reports = []store.Report{{Kind: ledger.KindExempt, Community: community,
 				Text: fmt.Sprintf("Rule %s matched a post in %s by an admin: reported only.", d.Rule, where)}}
-			return p, nil
+			return withShowAttachment(p), nil
 		}
 		for _, r := range removals {
 			r.Enforce = r.Enforce && enforce
@@ -219,9 +219,6 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 	case enforce:
 		p.Reason = "spam post (rule " + d.Rule + ")"
 		buttons := []string{ledger.ButtonUndo}
-		if evidence.MediaState == store.MediaPending {
-			buttons = append(buttons, ledger.ButtonShowAttachment)
-		}
 		// The pause may be one that lifts by itself (Telegram accepting the bot
 		// again) or one an admin lifts with [Resume], so the text says only
 		// that the action waits for it to end.
@@ -253,7 +250,24 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 		p.Reports = []store.Report{{Kind: ledger.KindLog, Community: community,
 			Text: fmt.Sprintf("Rule %s matched a post in %s (report only).", d.Rule, where)}}
 	}
-	return p, nil
+	return withShowAttachment(p), nil
+}
+
+// withShowAttachment gives the post's own report [Show attachment] when its
+// attachment is being saved: whatever the report's kind, the attachment is
+// posted under it and taken down after report.attachment_show_hours, and the
+// button posts it again while the evidence copy is kept. A log rule's report
+// is only counted in the daily summary, so it has no message to carry it.
+func withShowAttachment(p ledger.Plan) ledger.Plan {
+	if p.Evidence == nil || p.Evidence.MediaState != store.MediaPending {
+		return p
+	}
+	for i := range p.Reports {
+		if p.Reports[i].Kind != ledger.KindLog {
+			p.Reports[i].Buttons = append(p.Reports[i].Buttons, ledger.ButtonShowAttachment)
+		}
+	}
+	return p
 }
 
 func exemptWho(e rules.Exemption) string {
