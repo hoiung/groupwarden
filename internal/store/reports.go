@@ -26,9 +26,12 @@ type Report struct {
 	Action    string
 	CreatedAt time.Time
 	SentAt    time.Time
-	// OwnsAttachment: this is its post's own report, the first one of its
-	// evidence copy, which the post's attachment is shown under. A later
-	// report about the same post (an action not done) only names it.
+	// OwnsAttachment: this is its post's own report, which the post's
+	// attachment is shown under. The writer of the post's evidence copy asks
+	// for it (ledger.Write); InsertReport records it only for the first
+	// report of that copy, once, so a later report about the same post (an
+	// action not done) never becomes the owner, even after the first is
+	// purged.
 	OwnsAttachment bool
 }
 
@@ -36,9 +39,12 @@ type Report struct {
 // kind in the priority set (AC 4.1) is priority whoever wrote it.
 func InsertReport(ctx context.Context, tx *sql.Tx, r Report, ledgerIDs []int64, now time.Time) (int64, error) {
 	priority := r.Priority || alert.Kind(r.Kind).Priority()
-	res, err := tx.ExecContext(ctx, `INSERT INTO reports (kind, priority, community, subject, evidence_id, text, buttons, action, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Kind, priority, r.Community, r.Subject, nullID(r.EvidenceID), r.Text,
-		strings.Join(r.Buttons, ","), r.Action, now.UnixMilli())
+	owns := r.OwnsAttachment && r.EvidenceID != 0
+	res, err := tx.ExecContext(ctx, `INSERT INTO reports (kind, priority, community, subject, evidence_id, text, buttons, action, created_at,
+	owns_attachment)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ? AND NOT EXISTS (SELECT 1 FROM reports WHERE evidence_id = ?))`, r.Kind, priority,
+		r.Community, r.Subject, nullID(r.EvidenceID), r.Text, strings.Join(r.Buttons, ","), r.Action, now.UnixMilli(),
+		owns, r.EvidenceID)
 	if err != nil {
 		return 0, fmt.Errorf("report insert: %w", err)
 	}
@@ -95,12 +101,11 @@ func (s *Store) AddReport(ctx context.Context, r Report, ledgerIDs []int64) (int
 }
 
 // ownsAttachment is the condition, on a row of reports read unaliased, that
-// it is the first report of its evidence copy (Report.OwnsAttachment).
-const ownsAttachment = `reports.evidence_id IS NOT NULL
-	AND reports.id = (SELECT MIN(o.id) FROM reports o WHERE o.evidence_id = reports.evidence_id)`
+// it owns its post's attachment (Report.OwnsAttachment).
+const ownsAttachment = `reports.owns_attachment = 1`
 
 const reportCols = `id, kind, priority, community, subject, COALESCE(evidence_id, 0), text, buttons, action, created_at,
-	COALESCE(sent_at, 0), ` + ownsAttachment
+	COALESCE(sent_at, 0), owns_attachment`
 
 func scanReport(sc interface{ Scan(...any) error }) (Report, error) {
 	var r Report
