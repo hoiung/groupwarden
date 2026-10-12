@@ -2,7 +2,7 @@
 
 A self-hosted anti-spam moderator for WhatsApp Communities. It sits in every group of your community as a co-admin, reads each new message, and when a message matches your spam rules it deletes the message, removes the sender and bans them from every group of every community you run with it. Every action is reported to a private Telegram admin chat with the full message as proof and a one-tap **[Undo]**.
 
-Spam is defined by rules you write in a config file: a keyword from one of your word lists **plus** a link or contact detail (phone number, contact card, group invite, link shortener), or words from two of your lists together (for example a crypto word and "inbox me"). A keyword on its own never gets anyone removed.
+Spam is defined by rules you write in a config file: a keyword from one of your word lists **plus** a link or contact detail (phone number, contact card, group invite, link shortener), or two different words from two of your lists together (for example a crypto word and "inbox me"). A keyword on its own never gets anyone removed, even a word you put in two lists.
 
 > **Status:** in development — see [Issue #1](https://github.com/hoiung/groupwarden/issues/1).
 
@@ -53,7 +53,7 @@ On a machine that stays on: a Linux box, a Windows PC running WSL2, or Docker. [
 
 | Path | What |
 |---|---|
-| `cmd/groupwarden/` | The CLI (`pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `ban`, `member`, `ledger`, `corpus`, `sync-config`, `schedule`, `backup`, `backup-failed`, `restore`) |
+| `cmd/groupwarden/` | The CLI (`pair`, `run`, `groups`, `resolve-link`, `check`, `healthcheck`, `ban`, `member`, `ledger`, `corpus`, `sync-config`, `schedule`, `backup`, `backup-failed`, `backup-dir`, `restore`, `fatal-exit-code`) |
 | `.claude/skills/spam-intake/` | The Claude Code skill that turns a pasted spam message into a tested rule change |
 | `internal/` | Client layer, store, pipeline, rules, ledger, actions, Telegram, reconcile, backup |
 | `schema/` | JSON Schema for `config.yaml` |
