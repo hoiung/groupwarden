@@ -406,8 +406,9 @@ type uploadRetry struct {
 }
 
 // postAttachment posts one saved attachment as a reply to its post's own
-// report, the first delivered report about that post, whatever its kind (in
-// uploadLoop; nothing waits behind an upload). An upload
+// report (Report.OwnsAttachment: the first report written about that post,
+// whatever its kind, unless a log rule's) (in uploadLoop; nothing waits
+// behind an upload). An upload
 // that fails is logged and tried again later, backing off per attachment
 // (idlePoll, doubling, at most an hour; held in memory) while the others go
 // ahead. One still failing after report.attachment_show_hours (as long as it
