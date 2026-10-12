@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/eskriett/confusables"
 	"golang.org/x/text/cases"
@@ -128,23 +129,6 @@ func stripMarks(s string) string {
 	return out
 }
 
-// collapse joins spaced-out single letters; ok is false when there were none.
-func collapse(s string) (string, bool) {
-	idx := spaced.FindAllStringSubmatchIndex(s, -1)
-	if len(idx) == 0 {
-		return s, false
-	}
-	var b strings.Builder
-	last := 0
-	for _, m := range idx {
-		b.WriteString(s[last:m[2]])
-		b.WriteString(spacer.ReplaceAllString(s[m[2]:m[3]], ""))
-		last = m[3]
-	}
-	b.WriteString(s[last:])
-	return b.String(), true
-}
-
 // tokens splits a view into words: runs of letters and digits.
 func tokens(s string) []string {
 	return strings.FieldsFunc(s, func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
@@ -170,27 +154,113 @@ type view struct {
 	kind  kind
 	leet  bool
 	words []string
+	src   []span // the source pieces each word came from
 	blank []bool // words inside a never-match phrase
 }
+
+// span is the range of source pieces one word of a view came from. A source
+// piece is a run of letters and digits of the original text (with their
+// accents), or a run of the other characters between them, numbered from 0.
+// Every view of a word maps back to the same pieces, so two keywords can be
+// told apart whichever reading each matched in, and "crypto,dm me" is still
+// three words.
+type span struct{ lo, hi int }
 
 // Text is one piece of text prepared for matching.
 type Text struct {
 	views []view
 }
 
+// traced is a view under construction: each rune with the source piece it
+// came from.
+type traced struct {
+	runes []rune
+	src   []int
+}
+
+func (t *traced) add(s string, id int) {
+	for _, r := range s {
+		t.runes = append(t.runes, r)
+		t.src = append(t.src, id)
+	}
+}
+
+// sourcePieces splits s into runs of letters, digits and accents and runs of
+// everything else, numbering the runs from 0.
+func sourcePieces(s string) (parts []string, ids []int) {
+	inWord := func(r rune) bool { return isWordRune(r) || unicode.Is(unicode.M, r) }
+	for s != "" {
+		r, _ := utf8.DecodeRuneInString(s)
+		word := inWord(r)
+		end := strings.IndexFunc(s, func(r rune) bool { return inWord(r) != word })
+		if end < 0 {
+			end = len(s)
+		}
+		parts, ids = append(parts, s[:end]), append(ids, len(ids))
+		s = s[end:]
+	}
+	return parts, ids
+}
+
+// apply converts t one source piece at a time (every conversion here works
+// rune by rune, so the pieces join up to the conversion of the whole text).
+func apply(t traced, conv func(string) string) traced {
+	var out traced
+	for i := 0; i < len(t.runes); {
+		j := i
+		for j < len(t.runes) && t.src[j] == t.src[i] {
+			j++
+		}
+		out.add(conv(string(t.runes[i:j])), t.src[i])
+		i = j
+	}
+	return out
+}
+
+// collapseTraced joins spaced-out single letters, keeping each letter's
+// source piece: "c r y p t o" becomes one word spanning every letter and
+// space it was made from. ok is false when there were none.
+func collapseTraced(t traced) (traced, bool) {
+	s := string(t.runes)
+	idx := spaced.FindAllStringSubmatchIndex(s, -1)
+	if len(idx) == 0 {
+		return t, false
+	}
+	var out traced
+	r, m := 0, 0
+	for off, c := range s {
+		inRun := m < len(idx) && off >= idx[m][2] && off < idx[m][3]
+		if !inRun || !spacer.MatchString(string(c)) {
+			out.runes = append(out.runes, c)
+			out.src = append(out.src, t.src[r])
+		}
+		r++
+		if m < len(idx) && off+utf8.RuneLen(c) >= idx[m][3] {
+			m++
+		}
+	}
+	return out, true
+}
+
 // Prepare builds every matching view of s and blanks the never-match phrases
 // in each, before any keyword is looked at.
 func Prepare(s string, never []Pattern) Text {
-	b := base(s)
+	var source traced
+	parts, ids := sourcePieces(s)
+	for i, p := range parts {
+		source.add(p, ids[i])
+	}
+	b := apply(source, base)
 	var t Text
 	seen := map[string]bool{}
-	add := func(k kind, leetView bool, v string) {
-		key := fmt.Sprint(k, leetView, v)
+	add := func(k kind, leetView bool, v traced) {
+		key := fmt.Sprint(k, leetView, string(v.runes))
 		if seen[key] {
 			return
 		}
 		seen[key] = true
-		vw := view{kind: k, leet: leetView, words: tokens(v)}
+		vw := view{kind: k, leet: leetView}
+		vw.words, vw.src = tokensTraced(v)
 		vw.blank = make([]bool, len(vw.words))
 		for _, p := range never {
 			p.mark(&vw)
@@ -198,15 +268,35 @@ func Prepare(s string, never []Pattern) Text {
 		t.views = append(t.views, vw)
 	}
 	add(plain, false, b)
-	add(skel, false, skeleton(s))
-	add(plain, true, leet.Replace(b))
-	if c, ok := collapse(b); ok {
+	add(skel, false, apply(source, skeleton))
+	add(plain, true, apply(b, leet.Replace))
+	if c, ok := collapseTraced(b); ok {
 		add(plain, false, c)
-		add(skel, false, skeleton(c))
-		add(plain, true, leet.Replace(c))
+		add(skel, false, apply(c, skeleton))
+		add(plain, true, apply(c, leet.Replace))
 	}
 	return t
 }
+
+// tokensTraced is tokens on a traced view, with each word's source pieces.
+func tokensTraced(t traced) (words []string, src []span) {
+	for i := 0; i < len(t.runes); {
+		if !isWordRune(t.runes[i]) {
+			i++
+			continue
+		}
+		j, sp := i, span{lo: t.src[i], hi: t.src[i]}
+		for j < len(t.runes) && isWordRune(t.runes[j]) {
+			sp.lo, sp.hi = min(sp.lo, t.src[j]), max(sp.hi, t.src[j])
+			j++
+		}
+		words, src = append(words, string(t.runes[i:j])), append(src, sp)
+		i = j
+	}
+	return words, src
+}
+
+func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
 
 // part is one word of a pattern; Prefix/Suffix come from a "*" at its end or
 // start ("broker*" matches "brokers", "*coin" matches "bitcoin").
@@ -310,13 +400,53 @@ func (p Pattern) mark(v *view) {
 // MatchIn reports whether the pattern occurs as whole words in any view of t.
 // Leet views are searched only when useLeet is set (an opt-in word list).
 func (p Pattern) MatchIn(t Text, useLeet bool) bool {
+	return p.MatchAvoiding(t, useLeet, nil)
+}
+
+// MatchAvoiding is MatchIn using none of the source pieces in avoid.
+func (p Pattern) MatchAvoiding(t Text, useLeet bool, avoid map[int]bool) bool {
 	for i := range t.views {
 		v := &t.views[i]
 		if v.leet && !useLeet {
 			continue
 		}
+		n := len(p.forms[v.kind])
 		for w := range v.words {
-			if p.at(v, w) {
+			if p.at(v, w) && !v.uses(w, w+n, avoid) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Words adds to used every source piece the pattern matches in any view of t
+// it may search.
+func (p Pattern) Words(t Text, useLeet bool, used map[int]bool) {
+	for i := range t.views {
+		v := &t.views[i]
+		if v.leet && !useLeet {
+			continue
+		}
+		n := len(p.forms[v.kind])
+		for w := range v.words {
+			if !p.at(v, w) {
+				continue
+			}
+			for _, sp := range v.src[w : w+n] {
+				for s := sp.lo; s <= sp.hi; s++ {
+					used[s] = true
+				}
+			}
+		}
+	}
+}
+
+// uses reports whether words [from, to) of v came from any source piece in set.
+func (v *view) uses(from, to int, set map[int]bool) bool {
+	for _, sp := range v.src[from:to] {
+		for s := sp.lo; s <= sp.hi; s++ {
+			if set[s] {
 				return true
 			}
 		}
