@@ -247,9 +247,14 @@ func dedupe(ps Problems) Problems {
 	return out
 }
 
-// checkRetention enforces announcement_secret_days >= evidence_days, globally
-// and for each community's effective values (a cross-key rule the schema
-// cannot express).
+// checkRetention enforces, globally and for each community's effective values
+// (cross-key rules the schema cannot express), announcement_secret_days >=
+// evidence_days, and an action log that outlasts the evidence window. Purging
+// a report also drops the bot's record of what it posted to the admin chat,
+// so a report must stay until its message text is stripped (evidence_days)
+// and an attachment shown again just before that is taken down
+// (report.attachment_show_hours), with a day to spare for the hourly purge.
+// A month counts as 28 days, the shortest the purge's calendar months can be.
 func (c *Config) checkRetention(t *tree) Problems {
 	var probs Problems
 	check := func(r Retention, path []string, label string) {
@@ -258,6 +263,14 @@ func (c *Config) checkRetention(t *tree) Problems {
 			probs = append(probs, Problem{Line: pos.line, Column: pos.col, Msg: fmt.Sprintf(
 				"%sretention.announcement_secret_days (%d) must be at least retention.evidence_days (%d)",
 				label, r.AnnouncementSecretDays, r.EvidenceDays)})
+		}
+		if r.ActionLogMonths*28*24 < r.EvidenceDays*24+c.Report.AttachmentShowHours+24 {
+			pos := t.where(append(path, "action_log_months"))
+			probs = append(probs, Problem{Line: pos.line, Column: pos.col, Msg: fmt.Sprintf(
+				"%sretention.action_log_months (%d, a month counted as 28 days) must outlast retention.evidence_days "+
+					"(%d) plus report.attachment_show_hours (%d) and a day, so the bot can strip and take down what it "+
+					"posted before the reports are purged",
+				label, r.ActionLogMonths, r.EvidenceDays, c.Report.AttachmentShowHours)})
 		}
 	}
 	check(c.Retention, []string{"retention"}, "")
