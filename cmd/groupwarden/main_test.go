@@ -654,6 +654,37 @@ func TestCorpusTestExitCodes(t *testing.T) {
 	if !strings.Contains(te.errb.String(), "1 legit sample(s) would be deleted; 1 spam sample(s) are not caught") {
 		t.Fatalf("stderr: %s", te.errb)
 	}
+
+	// A community's own words are tested too: only the example community's
+	// added word makes this legit post a lure, and the line names it.
+	raw, err := os.ReadFile(example)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const named = "    name: example community\n"
+	if strings.Count(string(raw), named) != 1 {
+		t.Fatalf("example config has no single %q line", named)
+	}
+	withWord := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := strings.Replace(string(raw), named, named+"    word_lists:\n      crypto: [\"bike\"]\n", 1)
+	if err := os.WriteFile(withWord, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	local := t.TempDir()
+	writeCorpus(t, local, map[string]string{
+		"spam/1.yaml":          "text: \"bitcoin signals t.me/example_signals\"\n",
+		"legit/selling/1.yaml": "text: \"selling my old bike, dm me\"\n",
+	})
+	te.out.Reset()
+	te.errb.Reset()
+	if code := te.run([]string{"corpus", "test", "--config", withWord, "--corpus", local}); code != exitFail {
+		t.Fatalf("community word: exit %d\n%s%s", code, te.out, te.errb)
+	}
+	want := "FALSE-HIT legit/selling " + filepath.Join(local, "legit", "selling", "1.yaml") +
+		": deleted by crypto-lure in community example community\n"
+	if !strings.Contains(te.out.String(), want) {
+		t.Fatalf("output lacks %q:\n%s", want, te.out)
+	}
 	if code := te.run([]string{"corpus", "test", "--config", example}); code != exitUsage {
 		t.Fatalf("no --corpus: exit %d", code)
 	}
