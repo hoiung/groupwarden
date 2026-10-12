@@ -42,7 +42,8 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 
            internal/telegram: the stored reports and alerts ► the private admin
                chat (≤ 20 posts a minute, priority first); saved attachments ►
-               posted under their post's own report (whatever its kind; a
+               posted under their post's own report (whatever its kind, unless
+               a log rule's, which is only counted in the daily summary; a
                later report about the same post points there) by a loop of
                their own, so a slow upload never holds up an alert (one not
                posted, or not kept after its report said it was being saved,
