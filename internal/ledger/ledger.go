@@ -278,6 +278,10 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 	}
 	for _, rep := range p.Reports {
 		rep.EvidenceID = w.EvidenceID
+		// The post's own report, written with its evidence copy, is the one its
+		// attachment is shown under; a log rule's report is only counted in the
+		// daily summary, so there is no message to show it under.
+		rep.OwnsAttachment = w.EvidenceID != 0 && rep.Kind != KindLog
 		if rep.Subject == "" {
 			rep.Subject = target
 		}
