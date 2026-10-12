@@ -31,7 +31,8 @@ func (r *Rejected) Error() string {
 func (r *Rejected) Unwrap() error { return r.Reason }
 
 // checkCorpus runs the corpus test when corpus_dir is set: a config that
-// misses a spam sample or would delete a legit one is not loaded.
+// misses a spam sample or would delete a legit one (under the global rules or
+// any community's) is not loaded.
 func checkCorpus(l *Loaded) error {
 	if l.Config.CorpusDir == "" {
 		return nil
