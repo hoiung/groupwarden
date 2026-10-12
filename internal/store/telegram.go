@@ -14,7 +14,7 @@ import (
 const (
 	RoleReport     = "report"     // a report (or alert) itself, carrying its buttons
 	RoleFollowup   = "followup"   // message text that did not fit in the report
-	RoleAttachment = "attachment" // the deleted post's saved attachment
+	RoleAttachment = "attachment" // a matched post's saved attachment, under its own report
 	RoleSummary    = "summary"    // the daily keyword summary, or a digest
 	RoleReply      = "reply"      // an answer to a command or button press
 )
@@ -203,9 +203,10 @@ type AttachmentToPost struct {
 }
 
 // AttachmentsToPost lists delivered reports that own their post's attachment
-// (Report.OwnsAttachment), whatever their kind, whose evidence holds a saved
-// file and that never had an attachment post, leaving out the evidence IDs in
-// skip (uploads waiting out a backoff, so they never fill the window).
+// (Report.OwnsAttachment), whatever their kind, whose report message is in the
+// chat to post it under (not one Telegram refused), whose evidence holds a
+// saved file and that never had an attachment post, leaving out the evidence
+// IDs in skip (uploads waiting out a backoff, so they never fill the window).
 func (s *Store) AttachmentsToPost(ctx context.Context, limit int, skip []int64) ([]AttachmentToPost, error) {
 	if skip == nil {
 		skip = []int64{}
@@ -216,6 +217,7 @@ func (s *Store) AttachmentsToPost(ctx context.Context, limit int, skip []int64) 
 	}
 	return s.attachments(ctx, "attachments to post", `SELECT reports.id FROM reports JOIN evidence e ON e.id = reports.evidence_id
 WHERE `+ownsAttachment+` AND reports.sent_at IS NOT NULL AND e.media_state = 'saved'
+	AND EXISTS (SELECT 1 FROM tg_messages h WHERE h.report_id = reports.id AND h.role = 'report')
 	AND e.id NOT IN (SELECT value FROM json_each(?))
 	AND NOT EXISTS (SELECT 1 FROM tg_messages t WHERE t.report_id = reports.id AND t.role = 'attachment')
 ORDER BY reports.id LIMIT ?`, string(skipped), limit)
