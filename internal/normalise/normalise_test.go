@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 func mustCompile(t *testing.T, s string) Pattern {
@@ -229,91 +231,199 @@ func collapseWhole(s string) (string, bool) {
 	return b.String(), true
 }
 
-// TestViewsReadTheWholeText: building every view one source piece at a time
-// (to know which word each match came from) reads exactly the words the
-// whole text gives, so no keyword matches more or less than before.
-func TestViewsReadTheWholeText(t *testing.T) {
-	for _, s := range []string{
-		"сrурtо profits", "CRYPTO profits", "ｃｒｙｐｔｏ profits", "çrÿptö profits",
-		"🇨🇷🇾🇵🇹🇴 now", "ᴄʀʏᴘᴛᴏ now", "₿itcoin giveaway", "cry\u200bpto", "c̲r̲y̲p̲t̲o̲",
-		"c r y p t o dm me", "c.r.y.p.t.o", "F R E E  U S D T", "b u y\tb t c",
-		"$tocks risk free", "e@sy m0ney", "b1tcoin d0gecoin", "anyone still holding DOGECOIN?",
-		"price\u00a0list 10\u3000days", "bit¨coin", "  leading and trailing  ", "", "Stockholm is lovely",
-	} {
-		parts, ids := sourcePieces(s)
-		var source traced
-		for i, p := range parts {
-			source.add(p, ids[i])
+// wholeTextSamples are texts the traced readings are checked against the
+// whole text with: look-alike and folded letters, invisible characters,
+// spaced letters, digit swaps, and letters a normal form merges across an
+// invisible character or a dropped accent.
+var wholeTextSamples = []string{
+	"сrурtо profits", "CRYPTO profits", "ｃｒｙｐｔｏ profits", "çrÿptö profits",
+	"🇨🇷🇾🇵🇹🇴 now", "ᴄʀʏᴘᴛᴏ now", "₿itcoin giveaway", "cry\u200bpto", "c̲r̲y̲p̲t̲o̲",
+	"c r y p t o dm me", "c.r.y.p.t.o", "F R E E  U S D T", "b u y\tb t c",
+	"$tocks risk free", "e@sy m0ney", "b1tcoin d0gecoin", "anyone still holding DOGECOIN?",
+	"price\u00a0list 10\u3000days", "bit¨coin", "  leading and trailing  ", "", "Stockholm is lovely",
+	"\u1100\u00ad\u1161", "\u1100\u200b\u1161 coin", "\u3260\u1161", "\u3131\u200b\u1161",
+	"\u1100 \u1161 \u1100 \u1161", "\u1100\u0301\u1161", "\u110f\u00ad\u1169\uc778 dm me",
+	"crypto\u01c3dm me", "=\u0338 \u2260", "\u09c7\u200b\u09be", "e\u0301 \u00e9", "\ufb01nance \u2460\u2461",
+	"z" + strings.Repeat("\u0301", 45) + "\u0323x crypto",
+}
+
+// wholeText is every reading the whole text gives: base, look-alike letters
+// and digit swaps of the text, and the same of its spaced-letter join.
+func wholeText(s string) map[string]bool {
+	want := map[string]bool{
+		fmt.Sprint(tokens(base(s))): true, fmt.Sprint(tokens(skeleton(s))): true,
+		fmt.Sprint(tokens(leet.Replace(base(s)))): true,
+	}
+	if c, ok := collapseWhole(base(s)); ok {
+		want[fmt.Sprint(tokens(c))] = true
+		want[fmt.Sprint(tokens(skeleton(c)))] = true
+		want[fmt.Sprint(tokens(leet.Replace(c)))] = true
+	}
+	return want
+}
+
+// readsWholeText reports in t unless the readings Prepare builds, tracing
+// each character, are exactly the readings of the whole text.
+func readsWholeText(t *testing.T, s string) {
+	t.Helper()
+	var source traced
+	for i, c := range []rune(s) {
+		source.runes, source.src = append(source.runes, c), append(source.src, i)
+	}
+	r := newReader(len(source.runes))
+	if got := string(r.base(source).runes); got != base(s) {
+		t.Errorf("%+q: base reading %+q, the whole text gives %+q", s, got, base(s))
+	}
+	if got := string(r.skeleton(source).runes); got != skeleton(s) {
+		t.Errorf("%+q: look-alike reading %+q, the whole text gives %+q", s, got, skeleton(s))
+	}
+	want := wholeText(s)
+	got := map[string]bool{}
+	for _, v := range Prepare(s, nil).views {
+		got[fmt.Sprint(v.words)] = true
+	}
+	for w := range want {
+		if !got[w] {
+			t.Errorf("%+q: no reading gives %+q", s, w)
 		}
-		if got := string(apply(source, base).runes); got != base(s) {
-			t.Errorf("%q: base view %q, whole text gives %q", s, got, base(s))
-		}
-		want := []string{fmt.Sprint(tokens(base(s))), fmt.Sprint(tokens(skeleton(s))), fmt.Sprint(tokens(leet.Replace(base(s))))}
-		if c, ok := collapseWhole(base(s)); ok {
-			want = append(want, fmt.Sprint(tokens(c)), fmt.Sprint(tokens(skeleton(c))), fmt.Sprint(tokens(leet.Replace(c))))
-		}
-		got := map[string]bool{}
-		for _, v := range Prepare(s, nil).views {
-			got[fmt.Sprint(v.words)] = true
-		}
-		for _, w := range want {
-			if !got[w] {
-				t.Errorf("%q: no view reads %s", s, w)
-			}
-		}
-		if len(got) > len(want) {
-			t.Errorf("%q: %d views, the whole text gives %d", s, len(got), len(want))
+	}
+	for w := range got {
+		if !want[w] {
+			t.Errorf("%+q: a reading gives %+q, the whole text does not", s, w)
 		}
 	}
 }
 
-// TestWordsAcrossReadings: a keyword's source pieces are the same whichever
-// reading it matched in, so a second keyword on the same word is never
-// counted as a different word, while words split only by punctuation stay
-// different words. Pieces count from 0 and include the spaces and
-// punctuation between words.
+// TestViewsReadTheWholeText: building every reading character by character
+// (to know which characters each match came from) reads exactly the words the
+// whole text gives, so no keyword matches more or less than before.
+func TestViewsReadTheWholeText(t *testing.T) {
+	for _, s := range wholeTextSamples {
+		readsWholeText(t, s)
+	}
+}
+
+// TestComposedLettersReadAsTheWholeText: every letter Unicode composes from
+// two parts (every one below U+30000; Hangul: every syllable without a final
+// consonant and every final consonant once), written as its parts with
+// nothing, an invisible character or an accent the matcher drops between
+// them, reads exactly as the whole text does.
+func TestComposedLettersReadAsTheWholeText(t *testing.T) {
+	var pairs [][2]string
+	for c := rune(0); c < 0x30000; c++ {
+		if c >= 0xD800 && c < 0xE000 || c > 0xAC1B && c <= 0xD7A3 && (c-0xAC00)%28 != 0 {
+			continue
+		}
+		d := []rune(norm.NFD.String(string(c)))
+		if len(d) < 2 || norm.NFC.String(string(d)) != string(c) {
+			continue
+		}
+		pairs = append(pairs, [2]string{norm.NFC.String(string(d[:len(d)-1])), string(d[len(d)-1])})
+	}
+	if len(pairs) < 1000 {
+		t.Fatalf("premise: only %d composed letters found", len(pairs))
+	}
+	// compatibility letters NFKC turns into a part that composes
+	pairs = append(pairs, [2]string{"\u3260", "\u1161"}, [2]string{"\u3131", "\u1161"}, [2]string{"\uffa1", "\u1161"})
+	for _, p := range pairs {
+		for _, between := range []string{"", "\u00ad", "\u200b", "\u034f", "\u2060", "\ufeff", "\u0301"} {
+			readsWholeText(t, p[0]+between+p[1])
+		}
+		if t.Failed() {
+			return
+		}
+	}
+}
+
+// FuzzViewsReadTheWholeText runs the samples under go test; go test -fuzz
+// looks for a text whose traced readings differ from the whole text's.
+func FuzzViewsReadTheWholeText(f *testing.F) {
+	for _, s := range wholeTextSamples {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		readsWholeText(t, s)
+	})
+}
+
+// TestMergedLettersAreOneCharacter: characters a normal form merges ("ᄀ"
+// and "ᅡ" into "가", here with a soft hyphen between them) count as one
+// character of the text in every reading.
+func TestMergedLettersAreOneCharacter(t *testing.T) {
+	text := Prepare("\u1100\u00ad\u1161 \u1100", nil)
+	if text.one[0] != text.one[1] || text.one[0] != text.one[2] {
+		t.Fatalf("merged characters %v are not one", text.one[:3])
+	}
+	if text.one[3] == text.one[0] || text.one[4] == text.one[0] {
+		t.Fatalf("characters after the merged letter joined it: %v", text.one)
+	}
+}
+
+// usedRuns is the text's characters a Words set holds, as the runs they
+// make in the original text.
+func usedRuns(text Text, s string, used map[int]bool) []string {
+	var runs []string
+	run := ""
+	for i, c := range []rune(s) {
+		if used[text.one[i]] {
+			run += string(c)
+			continue
+		}
+		if run != "" {
+			runs, run = append(runs, run), ""
+		}
+	}
+	if run != "" {
+		runs = append(runs, run)
+	}
+	return runs
+}
+
+// TestWordsAcrossReadings: a keyword uses the same characters of the text
+// whichever reading it matched in, so a second keyword on the same word is
+// never counted as a different word, while words split only by punctuation,
+// or by a letter the look-alike reading turns into punctuation, stay
+// different words.
 func TestWordsAcrossReadings(t *testing.T) {
 	cases := []struct {
 		text, first, second string
 		leet                bool
-		used                []int
+		used                []string
 		secondElsewhere     bool
 	}{
 		// capitals: the look-alike reading of DOGECOIN is "dogecoln"
-		{"anyone still holding DOGECOIN?", "*coin", "doge*", false, []int{6}, false},
-		{"anyone still holding dogecoin?", "*coin", "doge*", false, []int{6}, false},
+		{"anyone still holding DOGECOIN?", "*coin", "doge*", false, []string{"DOGECOIN"}, false},
+		{"anyone still holding dogecoin?", "*coin", "doge*", false, []string{"dogecoin"}, false},
 		// a digit swap read only by the second list
-		{"anyone still holding b1tcoin?", "*coin", "bitcoin", true, []int{6}, false},
+		{"anyone still holding b1tcoin?", "*coin", "bitcoin", true, []string{"b1tcoin"}, false},
 		// spaced letters span every letter and space they came from
-		{"c r y p t o dm me", "crypto", "dm me", false, []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, true},
+		{"c r y p t o dm me", "crypto", "dm me", false, []string{"c r y p t o"}, true},
 		// a joined word overlaps every letter it was made from, not just the first
-		{"b i t c o i n", "c", "bitcoin", false, []int{6}, false},
-		{"cryp7o dm me", "crypto", "dm me", true, []int{0}, true},
-		{"$tocks risk free", "stocks", "risk free", true, []int{0, 1}, true},
-		{"сrурtо crypto", "crypto", "crypto", false, []int{0, 2}, false},
+		{"b i t c o i n", "c", "bitcoin", false, []string{"c"}, false},
+		{"cryp7o dm me", "crypto", "dm me", true, []string{"cryp7o"}, true},
+		{"$tocks risk free", "stocks", "risk free", true, []string{"$tocks"}, true},
+		{"сrурtо crypto", "crypto", "crypto", false, []string{"сrурtо", "crypto"}, false},
 		// punctuation with no space still separates two words
-		{"crypto,dm me", "crypto", "dm me", false, []int{0}, true},
-		{"bitcoin/guaranteed", "bitcoin", "guaranteed", false, []int{0}, true},
+		{"crypto,dm me", "crypto", "dm me", false, []string{"crypto"}, true},
+		{"bitcoin/guaranteed", "bitcoin", "guaranteed", false, []string{"bitcoin"}, true},
+		// the look-alike reading of the click letter is "!", so it splits words there
+		{"crypto\u01c3dm me", "crypto", "dm me", false, []string{"crypto"}, true},
+		// letters merged across a soft hyphen are one word, read as the whole text reads it
+		{"\u110f\u00ad\u1169\uc778 dm me", "\ucf54\uc778", "\ucf54\uc778", false, []string{"\u110f\u00ad\u1169\uc778"}, false},
 	}
 	for _, c := range cases {
 		text := Prepare(c.text, nil)
 		used := map[int]bool{}
 		mustCompile(t, c.first).Words(text, c.leet, used)
-		var got []int
-		for w := range 20 {
-			if used[w] {
-				got = append(got, w)
-			}
-		}
-		if !reflect.DeepEqual(got, c.used) {
-			t.Errorf("%q: %q uses source pieces %v, want %v", c.text, c.first, got, c.used)
+		if got := usedRuns(text, c.text, used); !reflect.DeepEqual(got, c.used) {
+			t.Errorf("%+q: %+q uses %+q, want %+q", c.text, c.first, got, c.used)
 		}
 		second := mustCompile(t, c.second)
 		if !second.MatchIn(text, c.leet) {
-			t.Errorf("%q: %q does not match at all", c.text, c.second)
+			t.Errorf("%+q: %+q does not match at all", c.text, c.second)
 		}
 		if got := second.MatchAvoiding(text, c.leet, used); got != c.secondElsewhere {
-			t.Errorf("%q: %q away from %q's words = %v, want %v", c.text, c.second, c.first, got, c.secondElsewhere)
+			t.Errorf("%+q: %+q away from %+q's words = %v, want %v", c.text, c.second, c.first, got, c.secondElsewhere)
 		}
 	}
 }
