@@ -55,4 +55,5 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 - A single word shorter than `rules.min_word_length` is refused; a phrase is not.
 - A rule's `when:` is one of `all:`, `any:`, `words:` (one list name or several, any of them) or `has:` (built-in signals: `any_link`, `invite_link`, `shortener`, `phone_number`, `contact_card`, `handle`, `money_amount`).
 - A rule with `action: delete_remove_ban` acts only when its community is in `enforce` mode and the rule has `confirmed: true`; until then it reports what it would have done.
+- A rule with `action: log` never acts and posts no report of its own: its matches are counted in the daily summary (one line per rule and community).
 - `on: push_name` matches the sender's display name on its own; it is never combined with the message.
