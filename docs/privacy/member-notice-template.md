@@ -18,7 +18,7 @@ To keep scams and spam out, [community name] uses an automated moderator, groupw
 
 **How long we keep it.**
 
-- The copy of a deleted message and its attachment: [30 days] (the message text in the admins' Telegram group is removed after the same [30 days]; an attachment posted there is taken down after [24 hours]).
+- The copy of a message our rules flag, deleted or not, and its attachment (a rule that only counts matches keeps the message, not the attachment): [30 days] (the message text in the admins' Telegram group is removed after the same [30 days]; an attachment posted there is taken down after [24 hours]).
 - The record of each action (who, which group, which rule, when): [12 months].
 - The ban list: until an admin lifts the ban.
 - Encrypted backups of these records: the last [14] nights.
