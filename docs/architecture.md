@@ -85,7 +85,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | `internal/reconcile` | The periodic sweep, backing off on WhatsApp's rate limit: group coverage and its reports (new groups, lost groups, fewer than 2 human admins), joining absent linked groups, banned members present, join requests |
 | `internal/config` | YAML 1.2 parsing, schema validation, defaults, the reloadable `Holder` |
 | `internal/rules` | Rule compilation and checks, built-in conditions, the decision |
-| `internal/normalise` | The matching views of a text, each word traced to the word of the original text it came from, and the word/phrase matcher |
+| `internal/normalise` | The matching views of a text, each word traced to the characters of the original text it came from, and the word/phrase matcher |
 | `internal/corpus` | Labelled spam and legit samples; the corpus test (per-rule hits, the closest rule for missed spam, the rules behind a legit false hit); `corpus add` (redaction that keeps a pattern's shape, or full redaction with `--public`; dedupe; a new private corpus seeded from the public legit set) |
 | `internal/configsync` | The config sync: pull with the deploy key and a time limit, check, swap the live config directory's symlink, signal `run`; one alert per failure episode |
 | `internal/store` | SQLite: migrations, inbox, ledger, outbox, ban list, evidence, reports, pauses, group coverage; maintenance of the WhatsApp session store (message-secret purge, `member forget`) |
