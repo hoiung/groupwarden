@@ -14,7 +14,7 @@ To keep scams and spam out, [community name] uses an automated moderator, groupw
 
 **The ban list is shared.** [If `bans.scope` is `all_communities`:] [community name] shares one moderator and one ban list with [other community]: someone banned in either community is removed from, and kept out of, both. [If `per_community`: delete this paragraph.]
 
-**Who sees what.** Each action is reported to our admins in a private Telegram group, with the full deleted message and any attachment (photo, video or file) as proof. A message our rules flag but do not delete (for example while a new rule is being tried out) is shown to them the same way. Only our admins are in that group.
+**Who sees what.** Each action is reported to our admins in a private Telegram group, with the full deleted message and any attachment (photo, video or file) as proof. A message our rules flag but do not delete (for example while a new rule is being tried out, or a post by an admin) is shown to them the same way; a rule that only counts matches shows them a daily count, not the message. Only our admins are in that group.
 
 **How long we keep it.**
 
