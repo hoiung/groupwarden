@@ -45,6 +45,9 @@ func (rs *Ruleset) Closest(in Input) (best RuleCheck, ok bool) {
 			}
 			rc.Failed = append(rc.Failed, Describe(c))
 		}
+		if len(rc.Failed) == 0 && input != nil && !input.acts(r, sc) {
+			rc.Failed = []string{"keywords from two word lists in different words (one keyword here is in both lists)"}
+		}
 		if r.on == OnPushName && name == nil { // ranks below any rule that reads the message
 			rc.Met, rc.Failed = -1, []string{"the sample has no push name"}
 		}
