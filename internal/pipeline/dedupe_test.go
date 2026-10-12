@@ -1,6 +1,7 @@
 package pipeline_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -37,20 +38,38 @@ func TestCrossPostRemovesOnce(t *testing.T) {
 }
 
 // TestEditOfSpamActionedOnce: a spam post and its edit, both decided before
-// anything fires, delete the message once and report once.
+// anything fires, delete the message once and report once, and only the
+// post's own copy is kept (with its attachment), not one of the edit.
 func TestEditOfSpamActionedOnce(t *testing.T) {
 	k := modtest.New(t, "")
-	k.Deliver(k.Spam("M1", modtest.G1))
+	k.Fake.Download = func(context.Context, *client.Message) ([]byte, string, string, error) {
+		return []byte("JPEGDATA"), "image/jpeg", "offer.jpg", nil
+	}
+	withImage := func(m *client.Message) *client.Message {
+		m.Media = &client.Media{Kind: "image", MimeType: "image/jpeg", FileName: "offer.jpg", Size: 7, Raw: []byte("raw")}
+		return m
+	}
+	k.Deliver(withImage(k.Spam("M1", modtest.G1)))
 	k.Clock.Advance(30 * time.Second)
-	edit := k.Spam("E1", modtest.G1)
+	edit := withImage(k.Spam("E1", modtest.G1))
 	edit.TargetID, edit.IsEdit = "M1", true
 	k.Deliver(edit)
 	k.Fire()
 	if n := k.Fake.Count("Revoke " + string(modtest.G1) + " " + string(modtest.Spammer) + " M1"); n != 1 {
 		t.Fatalf("deleted M1 %d times: %v", n, k.Fake.Calls())
 	}
-	if n := len(k.Reports(ledger.KindAction)); n != 1 {
-		t.Fatalf("%d action reports, want 1", n)
+	reps := k.Reports(ledger.KindAction)
+	if len(reps) != 1 {
+		t.Fatalf("%d action reports, want 1", len(reps))
+	}
+	if n, err := k.Media.Fetch(k.Ctx); err != nil || n != 1 {
+		t.Fatalf("downloaded %d attachments (%v), want the post's own only", n, err)
+	}
+	for id := int64(1); id <= 2; id++ {
+		ev, ok, err := k.Store.Evidence(k.Ctx, id)
+		if err != nil || ok != (id == 1) || (ok && ev.MsgID != "M1") {
+			t.Fatalf("evidence copy %d = %+v (%v, %v), want only the post's own (M1)", id, ev, ok, err)
+		}
 	}
 }
 
