@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -102,5 +103,98 @@ func TestReportOfTGMessage(t *testing.T) {
 	cancel()
 	if got, ok, err := s.ReportOfTGMessage(cancelled, -1, 1); err == nil || ok || got != 0 {
 		t.Fatalf("a failed read: (%d, %v, %v), want an error", got, ok, err)
+	}
+}
+
+// TestAttachmentOwnerRecordedOnce: a report owns its post's attachment only
+// when its writer asks and it is the first report of that evidence copy, and
+// the flag stays as written: purging the owner never makes a later report
+// about the same post (an action not done) the owner, which would post the
+// attachment again.
+func TestAttachmentOwnerRecordedOnce(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
+	s := openAt(t, &now)
+	var evID int64
+	if err := s.Write(ctx, func(tx *sql.Tx) error {
+		var err error
+		evID, err = InsertEvidence(ctx, tx, Evidence{Chat: "g", MsgID: "M1", Fields: "[]", Normalised: "[]",
+			MediaKind: "image", MediaState: MediaPending}, now)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	add := func(r Report) Report {
+		t.Helper()
+		id, err := s.AddReport(ctx, r, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.MarkReportSent(ctx, id, ""); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := s.Report(ctx, id)
+		if err != nil || !ok {
+			t.Fatalf("report %d: %v %v", id, ok, err)
+		}
+		return got
+	}
+	first := add(Report{Kind: "action", EvidenceID: evID, OwnsAttachment: true})
+	now = now.Add(time.Hour)
+	second := add(Report{Kind: "action", EvidenceID: evID, OwnsAttachment: true})
+	later := add(Report{Kind: "not_done", EvidenceID: evID})
+	noCopy := add(Report{Kind: "alert", OwnsAttachment: true})
+	if !first.OwnsAttachment || second.OwnsAttachment || later.OwnsAttachment || noCopy.OwnsAttachment {
+		t.Fatalf("owners: first %v, second asked %v, later %v, no evidence %v; want only the first",
+			first.OwnsAttachment, second.OwnsAttachment, later.OwnsAttachment, noCopy.OwnsAttachment)
+	}
+	if n, err := s.PurgeReports(ctx, first.CreatedAt.Add(time.Millisecond)); err != nil || n != 1 {
+		t.Fatalf("purged %d (%v), want the first report only", n, err)
+	}
+	for _, id := range []int64{second.ID, later.ID} {
+		if r, ok, err := s.Report(ctx, id); err != nil || !ok || r.OwnsAttachment {
+			t.Fatalf("report %d after the owner was purged: %+v (%v %v), want it still not the owner", id, r, ok, err)
+		}
+	}
+}
+
+// TestOwnerMigrationMarksTheFirstReport: migration 10 on a database written
+// before it marks the first report of each evidence copy as its owner,
+// except a log rule's (only counted in the daily summary), and no other.
+func TestOwnerMigrationMarksTheFirstReport(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "g.db")
+	all := migrations
+	migrations = all[:9]
+	s, err := Open(ctx, path, Options{})
+	migrations = all
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO evidence (id, chat, community, sender, sender_alt, subject, push_name, msg_id, target_id, msg_time,
+	fields, normalised, rule, config_hash, created_at) VALUES (1, 'g', '', '', '', '', '', 'M1', '', 0, '[]', '[]', '', '', 0),
+	(2, 'g', '', '', '', '', '', 'M2', '', 0, '[]', '[]', '', '', 0)`,
+		`INSERT INTO reports (id, kind, priority, community, subject, evidence_id, text, buttons, action, created_at) VALUES
+	(1, 'action', 0, '', '', 1, '', '', '', 0), (2, 'not_done', 1, '', '', 1, '', '', '', 0),
+	(3, 'log', 0, '', '', 2, '', '', '', 0), (4, 'alert', 0, '', '', NULL, '', '', '', 0)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(ctx, path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	for id, owns := range map[int64]bool{1: true, 2: false, 3: false, 4: false} {
+		r, ok, err := s.Report(ctx, id)
+		if err != nil || !ok || r.OwnsAttachment != owns {
+			t.Fatalf("report %d after migration 10: %+v (%v %v), want owns %v", id, r, ok, err, owns)
+		}
 	}
 }
