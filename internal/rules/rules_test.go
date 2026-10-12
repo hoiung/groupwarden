@@ -298,6 +298,12 @@ func TestLureMatchBans(t *testing.T) {
 	if d.Action != DeleteRemoveBan || d.Rule != "crypto-lure" {
 		t.Fatalf("lure decision = %+v", d)
 	}
+	// Punctuation with no space between them still makes two words.
+	for _, text := range []string{"crypto,dm me", "bitcoin/guaranteed"} {
+		if d := rs.Decide(Input{Community: communityA, Fields: body(text)}); d.Action != DeleteRemoveBan || d.Rule != "crypto-lure" {
+			t.Fatalf("%q decision = %+v", text, d)
+		}
+	}
 	// A lure phrase with no crypto or stock word does nothing.
 	if d := rs.Decide(Input{Community: communityA, Fields: body("inbox me for salsa lesson times")}); d.Action != ActionNone {
 		t.Fatalf("lure-only decision = %+v", d)
@@ -307,53 +313,92 @@ func TestLureMatchBans(t *testing.T) {
 // TestOneKeywordNeverActsAlone: a lure needs keywords from two word lists in
 // different words of the post. Each case is a way one keyword can satisfy
 // both lists of a lure; in each, a second, different lure word in the post
-// makes it act again.
+// makes it act again. Every case is run with the keyword written every way
+// the matcher reads (capitals, look-alike letters, digit swaps) and with each
+// list opted into digit swaps, because two lists can match one word in two
+// different readings.
 func TestOneKeywordNeverActsAlone(t *testing.T) {
 	addLure := func(entry string) func(*Spec) {
 		return func(s *Spec) { s.WordLists["lures"] = append(s.WordLists["lures"], entry) }
 	}
+	spellings := []struct {
+		name   string
+		spell  func(string) string
+		always bool // the crypto list reads it without digit swaps
+	}{
+		{"as written", func(w string) string { return w }, true},
+		{"in capitals", strings.ToUpper, true},
+		{"with look-alike letters", func(w string) string { return strings.ReplaceAll(w, "o", "о") }, true},
+		{"with digit swaps", strings.NewReplacer("i", "1", "o", "0").Replace, false},
+		{"with one digit swap", func(w string) string { return strings.Replace(w, "i", "1", 1) }, false},
+		{"spaced out", func(w string) string { return strings.Join(strings.Split(w, ""), " ") }, true},
+	}
+	leets := map[string][]string{"no list": nil, "lures": {"lures"}, "crypto and lures": {"crypto", "lures"}}
 	for name, tc := range map[string]struct {
 		edit         func(*Spec)
+		word         string
 		alone, again Input
 	}{
-		"the same word in both lists": {edit: addLure("bitcoin"),
+		"the same word in both lists": {edit: addLure("bitcoin"), word: "bitcoin",
 			alone: Input{Fields: body("anyone still holding bitcoin?")},
 			again: Input{Fields: body("anyone still holding bitcoin? guaranteed")}},
-		"a community's own lure word": {edit: func(s *Spec) { s.Communities[0].WordLists = map[string][]string{"lures": {"bitcoin"}} },
+		"a community's own lure word": {edit: func(s *Spec) { s.Communities[0].WordLists = map[string][]string{"lures": {"bitcoin"}} }, word: "bitcoin",
 			alone: Input{Fields: body("anyone still holding bitcoin?")},
 			again: Input{Fields: body("anyone still holding bitcoin? guaranteed")}},
-		"a wildcard of each list": {edit: addLure("doge*"), // crypto has "*coin"
+		"a wildcard of each list": {edit: addLure("doge*"), word: "dogecoin", // crypto has "*coin"
 			alone: Input{Fields: body("anyone still holding dogecoin?")},
 			again: Input{Fields: body("anyone still holding dogecoin? dm me")}},
-		"a lure phrase holding the crypto word": {edit: addLure("bitcoin giveaway"),
+		"a lure phrase holding the crypto word": {edit: addLure("bitcoin giveaway"), word: "bitcoin",
 			alone: Input{Fields: body("bitcoin giveaway tonight")},
 			again: Input{Fields: body("bitcoin giveaway tonight, guaranteed")}},
 		"the push name": {edit: func(s *Spec) {
 			addLure("bitcoin")(s)
 			s.Rules = append(s.Rules, RuleSpec{Name: "name-lure", Action: DeleteRemoveBan, Confirmed: true, On: OnPushName,
 				When: Node{All: []Node{{Words: Names{"crypto"}}, {Words: Names{"lures"}}}}})
-		},
+		}, word: "Bitcoin",
 			alone: Input{PushName: "Bitcoin", Fields: body("hello all")},
 			again: Input{PushName: "Bitcoin Guaranteed", Fields: body("hello all")}},
 	} {
-		t.Run(name, func(t *testing.T) {
-			spec := testSpec()
-			tc.edit(&spec)
-			rs := compile(t, spec)
-			tc.alone.Community, tc.again.Community = communityA, communityA
-			if d := rs.Decide(tc.alone); d.Action != ActionNone {
-				t.Fatalf("one keyword decision = %+v", d)
+		for leetName, leet := range leets {
+			for _, sp := range spellings {
+				t.Run(name+"/"+sp.name+"/digit swaps for "+leetName, func(t *testing.T) {
+					spec := testSpec()
+					tc.edit(&spec)
+					spec.LeetWordLists = leet
+					rs := compile(t, spec)
+					word := sp.spell(tc.word)
+					respell := func(in Input) Input {
+						out := Input{Community: communityA, PushName: strings.ReplaceAll(in.PushName, tc.word, word)}
+						for _, f := range in.Fields {
+							out.Fields = append(out.Fields, body(strings.ReplaceAll(f.Text, tc.word, word))...)
+						}
+						return out
+					}
+					alone, again := respell(tc.alone), respell(tc.again)
+					if d := rs.Decide(alone); d.Action != ActionNone {
+						t.Fatalf("one keyword %q decision = %+v", word, d)
+					}
+					if acting, _ := rs.ActsOn(alone); len(acting) != 0 {
+						t.Fatalf("corpus view of one keyword %q acts: %v", word, acting)
+					}
+					if sp.name == "as written" {
+						if c, _ := rs.Closest(alone); len(c.Failed) != 1 || !strings.Contains(c.Failed[0], "different words") {
+							t.Fatalf("closest = %+v, want the different-words reason", c)
+						}
+					}
+					// The two-word control must act whenever the crypto list
+					// reads this spelling (a link next to it is acted on). Two
+					// spaces keep the link's letters out of a spaced-out word.
+					read := rs.Decide(Input{Community: communityA, Fields: body(word + "  t.me/+AbCd")}).Action == DeleteRemoveBan
+					if sp.always && !read {
+						t.Fatalf("the crypto list does not read %q", word)
+					}
+					if d := rs.Decide(again); read && d.Action != DeleteRemoveBan {
+						t.Fatalf("two lure words with %q decision = %+v", word, d)
+					}
+				})
 			}
-			if acting, _ := rs.ActsOn(tc.alone); len(acting) != 0 {
-				t.Fatalf("corpus view of one keyword acts: %v", acting)
-			}
-			if c, _ := rs.Closest(tc.alone); len(c.Failed) != 1 || !strings.Contains(c.Failed[0], "different words") {
-				t.Fatalf("closest = %+v, want the different-words reason", c)
-			}
-			if d := rs.Decide(tc.again); d.Action != DeleteRemoveBan {
-				t.Fatalf("two lure words decision = %+v", d)
-			}
-		})
+		}
 	}
 }
 
