@@ -218,6 +218,15 @@ ALTER TABLE reports ADD COLUMN media_told TEXT NOT NULL DEFAULT '';
 	`
 CREATE INDEX reports_evidence ON reports (evidence_id);
 `,
+	// 10: whether a report owns its post's attachment, recorded when it is
+	// written, so purging the post's first report never makes a later one
+	// (an action not done) the owner. Existing rows: the first report of each
+	// evidence copy, unless it is a log rule's (only counted in the summary).
+	`
+ALTER TABLE reports ADD COLUMN owns_attachment INTEGER NOT NULL DEFAULT 0 CHECK (owns_attachment IN (0, 1));
+UPDATE reports SET owns_attachment = 1 WHERE evidence_id IS NOT NULL AND kind != 'log'
+	AND id = (SELECT MIN(o.id) FROM reports o WHERE o.evidence_id = reports.evidence_id);
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
