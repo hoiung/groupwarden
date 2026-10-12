@@ -7,7 +7,7 @@ For deployers in the UK (UK GDPR and the Data Protection Act 2018). The ICO's co
 - **Controller(s):** [name, contact]. [If two communities share the bot: name each community's controller, and say who decides what.]
 - **Purpose:** keep scam and spam posts (for example crypto and investment pitches) out of the groups of [community/communities].
 - **Who is affected:** members of [N] groups ([about N] people). **Are any members under 18?** [Yes / No / Unknown — how you know.] If any may be, record the extra care you take (the ICO's Children's code may apply), or how you keep under-18s out.
-- **Data:** every new group message (text, captions, links, contact cards, polls, event links), the sender's WhatsApp IDs (LID, and phone number where WhatsApp shows it) and display name; for a post judged spam, a copy of the full message and any attachment, the action record (group, rule, config version, time), and the ban list entry.
+- **Data:** every new group message (text, captions, links, contact cards, polls, event links), the sender's WhatsApp IDs (LID, and phone number where WhatsApp shows it) and display name; for a post a rule matched (deleted, only reported, or only counted by a log rule), a copy of the full message and any attachment (for a log rule's match, the attachment's type, name and size only); for a post acted on, the action record (group, rule, config version, time) and the ban list entry.
 - **Where it runs:** [the node: a machine you control, and where it is]. Data stays on that machine and its backup disk, apart from the admin reports in Telegram (section 4).
 - **Lawful basis:** legitimate interests (Article 6(1)(f)), with the written assessment in `lia-template.md`. Do not use "recognised legitimate interest" (Article 6(1)(ea)): Article 22B(4) does not allow solely automated significant decisions on that basis.
 
@@ -30,13 +30,13 @@ The rules are written by people, combine a keyword with a link or contact detail
 
 ## 4. What admins see in Telegram
 
-The full message and any attachment of every post a rule matched (deleted, or only reported: a rule still watch-only, an admin's post) are shown to the admins in a private Telegram group (operated by Telegram, outside the node); a log rule's matches are only counted there, in a daily summary line naming the rule and the community. The message text stays in the chat for [30 days] (`retention.evidence_days`), then the bot removes it from its reports, with the sender's display name and the attachment's file name (`groupwarden member forget` does the same at once); an attachment is posted for [24 hours] (`report.attachment_show_hours`) and can be shown again while the evidence copy is kept. Record: who is in that group, that it is private, and that admins must not forward evidence elsewhere.
+The full message and any attachment of every post a rule matched (deleted, or only reported: a rule still watch-only, an admin's post, a post too old to act on, a sender the bot cannot remove) are shown to the admins in a private Telegram group (operated by Telegram, outside the node); a log rule's matches are only counted there, in a daily summary line naming the rule and the community. The message text stays in the chat for [30 days] (`retention.evidence_days`), then the bot removes it from its reports, with the sender's display name and the attachment's file name (`groupwarden member forget` does the same at once); an attachment is posted for [24 hours] (`report.attachment_show_hours`) and can be shown again while the evidence copy is kept. Record: who is in that group, that it is private, and that admins must not forward evidence elsewhere.
 
 ## 5. Retention
 
 | Data | Kept for | Setting |
 |---|---|---|
-| Evidence copy of a deleted message and its attachment | [30 days] | `retention.evidence_days` |
+| Evidence copy of a matched message (deleted, only reported or only counted) and its attachment (a log rule's match: not downloaded) | [30 days] | `retention.evidence_days` |
 | Action log | [12 months] | `retention.action_log_months` |
 | Ban list | Until an admin lifts the ban | — |
 | Admins' button presses (Telegram user ID and name) | With their report: [12 months] | `retention.action_log_months` |
