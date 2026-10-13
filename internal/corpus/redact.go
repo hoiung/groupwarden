@@ -76,6 +76,9 @@ func (r *redactor) text(s string) string {
 	last := 0
 	links, _ := rules.LinkSpans(s, false, -1)
 	for _, l := range links {
+		if low := strings.ToLower(s[l[0]:l[1]]); strings.HasPrefix(low, "tel:") || strings.HasPrefix(low, "sms:") {
+			continue // its number, however written, is redacted with the text around it
+		}
 		b.WriteString(r.phones(s[last:l[0]]))
 		b.WriteString(r.link(s[l[0]:l[1]]))
 		last = l[1]
@@ -146,10 +149,6 @@ func (r *redactor) link(raw string) string {
 	host, path := rest, ""
 	if j := strings.IndexAny(rest, "/?#"); j >= 0 {
 		host, path = rest[:j], rest[j:]
-	}
-	if scheme == "" && strings.Contains(host, ":") {
-		// A scheme with no "//" ("tel:+44…", "sms:"): its number is a phone.
-		host = r.numbers(host)
 	}
 	h := strings.TrimPrefix(strings.ToLower(host), "www.")
 	switch {
