@@ -57,16 +57,17 @@ var (
 	// pathLinkRe: a host and a path ("bit.ly/x", "chat.whatsapp.com/x",
 	// group 1 the host), for a field with more link-shaped matches than
 	// detect reads: one search, linear in the field.
-	pathLinkRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}\-.@])((?:[\p{L}\p{N}\-]+\.)+\p{L}[\p{L}\p{N}\-]*)/\S*`)
+	pathLinkRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}\-@])((?:[\p{L}\p{N}\-]+\.)+\p{L}[\p{L}\p{N}\-]*)/\S*`)
 	// handleRe: an "@username" not inside a word or an email address.
 	handleRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_@.])@(\p{L}[\p{L}\p{N}_.]{2,31})`)
 	// phoneRe: a digit run with phone separators (group 1), which may hold
 	// more than one number; PhoneSpans reads it.
 	phoneRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}])(\+?\d[\d \t().\-]{7,}\d)`)
 	moneyRe = regexp.MustCompile(`[$£€¥₹₦₽]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:k|m)?\s?(?:usd|usdt|usdc|gbp|eur|dollars?|pounds?|euros?|btc|eth)\b`)
-	// dateRe: a date written with dots, dashes or slashes ("07.11.2025",
-	// "01-12-25"); a time after it is left to onlyDates.
-	dateRe = regexp.MustCompile(`\b\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2})\b`)
+	// dateRe: a date written with one of dots, dashes or slashes, day first
+	// ("07.11.2025", "01-12-25") or year first ("2025-11-07"); a time after
+	// it is left to onlyDates.
+	dateRe = regexp.MustCompile(`\b(?:\d{1,2}(?:\.\d{1,2}\.|-\d{1,2}-|/\d{1,2}/)(?:\d{4}|\d{2})|\d{4}(?:\.\d{1,2}\.|-\d{1,2}-|/\d{1,2}/)\d{1,2})\b`)
 	// decimalRe: a number that starts "0." or "0," ("0.00012345 BTC",
 	// "+0.12345678%"); no phone number starts that way.
 	decimalRe = regexp.MustCompile(`(?:^|[^\d.,])([+-]?0[.,]\d+)`)
@@ -219,10 +220,19 @@ func PhoneSpans(s string) [][2]int {
 		blank(masked, m[2], m[3])
 	}
 	dated := []byte(s)
-	for _, m := range dateRe.FindAllStringIndex(s, -1) {
-		// "06.12.34.56.78" goes on past the "date": a number written in pairs.
-		if !goesOn(s[m[1]:]) {
-			blank(dated, m[0], m[1])
+	for pos := 0; pos < len(s); {
+		m := dateRe.FindStringIndex(s[pos:])
+		if m == nil {
+			break
+		}
+		a, b := pos+m[0], pos+m[1]
+		if end, ok := pairsFrom(s, a, b); ok {
+			pos = end // "06.12.34.56.78": a number written in pairs
+		} else if end > b {
+			pos = a + 3 // "00-07-11-2025": minutes, then a date
+		} else {
+			blank(dated, a, b)
+			pos = b
 		}
 	}
 	var spans [][2]int
@@ -236,10 +246,14 @@ func PhoneSpans(s string) [][2]int {
 
 // holdsPhone reports whether the digit run s[i:j] holds a number IsPhone
 // accepts that is more than dates and times (onlyDates), made of whole
-// digit groups from the run's first group or from a later one starting "0"
-// and another digit: a number after another ("Room 4 0470 …"). A run
-// written like a large number ("1 000 000 000", "345 012 789 456") is read
-// from its first group only.
+// digit groups from the run's first group or from a later one of two or
+// more digits after a space or "(": a number after another ("Room 4 0470
+// …", "Room 4 0044 …"; never "000", nor after "-" or ".", as in
+// "2025-11-07" or "978-0306406157"). A number written only in pairs ("06 12
+// 34 56 78") runs to the run's end or a date, so a list of pairs ("04 11 24
+// 35 42 08 15") is not one.
+// A run written like a large number ("1 000 000 000", "345 012 789 456")
+// is read from its first group only.
 func holdsPhone(s string, dated []byte, i, j int) bool {
 	var groups [][2]int
 	for k := i; k < j; k++ {
@@ -255,15 +269,16 @@ func holdsPhone(s string, dated []byte, i, j int) bool {
 		start := g[0]
 		if a == 0 {
 			start = i // with its "+"
-		} else if large || s[g[0]] != '0' || g[1]-g[0] < 2 || s[g[0]+1] == '0' {
+		} else if large || g[1]-g[0] < 2 || strings.IndexByte(" \t(", s[g[0]-1]) < 0 || threeZeros(s[g[0]:j]) {
 			continue
 		}
-		digits := 0
-		for _, h := range groups[a:] {
+		digits, longest := 0, 0
+		for b, h := range groups[a:] {
 			if digits += h[1] - h[0]; digits > 15 {
 				break
 			}
-			if IsPhone(s[start:h[1]]) && !onlyDates(dated[start:h[1]]) {
+			longest = max(longest, h[1]-h[0])
+			if (longest > 2 || a+b == len(groups)-1 || dated[groups[a+b+1][0]] == 'x') && IsPhone(s[start:h[1]]) && !onlyDates(dated[start:h[1]]) {
 				return true
 			}
 		}
@@ -271,10 +286,38 @@ func holdsPhone(s string, dated []byte, i, j int) bool {
 	return false
 }
 
-// goesOn reports whether digits go on after a date: a ".", "-" or "/" and a
-// digit.
-func goesOn(rest string) bool {
-	return len(rest) > 1 && strings.IndexByte("./-", rest[0]) >= 0 && rest[1] >= '0' && rest[1] <= '9'
+// threeZeros reports whether the digits in s start "000", as no phone number
+// does ("2500 000 000 000").
+func threeZeros(s string) bool {
+	n := 0
+	for k := 0; k < len(s) && n < 3; k++ {
+		switch {
+		case s[k] == '0':
+			n++
+		case s[k] >= '1' && s[k] <= '9':
+			return false
+		}
+	}
+	return n == 3
+}
+
+// pairsFrom reads on from a date s[a:b] with a two-digit year whose own
+// separator and more digits follow it: ok when those digits are all pairs,
+// ending at end (a number written in pairs), and end > b when they are not.
+// For any other date end is b.
+func pairsFrom(s string, a, b int) (end int, ok bool) {
+	if b-a != 8 || s[a+2] >= '0' {
+		return b, false
+	}
+	sep, k := s[a+2], b
+	digit := func(i int) bool { return i < len(s) && s[i] >= '0' && s[i] <= '9' }
+	for k < len(s) && s[k] == sep && digit(k+1) {
+		if !digit(k+2) || digit(k+3) {
+			return k + 1, false
+		}
+		k += 3
+	}
+	return k, k > b
 }
 
 // largeNumber reports whether digit groups are written like a large number:
