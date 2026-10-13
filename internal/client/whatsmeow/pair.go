@@ -35,7 +35,17 @@ func (a *Adapter) Pair(ctx context.Context, phone string, out io.Writer) error {
 		return fmt.Errorf("connect for pairing: %w", err)
 	}
 	codeShown := false
-	for item := range qr {
+	for {
+		var item wm.QRChannelItem
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("pairing stopped: %w", ctx.Err())
+		case next, ok := <-qr:
+			if !ok {
+				return errors.New("pairing ended without success")
+			}
+			item = next
+		}
 		switch item.Event {
 		case "code":
 			if phone == "" {
@@ -64,5 +74,4 @@ func (a *Adapter) Pair(ctx context.Context, phone string, out io.Writer) error {
 			return fmt.Errorf("pairing failed: %s", item.Event)
 		}
 	}
-	return errors.New("pairing ended without success")
 }
