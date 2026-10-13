@@ -31,11 +31,14 @@ const ExitFatal = 78
 
 // Fixed timings (not tunables).
 const (
-	backoffBase    = 2 * time.Second
-	backoffMax     = 5 * time.Minute
-	monitorEvery   = 30 * time.Second
-	alertTimeout   = 10 * time.Second
-	unknownBanWait = time.Hour // a temporary ban whose length WhatsApp did not say
+	backoffBase = 2 * time.Second
+	backoffMax  = 5 * time.Minute
+	// stableConnection is how long a connection stays up before a drop
+	// retries from backoffBase again.
+	stableConnection = time.Minute
+	monitorEvery     = 30 * time.Second
+	alertTimeout     = 10 * time.Second
+	unknownBanWait   = time.Hour // a temporary ban whose length WhatsApp did not say
 	// backlogWait bounds how long a sweep waits for WhatsApp to say it has
 	// delivered what it held while the bot was offline; backlogPoll is how
 	// often the sweep then checks the worker has decided all of it.
@@ -368,6 +371,12 @@ func (a *App) Run(ctx context.Context) error {
 	if _, err := ledger.Recover(ctx, a.Store, a.Log); err != nil {
 		return fmt.Errorf("recover the ledger: %w", err)
 	}
+	// This run has not reached the admin chat yet (its sender starts below):
+	// the health check must not pass on what the previous run recorded, or a
+	// build that cannot reach Telegram passes the install script's check.
+	if err := a.Store.SetStatus(ctx, map[string]string{store.StatusTelegramOK: ""}); err != nil {
+		return fmt.Errorf("reset the admin chat status: %w", err)
+	}
 	hash := a.Config.Current().Hash
 	zone, offset := a.started.In(a.zone()).Zone()
 	a.Log.Info("daily check time zone", "zone", a.zone().String(), "abbrev", zone, "utc_offset_s", offset,
@@ -406,29 +415,47 @@ func (a *App) supervise(ctx context.Context) error {
 	b := newBackoff(backoffBase, backoffMax)
 	var retry <-chan time.Time
 	var bannedUntil time.Time
+	var upSince time.Time // when the current connection came up
 	nextCompanionCheck := time.Time{}
 
 	// Every connection starts here: the adapter turns the library's own
 	// reconnects off and reports what they served (a 515 stream error, a dead
 	// keepalive) as Disconnected, so this is the one place a connection opens.
-	connect := func() {
+	// stop ends run on a state only a human can fix (exit ExitFatal), with
+	// the next step in the alert.
+	stop := func(fe *FatalError) error {
+		a.mon.onDisconnected(a.Clock.Now())
+		a.Adapter.Disconnect()
+		a.alert(ctx, alert.Alert{Kind: alert.FatalDisconnect, Priority: true, Text: fe.Error()})
+		return fe
+	}
+	connect := func() *FatalError {
 		// Re-armed before the connection starts, not at Connected: the
 		// library does not order Connected and CaughtUp, so a CaughtUp that
 		// overtakes its own Connected still releases this connection's sweep.
 		a.awaitingBacklog()
-		if err := a.Adapter.Connect(ctx); err != nil {
+		err := a.Adapter.Connect(ctx)
+		if errors.Is(err, client.ErrNotPaired) {
+			// The session was deleted (a logout, then a restart): retrying
+			// can never connect, so it stops as a logout does.
+			return &FatalError{Kind: client.LoggedOut, Detail: err.Error()}
+		}
+		if err != nil {
 			d := b.Next()
 			a.Log.Warn("connect failed; retrying", "in", d, "err", mask.IDs(err.Error()))
 			a.mon.onDisconnected(a.Clock.Now())
 			retry = a.Clock.After(d)
 		}
+		return nil
 	}
 	a.mon.onDisconnected(a.Clock.Now())
 	if a.BootRejected != nil {
 		a.Log.Error("config rejected at boot; running the last good config", "err", a.BootRejected)
 		a.alert(ctx, alert.Alert{Kind: alert.ConfigRejected, Priority: true, Text: a.BootRejected.Error()})
 	}
-	connect()
+	if fe := connect(); fe != nil {
+		return stop(fe)
+	}
 	tick := a.Clock.After(monitorEvery)
 	for {
 		select {
@@ -449,7 +476,9 @@ func (a *App) supervise(ctx context.Context) error {
 			}
 		case <-retry:
 			retry = nil
-			connect()
+			if fe := connect(); fe != nil {
+				return stop(fe)
+			}
 		case <-tick:
 			// The time first, then the next tick: once that is armed, this
 			// tick's checks have their time (tests step the clock on it).
@@ -487,7 +516,7 @@ func (a *App) supervise(ctx context.Context) error {
 				now := a.Clock.Now()
 				switch {
 				case l.Kind == client.Connected:
-					b.Reset()
+					upSince = now
 					bannedUntil = time.Time{}
 					a.mon.onConnected(now)
 					a.Log.Info("connected to WhatsApp")
@@ -504,6 +533,13 @@ func (a *App) supervise(ctx context.Context) error {
 					a.backlogDelivered(ctx, l.Detail)
 				case l.Kind == client.Disconnected:
 					a.mon.onDisconnected(now)
+					// The backoff starts again only after a connection that
+					// stayed up: one WhatsApp drops straight after each login
+					// is retried ever more slowly, not every backoffBase.
+					if !upSince.IsZero() && now.Sub(upSince) >= stableConnection {
+						b.Reset()
+					}
+					upSince = time.Time{}
 					if now.Before(bannedUntil) || retry != nil {
 						continue // already waiting out a ban or a retry
 					}
@@ -526,11 +562,7 @@ func (a *App) supervise(ctx context.Context) error {
 						l.Detail, bannedUntil.UTC().Format("2006-01-02 15:04 MST"), wait.Round(time.Minute)) +
 						pipeline.HeldRemovalsNote(ctx, a.Store, a.Log), Buttons: []string{ledger.ButtonResume}})
 				case l.Kind.Fatal():
-					a.mon.onDisconnected(now)
-					a.Adapter.Disconnect()
-					fe := &FatalError{Kind: l.Kind, Detail: l.Detail}
-					a.alert(ctx, alert.Alert{Kind: alert.FatalDisconnect, Priority: true, Text: fe.Error()})
-					return fe
+					return stop(&FatalError{Kind: l.Kind, Detail: l.Detail})
 				default:
 					a.Log.Error("unknown lifecycle event", "kind", string(l.Kind))
 				}
