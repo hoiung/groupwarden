@@ -98,6 +98,7 @@ func TestNumberAmongDigitsRedacted(t *testing.T) {
 		"Call " + ukMobile + " 21.11.2025 18:00", "call " + ukMobile + " 2025",
 		"msg " + waDigits + " " + strings.Replace(waDigits, "999", "888", 1),
 		"tap tel:+" + waDigits + " now", "tap tel:" + fmt.Sprintf("+%d-%d-%d-%d", 44, 7700, 900, 999) + " now", "tap tel:" + strings.ReplaceAll(ukMobile, " ", ".") + " now",
+		"tap tel:" + strings.ReplaceAll(ukMobile, " ", "%20") + " now", "tap sms:+" + waDigits + "?body=hi now",
 		"tap tel:" + ukMobile + " now", "Support 24/7 00" + waDigits[:2] + " 7700 900999 now",
 	} {
 		for _, public := range []bool{false, true} {
@@ -107,6 +108,13 @@ func TestNumberAmongDigitsRedacted(t *testing.T) {
 					t.Errorf("Redact(%q, public %v) kept %q: %q", in, public, leaked, got)
 				}
 			}
+		}
+	}
+	// A tel: or sms: link's message body is redacted like any other text.
+	in0 := "tap sms:+" + waDigits + "?body=https://chat.whatsapp.com/AbCdEfGh123 now"
+	for _, public := range []bool{false, true} {
+		if got := Redact(in0, public); strings.Contains(got, "AbCdEfGh123") || strings.Contains(onlyDigits(got), "900999") {
+			t.Errorf("Redact(%q, public %v) kept the body's invite or the number: %q", in0, public, got)
 		}
 	}
 	// A run longer than one number is replaced whole, wherever it would split.
