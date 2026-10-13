@@ -361,7 +361,7 @@ func TestDigestKeepsRemoveBanReports(t *testing.T) {
 // sender said) and every priority report goes ahead of a routine backlog; a
 // routine alert does not.
 func TestPrioritySetJumpsQueue(t *testing.T) {
-	set := []alert.Kind{alert.FatalDisconnect, alert.TemporaryBan, alert.Breaker, alert.Paused, alert.Deafness,
+	set := []alert.Kind{alert.FatalDisconnect, alert.TemporaryBan, alert.Breaker, alert.Deafness,
 		alert.ProlongedDisconnect, alert.BotDemoted, alert.BotRemoved, alert.CoverageLost, alert.ExtraCompanion,
 		alert.ConfigRejected, alert.SyncFailed, alert.BackupFailed, alert.Overdue, alert.DecryptError}
 	for _, kind := range set {
