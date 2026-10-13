@@ -17,8 +17,10 @@ counts, and applied only on the user's yes.
    from one command to the next):
    `repo=$(dirname "$(dirname "$(dirname "$(readlink -f ~/.claude/skills/spam-intake)")")")`
    and `gw=$(command -v groupwarden || echo "$HOME/.cache/groupwarden/groupwarden")`.
-   If `$gw` does not exist yet, build it from that clone (keep the clone at the
-   version the bot runs, so the rules behave the same):
+   When `groupwarden` is not on PATH, build it from that clone at the start of
+   every run (a few seconds with Go's build cache), so an updated clone is what
+   tests the rules; keep the clone at the version the bot runs, so the rules
+   behave the same, and tell the user its commit (`git -C "$repo" log -1 --format=%h`):
    `(cd "$repo" && go build -o "$HOME/.cache/groupwarden/groupwarden" ./cmd/groupwarden)`.
 2. The config: `$GROUPWARDEN_CONFIG` if set, otherwise ask the user once for the
    path of `config.yaml` in their private config repo clone. Its directory must
@@ -36,8 +38,14 @@ counts, and applied only on the user's yes.
 
 Ask what kind of post it was if it is not obvious (`text`, `image-caption`,
 `poll`, `contact`, `invite`, `event`) and the sender's display name if the user
-has it. Then pipe the pasted text in exactly as given, with a heredoc delimiter
-that does not occur in it:
+has it. Then pipe the message in as the bot reads it, with a heredoc delimiter
+that does not occur in it. Two changes only, otherwise exactly as given:
+
+- Drop WhatsApp's copy header at the start of a line (`[13/10/2026, 10:15] +44 …: `
+  or `[…] Name: `): the bot reads the message, not who sent it or when.
+- For each `@` followed by a number, ask whether WhatsApp showed it
+  highlighted (a tagged member) or as typed text. Tagged: leave it. Typed: drop
+  the `@`, so it is saved as the phone number the bot sees.
 
 ```bash
 "$gw" corpus add --label spam --corpus <corpus> --type <type> \
@@ -46,9 +54,10 @@ that does not occur in it:
 GW_SAMPLE_END
 ```
 
-`corpus add` needs no `--config`. It masks the personal part of phone numbers,
-invite codes and @-mentions but keeps their shape, so the rules still see a
-phone number or an invite link. On a new corpus it first copies the public
+`corpus add` needs no `--config`. It masks the personal part of phone numbers
+and invite codes but keeps their shape, so the rules still see a phone number
+or an invite link; a tagged `@<number>` becomes `@mention`, as the bot masks a
+tagged member. On a new corpus it first copies the public
 synthetic legit samples in (`SEEDED ...`), so a change is never measured against
 zero legit messages. It prints `ADDED <file>`, or `DUPLICATE <file>` when the
 same message is already saved (say so and go on to step 3). If it says the
@@ -117,11 +126,14 @@ config alone and ask whether to keep the sample.
 
 ## 6. Check, commit, push
 
+Run `groupwarden check` on the config:
+
 ```bash
 "$gw" check --config <config>
 ```
 
-It must exit 0 (it also re-runs the corpus test against `corpus_dir`). Then in
+It must exit 0 (it also re-runs the corpus test against `corpus_dir`) and
+prints `OK config v<hash>`, the version the bot posts once it loads it. Then in
 the private config repo commit only the config and the corpus files this run
 added (`git add <config> <files from ADDED/SEEDED>`, never `git add -A`), with a
 message like `spam-intake: <list or rule> catches <what the spam was>`, and push.
