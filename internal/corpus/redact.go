@@ -4,8 +4,6 @@ import (
 	"regexp"
 	"strings"
 
-	"mvdan.cc/xurls/v2"
-
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/rules"
 )
@@ -30,11 +28,8 @@ import (
 // fourth distinct number in one message reuses the first.
 var dramaNumbers = []string{"447700900123", "447700900456", "447700900789"}
 
-var (
-	linkRe = xurls.Relaxed()
-	// mentionRe: an @-mention of a member by number, as WhatsApp copies it.
-	mentionRe = regexp.MustCompile(`@\d{6,15}\b`)
-)
+// mentionRe: an @-mention of a member by number, as WhatsApp copies it.
+var mentionRe = regexp.MustCompile(`@\d{6,15}\b`)
 
 // oneDigitCodes and twoDigitCodes are the ITU country calling codes of one
 // and two digits; every other code has three.
@@ -79,7 +74,8 @@ func (r *redactor) text(s string) string {
 	s = mentionRe.ReplaceAllString(s, client.MentionMarker)
 	var b strings.Builder
 	last := 0
-	for _, l := range linkRe.FindAllStringIndex(s, -1) {
+	links, _ := rules.LinkSpans(s, false, -1)
+	for _, l := range links {
 		b.WriteString(r.phones(s[last:l[0]]))
 		b.WriteString(r.link(s[l[0]:l[1]]))
 		last = l[1]
@@ -93,12 +89,10 @@ func (r *redactor) text(s string) string {
 func (r *redactor) phones(s string) string {
 	var b strings.Builder
 	last := 0
-	for _, m := range rules.PhoneRe.FindAllStringSubmatchIndex(s, -1) {
-		if p := s[m[2]:m[3]]; rules.IsPhone(p) {
-			b.WriteString(s[last:m[2]])
-			b.WriteString(r.phone(p))
-			last = m[3]
-		}
+	for _, m := range rules.PhoneSpans(s) {
+		b.WriteString(s[last:m[0]])
+		b.WriteString(r.phone(s[m[0]:m[1]]))
+		last = m[1]
 	}
 	b.WriteString(s[last:])
 	return b.String()
