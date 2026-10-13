@@ -72,19 +72,42 @@ func Redact(text string, public bool) string {
 
 func (r *redactor) text(s string) string {
 	s = mentionRe.ReplaceAllString(s, client.MentionMarker)
-	var b strings.Builder
+	var b, gap strings.Builder
 	last := 0
 	links, _ := rules.LinkSpans(s, false, -1)
 	for _, l := range links {
-		if low := strings.ToLower(s[l[0]:l[1]]); strings.HasPrefix(low, "tel:") || strings.HasPrefix(low, "sms:") {
-			continue // its number, however written, is redacted with the text around it
-		}
-		b.WriteString(r.phones(s[last:l[0]]))
-		b.WriteString(r.link(s[l[0]:l[1]]))
+		raw := s[l[0]:l[1]]
+		gap.WriteString(s[last:l[0]])
 		last = l[1]
+		if low := strings.ToLower(raw); strings.HasPrefix(low, "tel:") || strings.HasPrefix(low, "sms:") {
+			// Its number ("%20" read as a space) is redacted with the text
+			// around it, which a space inside it ends the link before; what
+			// follows a "?" is redacted on its own.
+			num, query, ok := strings.Cut(raw, "?")
+			gap.WriteString(strings.ReplaceAll(num, "%20", " "))
+			if ok {
+				b.WriteString(r.phones(gap.String()))
+				gap.Reset()
+				b.WriteString("?" + r.query(query))
+			}
+			continue
+		}
+		b.WriteString(r.phones(gap.String()))
+		gap.Reset()
+		b.WriteString(r.link(raw))
 	}
-	b.WriteString(r.phones(s[last:]))
+	gap.WriteString(s[last:])
+	b.WriteString(r.phones(gap.String()))
 	return b.String()
+}
+
+// query redacts what follows the "?" of a tel: or sms: link (a message
+// body): public replaces it, private redacts it as text.
+func (r *redactor) query(q string) string {
+	if r.public {
+		return "REDACTED"
+	}
+	return r.text(q)
 }
 
 // phones redacts every number in s (text outside links) that the rule
