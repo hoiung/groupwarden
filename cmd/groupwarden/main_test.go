@@ -238,6 +238,34 @@ func setStatus(t *testing.T, te *testEnv, kv map[string]string, at time.Time) *s
 	return st
 }
 
+// TestCommandsUseTheLastGoodConfig: a config file that fails a check does not
+// stop the commands beside `run` (health check, backups, store commands):
+// they use the last good copy `run` keeps moderating on, and say so. With no
+// last good copy they refuse.
+func TestCommandsUseTheLastGoodConfig(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	good, err := os.ReadFile(te.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(te.cfgPath, append(good, []byte("not_a_key: 1\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.cmd("backup-dir"); code != 1 || !strings.Contains(te.errb.String(), "refusing to start") {
+		t.Fatalf("rejected file, no last good copy: exit %d\n%s", code, te.errb.String())
+	}
+	if err := os.MkdirAll(filepath.Join(te.dir, "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(te.dir, "data", config.LastGoodName), good, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.cmd("backup-dir"); code != 0 || strings.TrimSpace(te.out.String()) != filepath.Join(te.dir, "backup") ||
+		!strings.Contains(te.errb.String(), "REJECTED") {
+		t.Fatalf("rejected file, last good copy: exit %d\nout %s\nerr %s", code, te.out.String(), te.errb.String())
+	}
+}
+
 func TestHealthcheckExitCodes(t *testing.T) {
 	te := newTestEnv(t, &clienttest.Fake{})
 	if code := te.cmd("healthcheck"); code != 1 || !strings.Contains(te.out.String(), "running: no") {
@@ -748,7 +776,7 @@ func TestCorpusAddSavesAndSeeds(t *testing.T) {
 		t.Fatalf("public legit samples: %d %v", public, err)
 	}
 	dir := filepath.Join(te.dir, "private-corpus")
-	mobile := fmt.Sprintf("+%d %d %d", 44, 7911, 123456)
+	mobile := fmt.Sprintf("+%d %d %d", 44, 7700, 900999) // drama range: no person's number
 	add := func(stdin string, args ...string) int {
 		te.out.Reset()
 		te.errb.Reset()
@@ -765,7 +793,7 @@ func TestCorpusAddSavesAndSeeds(t *testing.T) {
 		t.Fatalf("add output:\n%s", te.out)
 	}
 	saved, err := os.ReadFile(strings.TrimPrefix(lines[1], "ADDED "))
-	if err != nil || strings.Contains(string(saved), "7911") || !strings.Contains(string(saved), "note: pasted") {
+	if err != nil || strings.Contains(string(saved), "900999") || !strings.Contains(string(saved), "note: pasted") {
 		t.Fatalf("saved sample (%v):\n%s", err, saved)
 	}
 	if code := add(strings.ToUpper(spam), "--label", "spam", "--corpus", dir); code != exitOK ||
