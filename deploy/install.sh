@@ -91,7 +91,9 @@ if [ -n "$version" ]; then
 	units_from=$work/src/deploy
 else
 	[ -f "$binary" ] || die "no such file: $binary"
-	new=$binary
+	# Absolute: a bare name would run whatever groupwarden is first on PATH
+	# (the installed one) for the checks below.
+	new=$(realpath -- "$binary")
 	units_from=$repo/deploy
 fi
 code=$("$new" fatal-exit-code) || die "$new does not run"
@@ -112,12 +114,45 @@ for u in "${UNITS[@]}" "$DROPIN"; do
 	fi
 done
 priv mkdir -p "$(dirname "$BIN")"
+had_previous=no
 if [ -f "$BIN" ]; then
 	priv cp -p "$BIN" "$PREV"
+	had_previous=yes
 fi
 priv install -m 0755 "$new" "$BIN.new"
 priv mv -f "$BIN.new" "$BIN"
 echo "installed $BIN (previous kept as $PREV)"
+
+install_units() { # from the directory $1
+	priv mkdir -p "$UNIT_DIR" || return 1
+	for u in "${UNITS[@]}" "$DROPIN"; do
+		if [ -f "$1/$u" ]; then
+			priv mkdir -p "$(dirname "$UNIT_DIR/$u")" || return 1
+			priv install -m 0644 "$1/$u" "$UNIT_DIR/$u" || return 1
+		fi
+	done
+	priv "$SYSTEMCTL" daemon-reload
+}
+# put_back restores the binary and units this run replaced (the rollback);
+# it fails when there was no previous binary.
+put_back() {
+	[ "$had_previous" = yes ] || return 1
+	priv cp -p "$PREV" "$BIN.new" || return 1
+	priv mv -f "$BIN.new" "$BIN" || return 1
+	if [ -f "$UNIT_DIR/$DROPIN" ] && [ ! -f "$work/previous-units/$DROPIN" ]; then
+		priv rm -f "$UNIT_DIR/$DROPIN" || return 1
+	fi
+	install_units "$work/previous-units"
+}
+# undo fails a step after the new binary went in, with the previous binary
+# and units back, so a failed install never leaves its build in place for the
+# next restart, timer run or install to pick up.
+undo() {
+	if put_back; then
+		die "$* (the previous binary and units are back in place; nothing was restarted)"
+	fi
+	die "$*"
+}
 
 # 4. The units, rendered from the live config when there is one.
 mkdir -p "$work/units"
@@ -126,14 +161,14 @@ for u in "${UNITS[@]}"; do
 done
 # (The state directory is the service user's alone: look as that user.)
 if as_service test -f "$LIVE_CONFIG"; then
-	calendar=$(as_service "$BIN" schedule sync --config "$LIVE_CONFIG") || die "groupwarden schedule sync failed"
+	calendar=$(as_service "$BIN" schedule sync --config "$LIVE_CONFIG") || undo "groupwarden schedule sync failed"
 	sed -i "s|^OnCalendar=.*|OnCalendar=$calendar|" "$work/units/groupwarden-sync.timer"
-	[ "$(grep -cxF "OnCalendar=$calendar" "$work/units/groupwarden-sync.timer")" = 1 ] || die "could not render the sync timer"
-	target=$(as_service "$BIN" backup-dir --config "$LIVE_CONFIG") || die "groupwarden backup-dir failed"
+	[ "$(grep -cxF "OnCalendar=$calendar" "$work/units/groupwarden-sync.timer")" = 1 ] || undo "could not render the sync timer"
+	target=$(as_service "$BIN" backup-dir --config "$LIVE_CONFIG") || undo "groupwarden backup-dir failed"
 	case $target in
-	*[[:space:]]*) die "backup.target_dir has a space in it; the backup unit cannot name it" ;;
+	*[[:space:]]*) undo "backup.target_dir has a space in it; the backup unit cannot name it" ;;
 	/*) ;;
-	*) die "backup.target_dir is not an absolute path: $target" ;;
+	*) undo "backup.target_dir is not an absolute path: $target" ;;
 	esac
 	mkdir -p "$work/units/$(dirname "$DROPIN")"
 	# "-": a target that does not exist when the unit starts does not stop the
@@ -147,17 +182,7 @@ else
 	echo "no live config at $LIVE_CONFIG yet: the sync timer keeps its default and the backup unit cannot write" \
 		"its target; run this again after the first sync (docs/deploy.md)"
 fi
-priv mkdir -p "$UNIT_DIR"
-install_units() { # from the directory $1
-	for u in "${UNITS[@]}" "$DROPIN"; do
-		if [ -f "$1/$u" ]; then
-			priv mkdir -p "$(dirname "$UNIT_DIR/$u")"
-			priv install -m 0644 "$1/$u" "$UNIT_DIR/$u"
-		fi
-	done
-	priv "$SYSTEMCTL" daemon-reload
-}
-install_units "$work/units"
+install_units "$work/units" || undo "could not install the units"
 echo "installed the units in $UNIT_DIR"
 
 # 5. Restart and check, or roll back.
@@ -187,13 +212,7 @@ if healthy; then
 	exit 0
 fi
 echo "the new version is NOT healthy (above): rolling back" >&2
-[ -f "$PREV" ] || die "there is no previous binary to roll back to; groupwarden is down"
-priv cp -p "$PREV" "$BIN.new"
-priv mv -f "$BIN.new" "$BIN"
-if [ -f "$UNIT_DIR/$DROPIN" ] && [ ! -f "$work/previous-units/$DROPIN" ]; then
-	priv rm -f "$UNIT_DIR/$DROPIN"
-fi
-install_units "$work/previous-units"
+put_back || die "there is no previous binary to roll back to; groupwarden is down"
 priv "$SYSTEMCTL" restart groupwarden.service
 if healthy; then
 	die "ROLLED BACK to the previous binary and units; it is healthy. The new version was not installed."
