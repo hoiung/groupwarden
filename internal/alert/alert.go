@@ -15,7 +15,6 @@ type Kind string
 const (
 	FatalDisconnect     Kind = "fatal_disconnect"
 	TemporaryBan        Kind = "temporary_ban"
-	Paused              Kind = "paused"
 	Deafness            Kind = "deafness"
 	ProlongedDisconnect Kind = "prolonged_disconnect"
 	ExtraCompanion      Kind = "extra_companion"
@@ -69,7 +68,7 @@ const (
 // queue, whatever its sender set: the priority set of AC 4.1.
 func (k Kind) Priority() bool {
 	switch k {
-	case FatalDisconnect, TemporaryBan, Paused, Breaker, Deafness, ProlongedDisconnect, BotDemoted, BotRemoved,
+	case FatalDisconnect, TemporaryBan, Breaker, Deafness, ProlongedDisconnect, BotDemoted, BotRemoved,
 		CoverageLost, ExtraCompanion, ConfigRejected, SyncFailed, BackupFailed, Overdue, DecryptError, StorageFailure,
 		Undecided, PhoneEscalation:
 		return true
