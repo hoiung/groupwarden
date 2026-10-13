@@ -121,6 +121,11 @@ var ErrMediaTooLarge = errors.New("attachment over the size limit")
 // Any other error is no answer about the number.
 var ErrNoLID = errors.New("no WhatsApp LID for that number")
 
+// ErrNotPaired is returned (wrapped) by Connect when the session holds no
+// device: never paired, or deleted when WhatsApp logged the bot out. Only a
+// human can fix it, by pairing again.
+var ErrNotPaired = errors.New("this device is not paired")
+
 // MentionMarker replaces every @-mention of a listed member in a field's
 // matching view, so a mention is never read as a phone number or a handle.
 const MentionMarker = "@mention"
