@@ -380,11 +380,17 @@ func TestReconnectsDoNotHideDeafness(t *testing.T) {
 		h.connected()
 	}
 	// The ticks above may all have been read while disconnected (the race
-	// detector slows the supervisor); stay connected until a check runs.
-	h.eventually("deafness alert", func() bool {
+	// detector slows the supervisor); stay connected until a check runs, for
+	// at most 2 hours, so a clock restarted by the last reconnect (6 hours
+	// to go) cannot be what raises the alert.
+	last := h.clock.Now()
+	h.eventually("deafness alert or 2 hours connected", func() bool {
+		if len(h.rec.OfKind(alert.Deafness)) > 0 || h.clock.Now().Sub(last) >= 2*time.Hour {
+			return true
+		}
 		h.clock.Advance(monitorEvery)
 		time.Sleep(time.Millisecond)
-		return len(h.rec.OfKind(alert.Deafness)) > 0
+		return false
 	})
 	settle()
 	if d, p := len(h.rec.OfKind(alert.Deafness)), len(h.rec.OfKind(alert.ProlongedDisconnect)); d != 1 || p != 0 {
