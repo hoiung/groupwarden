@@ -223,6 +223,30 @@ func TestFatalStopsAndAlerts(t *testing.T) {
 	}
 }
 
+// TestUnpairedSessionStopsAsALogout: a session with no device (WhatsApp
+// deleted it at a logout, then the node restarted) can never connect, so run
+// stops as a logout does, telling the admins to pair again, instead of
+// retrying for ever with only "still reconnecting".
+func TestUnpairedSessionStopsAsALogout(t *testing.T) {
+	h := start(t, &clienttest.Fake{ConnectErr: fmt.Errorf("%w: run `groupwarden pair` first", client.ErrNotPaired)}, Settings{})
+	var err error
+	select {
+	case err = <-h.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not stop on an unpaired session")
+	}
+	var fe *FatalError
+	if !errors.As(err, &fe) || fe.Kind != client.LoggedOut {
+		t.Fatalf("Run returned %v, want a logged-out FatalError", err)
+	}
+	if alerts := h.rec.OfKind(alert.FatalDisconnect); len(alerts) != 1 || !strings.Contains(alerts[0].Text, "groupwarden pair") {
+		t.Fatalf("alerts %+v, want one saying to pair again", alerts)
+	}
+	if n := h.fake.Count("Connect"); n != 1 {
+		t.Fatalf("%d connects, want 1", n)
+	}
+}
+
 // heldNote is how a pause alert ends with one removal queued.
 const heldNote = " 1 queued removal(s) or join-request rejection(s) go out only after [Resume]; a report may already say they were done."
 
@@ -300,6 +324,72 @@ func TestBackoffCapped(t *testing.T) {
 		}
 		h.clock.Advance(time.Millisecond)
 		h.eventually("retry", func() bool { return h.fake.Count("Connect") == i+2 })
+	}
+}
+
+// TestDropsRightAfterLoginBackOff: a connection WhatsApp drops straight
+// after each login is retried ever more slowly, not every backoffBase; one
+// that stayed up for stableConnection retries from backoffBase again.
+func TestDropsRightAfterLoginBackOff(t *testing.T) {
+	h := start(t, &clienttest.Fake{SelfIDs: botSelf}, Settings{})
+	armed := func() time.Duration {
+		var d time.Duration
+		h.eventually("retry armed", func() bool {
+			for c := backoffBase; c <= backoffMax; c *= 2 {
+				if h.clock.hasWaiter(h.clock.Now().Add(c), c) {
+					d = c
+					return true
+				}
+			}
+			return false
+		})
+		return d
+	}
+	for i, want := range []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 32 * time.Second} {
+		before := h.fake.Count("Connect")
+		h.disconnect()
+		if d := armed(); d != want {
+			t.Fatalf("drop %d after an immediate login: retry in %s, want %s", i+1, d, want)
+		}
+		h.clock.Advance(want)
+		h.eventually("reconnect", func() bool { return h.fake.Count("Connect") == before+1 })
+		h.connected()
+	}
+	h.clock.step(stableConnection, 30*time.Second)
+	h.disconnect()
+	if d := armed(); d != backoffBase {
+		t.Fatalf("drop after %s connected: retry in %s, want %s", stableConnection, d, backoffBase)
+	}
+}
+
+// TestReconnectsDoNotHideDeafness: the connection drops every 4 minutes and
+// comes straight back (as a dead keepalive makes it), and no event arrives
+// from any moderated group for 7 hours: one deafness alert, though no
+// connected stretch lasted 6 hours.
+func TestReconnectsDoNotHideDeafness(t *testing.T) {
+	h := start(t, &clienttest.Fake{SelfIDs: botSelf}, Settings{DeafAfter: 6 * time.Hour, DisconnectAlert: 15 * time.Minute})
+	startAt := h.clock.Now()
+	for h.clock.Now().Sub(startAt) < 7*time.Hour {
+		h.clock.step(4*time.Minute, 30*time.Second)
+		before := h.fake.Count("Connect")
+		h.disconnect()
+		// A connection that stayed up 4 minutes retries from backoffBase.
+		h.eventually("retry armed", func() bool { return h.clock.hasWaiter(h.clock.Now().Add(backoffBase), backoffBase) })
+		h.clock.Advance(backoffBase)
+		h.eventually("reconnect", func() bool { return h.fake.Count("Connect") == before+1 })
+		h.connected()
+	}
+	// The ticks above may all have been read while disconnected (the race
+	// detector slows the supervisor); stay connected until a check runs.
+	h.eventually("deafness alert", func() bool {
+		h.clock.Advance(monitorEvery)
+		time.Sleep(time.Millisecond)
+		return len(h.rec.OfKind(alert.Deafness)) > 0
+	})
+	settle()
+	if d, p := len(h.rec.OfKind(alert.Deafness)), len(h.rec.OfKind(alert.ProlongedDisconnect)); d != 1 || p != 0 {
+		t.Fatalf("after %s with no moderated event: %d deafness and %d prolonged-disconnect alerts, want 1 and 0",
+			h.clock.Now().Sub(startAt), d, p)
 	}
 }
 
