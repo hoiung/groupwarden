@@ -258,11 +258,11 @@ func TestLinkDigitsAreNotAPhone(t *testing.T) {
 }
 
 // TestSentenceBreakIsNotALink: a missing space after a full stop ("again.Is",
-// "5pm.So"), a file name ("notes.zip") or a share code ("SAP.DE") is not a
-// link, so a keyword beside it never acts. A link written with a scheme,
-// "www.", a path, a port or a query still is one, and so is an invite host or
-// shortener (or a name under one), and a bare name on a two-part ending or
-// one of bareEndings.
+// "5pm.So", "up.To"), a file name ("notes.zip"), a share code ("SAP.DE") or
+// code ("std::cout") is not a link, so a keyword beside it never acts. A
+// link written with a scheme, "www.", a path, a port or a query still is
+// one, and so is an invite host (or a name under one), and a bare name on a
+// two-part ending or one of bareEndings.
 func TestSentenceBreakIsNotALink(t *testing.T) {
 	for _, text := range []string{
 		"Bitcoin is down again.Is it time to sell?", "I bought some stocks last year.It was a mistake",
@@ -283,6 +283,14 @@ func TestSentenceBreakIsNotALink(t *testing.T) {
 		"Crypto is banned in the U.S.Id say", "Stocks in the U.S.Ee",
 		// A bare name on any other ending reads the same as a missing space.
 		"bitcoin giveaway at elondrop.live", "crypto signals at earnbig.me", "crypto-profit.in for stocks",
+		"crypto signals at earnbig.top",
+		// The third review's cases: endings and shortener hosts that are
+		// words, and code the matcher reads as an address ("d::c").
+		"Crypto meetup is full.Online stream at 7pm", "Bitcoin went up.To the moon",
+		"Revenue was up.Net profit fell, crypto too", "Thanks all.Co-founder of crypto startup here",
+		"the crypto bug is in parser.cc line 40", "Stocks are up.Top tip: hold", "Bitcoin class is full.Shop opens at 9",
+		"use std::cout for crypto output", "Vec::new() in my crypto lib", "crypto::aes is slow",
+		":fire::fire: bitcoin to the moon", ":100::100: crypto gains", "crypto node at fe80::1 is down",
 	} {
 		if s := sig(body(text)); s[AnyLink] {
 			t.Errorf("%q: any_link", text)
@@ -295,9 +303,10 @@ func TestSentenceBreakIsNotALink(t *testing.T) {
 		}
 	}
 	for _, text := range []string{
-		"https://again.is", "www.again.is", "again.is/join", "again.is?ref=1", "again.is:8080", "t.me", "wa.me", "bit.ly",
-		"visit cryptoprofits.com", "join cryptoprofits.io", "visit earnbig.top", "cryptoprofits.xyz",
+		"https://again.is", "www.again.is", "again.is/join", "again.is?ref=1", "again.is#join", "again.is:8080",
+		"t.me", "wa.me", "bit.ly", "up.to/AbCd", "visit cryptoprofits.com", "join cryptoprofits.io", "cryptoprofits.xyz",
 		"join cryptopumps.t.me", "x.telegram.me", "earn.wa.me", "promo.co.in", "deals.com.my",
+		"pay bitcoin:bc1qxyz123abc", "http://[::1]:8080/x",
 	} {
 		if !sig(body(text))[AnyLink] {
 			t.Errorf("%q: no any_link", text)
@@ -322,6 +331,13 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 		"Stocks webinar 01.12.2025 - 05.12.2025 18:00", "Crypto bootcamp 07.11.2025 09.30 - 08.11.2025 17.00",
 		"Stocks class 01.12.25 - 05.12.25 18.30", "Crypto course 01-12-2025 - 05-12-2025 18:00",
 		"Crypto breakfast 08.30 07.11.2025", "Crypto meetup 01.11 - 07.11.2025", "Crypto session 02 - 07.11.2025 18:00",
+		"Crypto classes 09.30 - 10.30 - 11.30 - 12.30", "Stocks slots 08.15 09.45 11.15 12.45 14.15",
+		"Crypto days 07.11.2025 08.11.2025", "Stocks course 07.11.2025 08.11.2025 18:00",
+		// Large numbers and IDs written in groups (the third review's cases).
+		"Bitcoin market cap passed 1 000 000 000 000 today", "the crypto video got 1 000 000 000 views",
+		"crypto webinar on Teams Meeting ID: 345 012 789 456 Passcode: abc123",
+		"stocks: 2 000 000 000 shares traded", "crypto losses of 1 050 000 000 dollars", "the crypto market lost 1500 000 000 dollars", "stocks worth 2500 000 000 000 dollars", "crypto book ISBN 978 0 306 40615 7",
+		"Bitcoin market cap passed 1\u00a0000\u00a0000\u00a0000 today",
 	} {
 		if s := sig(body(text)); s[PhoneNumber] {
 			t.Errorf("%q: phone_number", text)
@@ -342,6 +358,9 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 		"Contacts: 1) " + plus + "470 12.11.23", "Room 4 0" + "999 12.11.23", "Room 4 " + national,
 		// A "+" is always a number; pairs going on past a date-like start.
 		"call +" + "99 12.11.2023", "call 0" + "6.12.99.99.99",
+		// A number with more digits after it: a second number, a date, a year.
+		"WhatsApp " + national + " " + national + " now", "call +44 7700 900123 21.11.2025 18:00",
+		"call +44 7700 900123 2025", "Room 4 0" + "7700 900 123 456",
 	} {
 		if !sig(body(text))[PhoneNumber] {
 			t.Errorf("%q: no phone_number", text)
@@ -366,10 +385,20 @@ func TestManyLinksCountAsALink(t *testing.T) {
 	if s := sig(body("bitcoin " + pad + "talk later")); s[AnyLink] {
 		t.Errorf("%d email addresses counted as a link: %v", maxLinks, s)
 	}
-	// The text after the classified links is searched for every invite host.
-	for h := range inviteHosts {
-		if !inviteRe.MatchString("see " + h + " now") {
-			t.Errorf("inviteRe misses %s", h)
+	// Past the links read, every invite host and a channel link with their
+	// path are still invites, and a shortener with its path a shortener,
+	// whatever the padding ("x.is" is text, but costs a search).
+	for _, p := range []string{pad, strings.Repeat("x.is ", maxLinks+1)} {
+		for h := range inviteHosts {
+			if s := sig(body("bitcoin " + p + "join " + h + "/AbCd")); !s[InviteLink] {
+				t.Errorf("%s/AbCd after padding not an invite: %v", h, s)
+			}
+		}
+		if s := sig(body("bitcoin " + p + "join whatsapp.com/channel/0029Va")); !s[InviteLink] {
+			t.Errorf("channel link after padding not an invite: %v", s)
+		}
+		if s := sig(body("bitcoin " + p + "see https://bit.ly/AbCd")); !s[Shortener] {
+			t.Errorf("shortener after padding not counted: %v", s)
 		}
 	}
 }
