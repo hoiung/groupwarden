@@ -483,6 +483,29 @@ func TestHistorySyncDisabled(t *testing.T) {
 	}
 }
 
+// Pairing never sets a sink. The library stops at the first handler that
+// returns false, so with no sink every event the adapter does not store must
+// still reach the handlers after it (the pairing QR channel), and what it
+// stores is held for redelivery.
+func TestNoSinkPassesOtherEventsOn(t *testing.T) {
+	cli := newConfiguredClient(t)
+	a := newTestAdapter(t, &fakeWA{offline: true}, nil)
+	cli.AddEventHandlerWithSuccessStatus(a.handle)
+	var last any
+	cli.AddEventHandler(func(evt any) { last = evt })
+	for _, evt := range []any{&events.QR{Codes: []string{"ref"}}, &events.PairSuccess{}, &events.PairError{}, &events.Connected{}, &events.Disconnected{}} {
+		last = nil
+		if held := cli.DangerousInternals().DispatchEvent(evt); held || last != evt {
+			t.Errorf("%T: held=%v, reached the next handler=%v", evt, held, last == evt)
+		}
+	}
+	for _, evt := range []any{&events.Message{}, &events.GroupInfo{}, &events.JoinedGroup{}} {
+		if !cli.DangerousInternals().DispatchEvent(evt) {
+			t.Errorf("%T was acknowledged with no sink to store it", evt)
+		}
+	}
+}
+
 func TestPermanentDisconnectClassification(t *testing.T) {
 	cases := []struct {
 		evt    events.PermanentDisconnect
