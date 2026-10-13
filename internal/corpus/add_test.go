@@ -97,12 +97,13 @@ func TestNumberAmongDigitsRedacted(t *testing.T) {
 		"WhatsApp " + second + " " + second + " " + national + " now",
 		"Call " + ukMobile + " 21.11.2025 18:00", "call " + ukMobile + " 2025",
 		"msg " + waDigits + " " + strings.Replace(waDigits, "999", "888", 1),
-		"tap tel:+" + waDigits + " now",
+		"tap tel:+" + waDigits + " now", "tap tel:" + fmt.Sprintf("+%d-%d-%d-%d", 44, 7700, 900, 999) + " now", "tap tel:" + strings.ReplaceAll(ukMobile, " ", ".") + " now",
+		"tap tel:" + ukMobile + " now", "Support 24/7 00" + waDigits[:2] + " 7700 900999 now",
 	} {
 		for _, public := range []bool{false, true} {
 			got := Redact(in, public)
 			for _, leaked := range []string{"900999", "900888"} {
-				if strings.Contains(got, leaked) {
+				if strings.Contains(onlyDigits(got), leaked) {
 					t.Errorf("Redact(%q, public %v) kept %q: %q", in, public, leaked, got)
 				}
 			}
