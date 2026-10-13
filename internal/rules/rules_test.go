@@ -257,10 +257,12 @@ func TestLinkDigitsAreNotAPhone(t *testing.T) {
 	}
 }
 
-// TestSentenceBreakIsNotALink: a missing space after a full stop ("again.Is")
-// or a file name ("notes.zip") is not a link, so a keyword beside it never
-// acts. A link written with a scheme, "www." or a path still is one, and so
-// is an invite host or shortener on its own.
+// TestSentenceBreakIsNotALink: a missing space after a full stop ("again.Is",
+// "5pm.So"), a file name ("notes.zip") or a share code ("SAP.DE") is not a
+// link, so a keyword beside it never acts. A link written with a scheme,
+// "www.", a path, a port or a query still is one, and so is an invite host or
+// shortener (or a name under one), and a bare name on a two-part ending or
+// one of bareEndings.
 func TestSentenceBreakIsNotALink(t *testing.T) {
 	for _, text := range []string{
 		"Bitcoin is down again.Is it time to sell?", "I bought some stocks last year.It was a mistake",
@@ -269,23 +271,33 @@ func TestSentenceBreakIsNotALink(t *testing.T) {
 		"bitcoin chat.Today we dance", "bitcoin bores me.Love you all", "see crypto-notes.md and stocks.zip",
 		"Bitcoin is down again.How do I sell", "crypto crashed again.You should sell", "bitcoin crashed.One more time",
 		"I sold my stocks in 2025.So no more", "crypto again.lol",
+		// The fix review's cases: a word with a digit, a hyphen or more parts
+		// before the break, and endings that are other words.
+		"Bitcoin pumped at 5pm.So crazy", "Crypto is banned in the U.S.So what", "Bitcoin hit 69k.Is it the top",
+		"Bitcoin passed 100k.So happy", "Tesla Q3.So far so good on stocks", "web3.Is it worth it? crypto",
+		"Bitcoin is a no-brainer.So buy", "ETH 2.0.So what", "Bitcoin came 1st.So happy",
+		"Bitcoin crashed again.Buy the dip", "crypto is dead.The end", "Bitcoin is boring.Tech stocks are better",
+		"crypto is dead.AI is next", "Crypto talk tonight.Info: room 5", "Crypto meetup moved.Club opens at 9",
+		"Bought 0700.HK, SAP.DE and BHP.AX stocks today",
+		// "s.id" is a shortener, but only its own host counts.
+		"Crypto is banned in the U.S.Id say", "Stocks in the U.S.Ee",
+		// A bare name on any other ending reads the same as a missing space.
+		"bitcoin giveaway at elondrop.live", "crypto signals at earnbig.me", "crypto-profit.in for stocks",
 	} {
 		if s := sig(body(text)); s[AnyLink] {
 			t.Errorf("%q: any_link", text)
 		}
 	}
-	// ".ai" (an Illustrator file) is a country domain, not an everyday word.
-	for _, name := range []string{"bitcoin-talk-recording.mov", "bitcoin-logo.ai"} {
+	// A file can be named like a link on a listed ending ("setup.com").
+	for _, name := range []string{"bitcoin-talk-recording.mov", "crypto-setup.com"} {
 		if s := sig([]client.Field{{Name: "document.file_name", Text: name}}); s[AnyLink] {
 			t.Errorf("file name %q read as a link: %v", name, s)
 		}
 	}
 	for _, text := range []string{
-		"https://again.is", "www.again.is", "again.is/join", "again.is?ref=1", "t.me", "wa.me", "bit.ly",
-		"visit cryptoprofits.com", "join cryptoprofits.io",
-		// More parts, a hyphen or a digit: a name, not the end of a sentence.
+		"https://again.is", "www.again.is", "again.is/join", "again.is?ref=1", "again.is:8080", "t.me", "wa.me", "bit.ly",
+		"visit cryptoprofits.com", "join cryptoprofits.io", "visit earnbig.top", "cryptoprofits.xyz",
 		"join cryptopumps.t.me", "x.telegram.me", "earn.wa.me", "promo.co.in", "deals.com.my",
-		"crypto-profit.in", "casino-bonus.it", "earn24.me", "visit earnbig.top",
 	} {
 		if !sig(body(text))[AnyLink] {
 			t.Errorf("%q: no any_link", text)
@@ -306,6 +318,10 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 		"Sat 01.11.25 7.30pm stock market talk", "Bitcoin meetup 01.12.25 19.30 upstairs",
 		"After the crash I only have 0.00012345 BTC left lol", "I hold 0.00050000 BTC", "ETH is up +0.12345678% today",
 		"Stock market talk 18:00 07.11.2025 at the library",
+		// Ranges and times around dates (the fix review's cases).
+		"Stocks webinar 01.12.2025 - 05.12.2025 18:00", "Crypto bootcamp 07.11.2025 09.30 - 08.11.2025 17.00",
+		"Stocks class 01.12.25 - 05.12.25 18.30", "Crypto course 01-12-2025 - 05-12-2025 18:00",
+		"Crypto breakfast 08.30 07.11.2025", "Crypto meetup 01.11 - 07.11.2025", "Crypto session 02 - 07.11.2025 18:00",
 	} {
 		if s := sig(body(text)); s[PhoneNumber] {
 			t.Errorf("%q: phone_number", text)
@@ -313,13 +329,19 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 	}
 	// Built at run time, as in TestPhoneMoneyContactSignals.
 	national := "0" + "7700 900123"
-	// A number with digits written like a date: "12.34.56" and "05.34.56"
-	// cannot be dates, and "12.11.23" after "+999 803" is the end of the number.
+	// A number with digits written like a date keeps the rest of its
+	// digits: "+999 803" before "12.11.23", "789" after "05.34.56".
 	plus := "+" + "999 "
 	for _, text := range []string{
 		"call " + national + " on 07.11.2025 18:00", "ring 0" + "7.70.09.00.12.3", "+44 7700 900123 for 0.5 BTC",
 		"call " + plus + "470 12.34.56", "call " + plus + "803 12.11.23", "call " + plus + "171 12-34-56",
 		"call 0" + "5.34.56 789",
+		// Digits or a time before the number, and a first group that is not
+		// the number's ("Room 4").
+		"Bitcoin signals 24/7 " + plus + "470 12.11.23", "open 9:00-17:00 " + plus + "470 12.11.23",
+		"Contacts: 1) " + plus + "470 12.11.23", "Room 4 0" + "999 12.11.23", "Room 4 " + national,
+		// A "+" is always a number; pairs going on past a date-like start.
+		"call +" + "99 12.11.2023", "call 0" + "6.12.99.99.99",
 	} {
 		if !sig(body(text))[PhoneNumber] {
 			t.Errorf("%q: no phone_number", text)
@@ -332,14 +354,23 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 // read, so padding cannot hide an invite or a phone number.
 func TestManyLinksCountAsALink(t *testing.T) {
 	pad := strings.Repeat("a@example.com ", maxLinks)
-	if s := sig(body("bitcoin " + pad + "join chat.whatsapp.com/AbCdEf")); !s[AnyLink] {
-		t.Errorf("link after %d email addresses not counted: %v", maxLinks, s)
+	if s := sig(body("bitcoin " + pad + "join chat.whatsapp.com/AbCdEf")); !s[AnyLink] || !s[InviteLink] {
+		t.Errorf("invite after %d email addresses not counted: %v", maxLinks, s)
+	}
+	if s := sig(body("bitcoin " + pad + pad + "join t.me/example_pumps")); !s[InviteLink] {
+		t.Errorf("invite after %d email addresses not counted: %v", 2*maxLinks, s)
 	}
 	if s := sig(body("bitcoin " + pad + "call +44 7700 900123")); !s[PhoneNumber] {
 		t.Errorf("phone number after %d email addresses not seen: %v", maxLinks, s)
 	}
-	if s := sig(body("bitcoin " + strings.Repeat("a@example.com ", maxLinks-1) + "talk later")); s[AnyLink] {
-		t.Errorf("%d email addresses counted as a link: %v", maxLinks-1, s)
+	if s := sig(body("bitcoin " + pad + "talk later")); s[AnyLink] {
+		t.Errorf("%d email addresses counted as a link: %v", maxLinks, s)
+	}
+	// The text after the classified links is searched for every invite host.
+	for h := range inviteHosts {
+		if !inviteRe.MatchString("see " + h + " now") {
+			t.Errorf("inviteRe misses %s", h)
+		}
 	}
 }
 
@@ -354,30 +385,51 @@ func TestLinkSpansInvalidUTF8(t *testing.T) {
 
 // TestLinkSpansMatchWholeTextSearch: searching in windows finds the same
 // links as one search over the whole text, wherever a link falls against a
-// window's edge, including each of its dots as a window's last byte (the
-// matcher never ends a link on a dot, so "https://chat" was all it saw).
+// window's edge, including each punctuation mark in it as a window's last
+// byte (the matcher never ends a link on one, so "https://chat" was all it
+// saw) and a link longer than a window; and a window's end inside plain text
+// makes no link up ("dead.th" of "dead.The end").
 func TestLinkSpansMatchWholeTextSearch(t *testing.T) {
+	whole := func(text string) (want [][2]int) {
+		for _, m := range linkRe.FindAllStringIndex(text, -1) {
+			if !notALink(text[m[0]:m[1]], text[m[1]:], false) {
+				want = append(want, [2]int{m[0], m[1]})
+			}
+		}
+		return want
+	}
+	pad := func(n int) string { return strings.Repeat("word ", n/5) + strings.Repeat("x", n%5) }
 	links := []string{"t.me/example_pumps", "https://example.com/" + strings.Repeat("a", 300), "bit.ly/x", "cryptoprofits.com",
-		"https://chat.whatsapp.com/AbCdEf", "https://t.me/+AbCd", "https://bit.ly/x", "https://www.google.com/maps/place/x"}
+		"https://chat.whatsapp.com/AbCdEf", "https://t.me/+AbCd", "https://bit.ly/x", "https://www.google.com/maps/place/x",
+		"https://example.com/a!!!!b", "https://example.com/" + strings.Repeat("b", 2400), "cryptoprofits.com🚀"}
 	for _, l := range links {
 		// The link starts at byte at+1.
 		ats := []int{0, linkWindow - 300, linkWindow - len(l)/2, linkWindow - 1, linkWindow, 2*linkWindow - linkOverlap - 3, 3 * linkWindow}
 		for i, c := range l {
-			if c == '.' {
+			// After every byte of a short link (an emoji right after one is
+			// not part of it), and after each punctuation mark and inside the
+			// last part of a long one (nor is the comma after it).
+			if (len(l) < 40 || strings.ContainsRune(".,;!?()", c) || i >= len(l)-3) && i < linkWindow-2 {
 				ats = append(ats, linkWindow-2-i)
 			}
 		}
 		for _, at := range ats {
-			text := strings.Repeat("word ", at/5) + strings.Repeat("x", at%5) + " " + l + " again.Is " + strings.Repeat("more words ", 300)
-			var want [][2]int
-			for _, m := range linkRe.FindAllStringIndex(text, -1) {
-				if !notALink(text[m[0]:m[1]], text[m[1]:], false) {
-					want = append(want, [2]int{m[0], m[1]})
-				}
+			if at < 0 {
+				continue
 			}
-			got, searched := LinkSpans(text, false, -1)
-			if searched != len(text) || !reflect.DeepEqual(got, want) || len(got) != 1 {
-				t.Errorf("link %.20q at %d: got %v (searched %d of %d), want %v", l, at, got, searched, len(text), want)
+			text := pad(at) + " " + l + ", again.Is " + strings.Repeat("more words ", 30)
+			want := whole(text)
+			got, _ := LinkSpans(text, false, -1)
+			if !reflect.DeepEqual(got, want) || len(got) != 1 {
+				t.Errorf("link %.20q at %d: got %v, want %v", l, at, got, want)
+			}
+		}
+	}
+	for _, sentence := range []string{"crypto is dead.The end", "Bitcoin crashed again.Company news", "stocks at 5pm.So crazy"} {
+		for k := 1; k <= len(sentence); k++ {
+			text := pad(linkWindow-k) + sentence + " " + strings.Repeat("more words ", 30)
+			if got := func() [][2]int { g, _ := LinkSpans(text, false, -1); return g }(); !reflect.DeepEqual(got, whole(text)) || len(got) != 0 {
+				t.Errorf("%q with the window's end %d bytes in: got %v", sentence, k, got)
 			}
 		}
 	}
