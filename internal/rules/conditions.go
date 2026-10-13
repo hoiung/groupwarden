@@ -65,9 +65,10 @@ var (
 	phoneRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}])(\+?\d[\d \t().\-]{7,}\d)`)
 	moneyRe = regexp.MustCompile(`[$£€¥₹₦₽]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:k|m)?\s?(?:usd|usdt|usdc|gbp|eur|dollars?|pounds?|euros?|btc|eth)\b`)
 	// dateRe: a date written with one of dots, dashes or slashes, day first
-	// ("07.11.2025", "01-12-25") or year first ("2025-11-07"); a time after
+	// ("07.11.2025", "01-12-25") or year first ("2025-11-07", never
+	// "0470.12.34.56"); a time after
 	// it is left to onlyDates.
-	dateRe = regexp.MustCompile(`\b(?:\d{1,2}(?:\.\d{1,2}\.|-\d{1,2}-|/\d{1,2}/)(?:\d{4}|\d{2})|\d{4}(?:\.\d{1,2}\.|-\d{1,2}-|/\d{1,2}/)\d{1,2})\b`)
+	dateRe = regexp.MustCompile(`\b(?:\d{1,2}(?:\.\d{1,2}\.|-\d{1,2}-|/\d{1,2}/)(?:\d{4}|\d{2})|(?:19|20)\d{2}(?:\.\d{1,2}\.|-\d{1,2}-|/\d{1,2}/)\d{1,2})\b`)
 	// decimalRe: a number that starts "0." or "0," ("0.00012345 BTC",
 	// "+0.12345678%"); no phone number starts that way.
 	decimalRe = regexp.MustCompile(`(?:^|[^\d.,])([+-]?0[.,]\d+)`)
@@ -250,8 +251,8 @@ func PhoneSpans(s string) [][2]int {
 // more digits after a space or "(": a number after another ("Room 4 0470
 // …", "Room 4 0044 …"; never "000", nor after "-" or ".", as in
 // "2025-11-07" or "978-0306406157"). A number written only in pairs ("06 12
-// 34 56 78") runs to the run's end or a date, so a list of pairs ("04 11 24
-// 35 42 08 15") is not one.
+// 34 56 78") runs to the run's end or a date, so a list of more pairs than
+// a number has ("04 11 24 35 42 08 15 22 31") is not one.
 // A run written like a large number ("1 000 000 000", "345 012 789 456")
 // is read from its first group only.
 func holdsPhone(s string, dated []byte, i, j int) bool {
