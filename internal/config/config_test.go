@@ -522,7 +522,26 @@ func TestConfigHashIsCompiledRuleset(t *testing.T) {
 	if a.Rules.Hash() != hex.EncodeToString(sum[:]) {
 		t.Fatal("ruleset hash is not the sha256 of the compiled spec")
 	}
-	if a.Hash != hashOf(a.Config, a.Rules) {
-		t.Fatal("config hash is not derived from the compiled ruleset")
+	// It is of the paths as written: the same file read from another
+	// directory (a clone, then the node) has the same version; a path
+	// written differently changes it.
+	elsewhere, err := Parse([]byte(base+lists+"corpus_dir: corpus\n"), "/home/someone/config-repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	here, err := Parse([]byte(base+lists+"corpus_dir: corpus\n"), "/etc/groupwarden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if here.Hash != elsewhere.Hash || here.Config.CorpusDir == elsewhere.Config.CorpusDir {
+		t.Fatalf("the same file in two directories: versions %s and %s, corpus dirs %s and %s",
+			here.Hash, elsewhere.Hash, here.Config.CorpusDir, elsewhere.Config.CorpusDir)
+	}
+	moved, err := Parse([]byte(base+lists+"corpus_dir: samples\n"), "/etc/groupwarden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.Hash == here.Hash {
+		t.Fatal("a different corpus_dir kept the version")
 	}
 }
