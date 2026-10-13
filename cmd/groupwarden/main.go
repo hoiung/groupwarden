@@ -118,11 +118,12 @@ Commands that take the data-dir lock (only one at a time):
 
 Store commands (work beside run):
   check [--secrets]            validate the config; --secrets lists each input as OK or MISSING
-  healthcheck                  exit 0 only when run is connected, not deaf and has its config
+  healthcheck                  exit 0 only when run is alive, connected, not deaf, has its config and has reached the admin chat
   corpus test --corpus <dir>   test every rule, as if enforced, against labelled samples
   corpus add --label spam|legit --corpus <dir> [--type <type>] [--push-name <text>] [--note <text>] [--public]
                                save the message on stdin as one sample (no --config needed);
-                               --public redacts fully, for tests/corpus
+                               --public also swaps phone numbers, emails and URL paths for fixtures (names and
+                               @handles stay: write a public sample by hand), for tests/corpus
   ledger summary               count shadow and enforce actions per community
   ban add|remove <lid|phone>   add to or lift from the ban list [--community <id>]
   ban list                     print the ban list
@@ -209,10 +210,15 @@ func (e *env) run(args []string) int {
 	case "sync-config": // the live config may not exist yet (the first sync)
 		return e.syncConfig(ctx, *cfgPath, *repo, log)
 	}
-	l, err := config.Load(*cfgPath)
+	// The config `run` uses: a rejected file falls back to the last good copy,
+	// as `run` does, so the health check and backups keep working meanwhile.
+	l, rejected, err := config.LoadRunning(*cfgPath)
 	if err != nil {
 		fmt.Fprintf(e.stderr, "refusing to start: %v\n", err)
 		return exitFail
+	}
+	if rejected != nil {
+		fmt.Fprintf(e.stderr, "note: %v\n", rejected)
 	}
 	cfg := l.Config
 	switch cmd {
