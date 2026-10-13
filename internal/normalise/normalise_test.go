@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -499,5 +500,41 @@ func TestWildcardsStopAtABreak(t *testing.T) {
 			t.Fatalf("premise: %q: %d characters the readings disagree on, %d controls", sh.left+sh.right, disagree.Load(), controls.Load())
 		}
 		t.Logf("%q: %d characters the readings disagree on, %d controls", sh.left+sh.right, disagree.Load(), controls.Load())
+	}
+}
+
+// TestLongWordStaysFast: a word that repeats the letters a "*" entry names
+// ("*coin*" on "coincoincoin...") costs about its length, not repeats times
+// length, so one long post cannot hold up every message behind it. Matching
+// must take less time than reading the post (Prepare, which is linear), so a
+// slow or busy machine slows both alike. Measured on this 64,013-character
+// post over ten runs: reading 180-400 ms, matching 26-66 ms (with -race 1.7-2.3 s
+// and 133-268 ms); walking each repeat out to the break again took 4.4 s, and
+// the code before the fix took minutes.
+func TestLongWordStaysFast(t *testing.T) {
+	coin, lure := mustCompile(t, "*coin*"), mustCompile(t, "daily profit*")
+	text := "daily profit " + strings.Repeat("coin", 16000)
+	start := time.Now()
+	tx := Prepare(text, nil)
+	read := time.Since(start)
+	done := make(chan bool, 1)
+	start = time.Now()
+	go func() {
+		used := map[int]bool{}
+		coin.Words(tx, false, used)
+		done <- lure.MatchAvoiding(tx, false, used)
+	}()
+	select {
+	case apart := <-done:
+		took := time.Since(start)
+		if !apart {
+			t.Fatal(`"daily profit" and the long "coin" word read as one word`)
+		}
+		if took > read {
+			t.Fatalf("matching a %d-character post took %v, longer than reading it (%v)", len(text), took, read)
+		}
+		t.Logf("read a %d-character post in %v, matched it in %v", len(text), read, took)
+	case <-time.After(time.Minute):
+		t.Fatalf("matching a %d-character post took over a minute", len(text))
 	}
 }
