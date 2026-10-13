@@ -10,6 +10,7 @@ package normalise
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -156,8 +157,9 @@ type view struct {
 	kind  kind
 	leet  bool
 	words []string
-	src   []span // the characters of the original text each word came from
-	blank []bool // words inside a never-match phrase
+	src   []span  // the characters of the original text each word came from
+	ids   [][]int // per word, the character of the original text each letter came from
+	blank []bool  // words inside a never-match phrase
 }
 
 // span is the range of characters of the original text (rune indexes) one
@@ -168,10 +170,13 @@ type span struct{ lo, hi int }
 
 // Text is one piece of text prepared for matching. one maps each character
 // of the original text to the character it became one with in a reading
-// (see reader.form); characters with the same entry count as one.
+// (see reader.form); characters with the same entry count as one. brk marks
+// (by that entry) the characters some reading shows as a space or
+// punctuation: a break between two words of the post.
 type Text struct {
 	views []view
 	one   []int
+	brk   []bool
 }
 
 // traced is a reading under construction: each rune with the index of the
@@ -341,15 +346,21 @@ func Prepare(s string, never []Pattern) Text {
 	leetRune := func(c rune) string { return leet.Replace(string(c)) }
 	b := r.base(source)
 	var t Text
+	var breaks []int
 	seen := map[string]bool{}
 	add := func(k kind, leetView bool, v traced) {
+		for i, c := range v.runes {
+			if !isWordRune(c) {
+				breaks = append(breaks, v.src[i])
+			}
+		}
 		key := fmt.Sprint(k, leetView, string(v.runes))
 		if seen[key] {
 			return
 		}
 		seen[key] = true
 		vw := view{kind: k, leet: leetView}
-		vw.words, vw.src = tokensTraced(v)
+		vw.words, vw.src, vw.ids = tokensTraced(v)
 		vw.blank = make([]bool, len(vw.words))
 		for _, p := range never {
 			p.mark(&vw)
@@ -368,12 +379,16 @@ func Prepare(s string, never []Pattern) Text {
 	for i := range t.one {
 		t.one[i] = r.root(i)
 	}
+	t.brk = make([]bool, len(source.runes))
+	for _, s := range breaks {
+		t.brk[r.root(s)] = true
+	}
 	return t
 }
 
 // tokensTraced is tokens on a traced view, with the characters of the
-// original text each word came from.
-func tokensTraced(t traced) (words []string, src []span) {
+// original text each word, and each letter of it, came from.
+func tokensTraced(t traced) (words []string, src []span, ids [][]int) {
 	for i := 0; i < len(t.runes); {
 		if !isWordRune(t.runes[i]) {
 			i++
@@ -384,10 +399,10 @@ func tokensTraced(t traced) (words []string, src []span) {
 			sp.lo, sp.hi = min(sp.lo, t.src[j]), max(sp.hi, t.src[j])
 			j++
 		}
-		words, src = append(words, string(t.runes[i:j])), append(src, sp)
+		words, src, ids = append(words, string(t.runes[i:j])), append(src, sp), append(ids, t.src[i:j])
 		i = j
 	}
-	return words, src
+	return words, src, ids
 }
 
 func isWordRune(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
@@ -505,9 +520,8 @@ func (p Pattern) MatchAvoiding(t Text, useLeet bool, avoid map[int]bool) bool {
 		if v.leet && !useLeet {
 			continue
 		}
-		n := len(p.forms[v.kind])
 		for w := range v.words {
-			if p.at(v, w) && !t.uses(v, w, w+n, avoid) {
+			if p.at(v, w) && !p.touches(t, v, w, avoid) {
 				return true
 			}
 		}
@@ -516,35 +530,71 @@ func (p Pattern) MatchAvoiding(t Text, useLeet bool, avoid map[int]bool) bool {
 }
 
 // Words adds to used every character of the original text the pattern
-// matches in any view of t it may search.
+// stands on (see stands) in any view of t it may search.
 func (p Pattern) Words(t Text, useLeet bool, used map[int]bool) {
 	for i := range t.views {
 		v := &t.views[i]
 		if v.leet && !useLeet {
 			continue
 		}
-		n := len(p.forms[v.kind])
 		for w := range v.words {
-			if !p.at(v, w) {
-				continue
-			}
-			for _, sp := range v.src[w : w+n] {
-				for s := sp.lo; s <= sp.hi; s++ {
-					used[t.one[s]] = true
-				}
+			if p.at(v, w) {
+				p.stands(t, v, w, func(lo, hi int) {
+					for s := lo; s <= hi; s++ {
+						used[t.one[s]] = true
+					}
+				})
 			}
 		}
 	}
 }
 
-// uses reports whether words [from, to) of v came from any character in set.
-func (t Text) uses(v *view, from, to int, set map[int]bool) bool {
-	for _, sp := range v.src[from:to] {
-		for s := sp.lo; s <= sp.hi; s++ {
-			if set[t.one[s]] {
-				return true
+// touches reports whether the pattern's match at word i of v stands on any
+// character in set.
+func (p Pattern) touches(t Text, v *view, i int, set map[int]bool) bool {
+	if len(set) == 0 {
+		return false
+	}
+	hit := false
+	p.stands(t, v, i, func(lo, hi int) {
+		for s := lo; s <= hi && !hit; s++ {
+			hit = set[t.one[s]]
+		}
+	})
+	return hit
+}
+
+// stands calls f with each range of characters of the original text the
+// pattern's match at word i of v stands on. A word written out stands on the
+// whole word. A word with a "*" stands on the letters it names and on what the
+// "*" covers up to a break between words: a character some reading shows as a
+// space or punctuation. "profit|bitcoin" is two words although the look-alike
+// reading turns "|" into "l", so "profit*" and "*coin" match different words
+// there, while "dogecoin" has no break and stays one word for "doge*" and
+// "*coin" in every reading.
+func (p Pattern) stands(t Text, v *view, i int, f func(lo, hi int)) {
+	for j, pt := range p.forms[v.kind] {
+		w := i + j
+		if !pt.prefix && !pt.suff {
+			f(v.src[w].lo, v.src[w].hi)
+			continue
+		}
+		letters, ids := []rune(v.words[w]), v.ids[w]
+		named := []rune(pt.word)
+		breaks := func(k int) bool { return t.brk[t.one[ids[k]]] }
+		for s := 0; s+len(named) <= len(letters); s++ {
+			if string(letters[s:s+len(named)]) != pt.word ||
+				pt.prefix && !pt.suff && s != 0 || pt.suff && !pt.prefix && s+len(named) != len(letters) {
+				continue
 			}
+			lo, hi := s, s+len(named)
+			for lo > 0 && !breaks(lo-1) {
+				lo--
+			}
+			for hi < len(letters) && !breaks(hi) {
+				hi++
+			}
+			f(slices.Min(ids[lo:hi]), slices.Max(ids[lo:hi]))
 		}
 	}
-	return false
 }
