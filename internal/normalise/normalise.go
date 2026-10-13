@@ -581,20 +581,36 @@ func (p Pattern) stands(t Text, v *view, i int, f func(lo, hi int)) {
 		}
 		letters, ids := []rune(v.words[w]), v.ids[w]
 		named := []rune(pt.word)
-		breaks := func(k int) bool { return t.brk[t.one[ids[k]]] }
-		for s := 0; s+len(named) <= len(letters); s++ {
+		n := len(letters)
+		// left[k] is where the letters before k reach back to a break, right[k]
+		// where the letters from k reach on to one. Working them out once and
+		// passing each range once keeps a word that repeats the named letters
+		// ("coincoincoin...") linear, so one long post cannot hold up every
+		// message behind it.
+		left, right := make([]int, n+1), make([]int, n+1)
+		for k := 1; k <= n; k++ {
+			if left[k] = left[k-1]; t.brk[t.one[ids[k-1]]] {
+				left[k] = k
+			}
+		}
+		right[n] = n
+		for k := n - 1; k >= 0; k-- {
+			if right[k] = right[k+1]; t.brk[t.one[ids[k]]] {
+				right[k] = k
+			}
+		}
+		last := [2]int{-1, -1}
+		for s := 0; s+len(named) <= n; s++ {
 			if string(letters[s:s+len(named)]) != pt.word ||
-				pt.prefix && !pt.suff && s != 0 || pt.suff && !pt.prefix && s+len(named) != len(letters) {
+				pt.prefix && !pt.suff && s != 0 || pt.suff && !pt.prefix && s+len(named) != n {
 				continue
 			}
-			lo, hi := s, s+len(named)
-			for lo > 0 && !breaks(lo-1) {
-				lo--
+			r := [2]int{left[s], right[s+len(named)]}
+			if r == last {
+				continue
 			}
-			for hi < len(letters) && !breaks(hi) {
-				hi++
-			}
-			f(slices.Min(ids[lo:hi]), slices.Max(ids[lo:hi]))
+			last = r
+			f(slices.Min(ids[r[0]:r[1]]), slices.Max(ids[r[0]:r[1]]))
 		}
 	}
 }
