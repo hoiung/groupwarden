@@ -67,12 +67,27 @@ func NewHolder(path string, l *Loaded) *Holder {
 // With no usable last good copy the error is returned and the bot must not
 // start.
 func Boot(path string) (h *Holder, rejected *Rejected, err error) {
-	l, err := Load(path)
-	if err == nil {
+	l, rejected, err := LoadRunning(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if rejected == nil {
 		if err := saveLastGood(l); err != nil {
 			return nil, nil, err
 		}
-		return NewHolder(path, l), nil, nil
+	}
+	return NewHolder(path, l), rejected, nil
+}
+
+// LoadRunning loads the config `run` uses: the file at path when it passes
+// every check, otherwise the last good copy in data_dir, with rejected saying
+// why the file was refused. A command beside `run` (the health check, the
+// nightly backup, the store commands) uses it too, so one rejected edit does
+// not stop them while the bot keeps moderating on that copy.
+func LoadRunning(path string) (l *Loaded, rejected *Rejected, err error) {
+	l, err = Load(path)
+	if err == nil {
+		return l, nil, nil
 	}
 	dataDir := peekDataDir(path)
 	if dataDir == "" {
@@ -86,7 +101,7 @@ func Boot(path string) (h *Holder, rejected *Rejected, err error) {
 	if lerr != nil {
 		return nil, nil, fmt.Errorf("%w (and the last good copy no longer loads: %v)", err, lerr)
 	}
-	return NewHolder(path, lg), &Rejected{Reason: err, Running: lg.Hash}, nil
+	return lg, &Rejected{Reason: err, Running: lg.Hash}, nil
 }
 
 // Reload builds and checks the file again and swaps it in whole. On any
