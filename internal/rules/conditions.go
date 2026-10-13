@@ -54,17 +54,19 @@ var shorteners = func() map[string]bool {
 var (
 	linkRe = xurls.Relaxed()
 	tgRe   = regexp.MustCompile(`\btg://\S+`)
-	// inviteRe: an invite host (inviteHosts), for a field with more
-	// link-shaped matches than detect reads.
-	inviteRe = regexp.MustCompile(`\b(?:chat\.whatsapp\.com|api\.whatsapp\.com|wa\.me|t\.me|telegram\.me|telegram\.dog)\b`)
+	// pathLinkRe: a host and a path ("bit.ly/x", "chat.whatsapp.com/x",
+	// group 1 the host), for a field with more link-shaped matches than
+	// detect reads: one search, linear in the field.
+	pathLinkRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}\-.@])((?:[\p{L}\p{N}\-]+\.)+\p{L}[\p{L}\p{N}\-]*)/\S*`)
 	// handleRe: an "@username" not inside a word or an email address.
 	handleRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_@.])@(\p{L}[\p{L}\p{N}_.]{2,31})`)
-	// phoneRe: a digit run with phone separators (group 1); IsPhone checks it.
-	phoneRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}])(\+?\d[\d \t().\-]{7,24}\d)`)
+	// phoneRe: a digit run with phone separators (group 1), which may hold
+	// more than one number; PhoneSpans reads it.
+	phoneRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}])(\+?\d[\d \t().\-]{7,}\d)`)
 	moneyRe = regexp.MustCompile(`[$£€¥₹₦₽]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:k|m)?\s?(?:usd|usdt|usdc|gbp|eur|dollars?|pounds?|euros?|btc|eth)\b`)
 	// dateRe: a date written with dots, dashes or slashes ("07.11.2025",
-	// "01-12-25"), perhaps followed by a time ("18:00", "19.30").
-	dateRe = regexp.MustCompile(`\b\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2})\b(?:[ \t]+\d{1,2}[:.]\d{2})?`)
+	// "01-12-25"); a time after it is left to onlyDates.
+	dateRe = regexp.MustCompile(`\b\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2})\b`)
 	// decimalRe: a number that starts "0." or "0," ("0.00012345 BTC",
 	// "+0.12345678%"); no phone number starts that way.
 	decimalRe = regexp.MustCompile(`(?:^|[^\d.,])([+-]?0[.,]\d+)`)
@@ -73,14 +75,15 @@ var (
 // bareEndings are the domain endings a name written with nothing else
 // ("cryptoprofits.com": no scheme, "www." or path) counts as a link with.
 // Most of the 1,400 endings are also words, file endings or stock exchange
-// codes: "Bitcoin is down again.Is it time to sell?", "5pm.So", "notes.zip"
-// and "SAP.DE" are text, and the case-folded view cannot tell "again.Me"
-// from "earnbig.me", so a bare name counts only with one of these, endings
-// spam uses that are not words a sentence often starts with. Anything with
-// a scheme, "www.", a path, a port or a query is a link whatever its ending.
+// codes: "Bitcoin is down again.Is it time to sell?", "up.Net profit",
+// "full.Online stream", "notes.zip" and "SAP.DE" are text, and the
+// case-folded view cannot tell "again.Me" from "earnbig.me", so a bare name
+// counts only with one of these endings spam uses that are not English
+// words. Anything with a scheme, "www.", a path, a port or a query is a link
+// whatever its ending.
 var bareEndings = func() map[string]bool {
 	m := map[string]bool{}
-	for _, e := range strings.Fields(`com net org biz io co cc ly xyz top site online shop store icu cyou buzz bid loan website`) {
+	for _, e := range strings.Fields(`com org io ly xyz icu cyou`) {
 		m[e] = true
 	}
 	return m
@@ -169,24 +172,28 @@ func cutShort(s string, b, end int) bool {
 	return end < len(s) && end-b <= 16 && strings.IndexFunc(s[b:end], unicode.IsSpace) < 0
 }
 
-// notALink reports whether a found link is plain text: written with no
-// scheme, "www.", user name, port, path, fragment or query (the text going
-// on with one, as in "again.is?ref=1", counts: the matcher stops before a
-// query it cannot tell from a question mark), not a shortener or an invite
-// host or a name under one ("x.t.me"), and either in a document's file name or
-// ending in neither one of bareEndings nor a secondLevels ending such as
-// "co.in".
+// notALink reports whether a found link is plain text: code or an emoji
+// code ("std::cout", ":fire::fire:", which the matcher reads as the address
+// "d::c"), or a name written with no scheme, "www.", user name, port, path,
+// fragment or query (the text going on with one, as in "again.is?ref=1" or
+// "again.is#x", counts: the matcher stops before them) that is not an
+// invite host or a name under one ("x.t.me"), and either in a document's
+// file name or ending in neither one of bareEndings nor a secondLevels
+// ending such as "co.in". A shortener's host alone is read like any other
+// name ("Bitcoin went up.To the moon"); with its path it is a link.
 func notALink(raw, after string, fileName bool) bool {
 	low := strings.ToLower(raw)
+	if strings.Contains(low, "::") && !strings.ContainsAny(low, "./") {
+		return true
+	}
 	if strings.Contains(low, "://") || strings.HasPrefix(low, "www.") || strings.ContainsAny(low, "/?#:@") {
 		return false
 	}
-	if len(after) > 0 && (after[0] == '/' || after[0] == '#') ||
-		len(after) > 1 && (after[0] == '?' && isASCIIAlnum(after[1]) || after[0] == ':' && after[1] >= '0' && after[1] <= '9') {
+	if len(after) > 0 && after[0] == '#' || len(after) > 1 && after[0] == '?' && isASCIIAlnum(after[1]) {
 		return false
 	}
 	host := strings.TrimSuffix(low, ".")
-	if inviteHosts[host] || shorteners[host] || inviteHosts[registrable(host)] {
+	if inviteHosts[host] || inviteHosts[registrable(host)] {
 		return false
 	}
 	if fileName {
@@ -202,10 +209,10 @@ func notALink(raw, after string, fileName bool) bool {
 // "deals.com.my"), which no missing space after a full stop produces.
 var secondLevels = map[string]bool{"co": true, "com": true, "net": true, "org": true}
 
-// PhoneSpans finds the phone numbers in s: digit runs IsPhone accepts (from
-// a later group starting "0" when the run's first digits are something else,
-// as in "Room 4 0470 …") that are more than dates (onlyDates). A
-// decimal that starts "0." ("0.00012345 BTC") is never part of one.
+// PhoneSpans finds the digit runs in s that hold a phone number (holdsPhone).
+// The whole run is the span, so redacting it leaves none of its numbers
+// ("07700 900456 07700 900789", "+44 7700 900123 2025"). A decimal that
+// starts "0." ("0.00012345 BTC") is never part of one.
 func PhoneSpans(s string) [][2]int {
 	masked := []byte(s)
 	for _, m := range decimalRe.FindAllStringSubmatchIndex(s, -1) {
@@ -214,56 +221,115 @@ func PhoneSpans(s string) [][2]int {
 	dated := []byte(s)
 	for _, m := range dateRe.FindAllStringIndex(s, -1) {
 		// "06.12.34.56.78" goes on past the "date": a number written in pairs.
-		if rest := s[m[1]:]; len(rest) < 2 || !strings.ContainsRune("./-", rune(rest[0])) || rest[1] < '0' || rest[1] > '9' {
+		if !goesOn(s[m[1]:]) {
 			blank(dated, m[0], m[1])
 		}
 	}
 	var spans [][2]int
 	for _, m := range phoneRe.FindAllStringSubmatchIndex(string(masked), -1) {
-		i, j := m[2], m[3]
-		for i < j && !IsPhone(s[i:j]) {
-			i = nextGroup(s, i, j)
-		}
-		if i < j && !onlyDates(dated[i:j]) {
-			spans = append(spans, [2]int{i, j})
+		if holdsPhone(s, dated, m[2], m[3]) {
+			spans = append(spans, [2]int{m[2], m[3]})
 		}
 	}
 	return spans
 }
 
-// nextGroup is where the next digit group starting "0" after i begins in
-// s[:j] (j when there is none).
-func nextGroup(s string, i, j int) int {
-	for k := i + 1; k < j; k++ {
-		if s[k] == '0' && strings.IndexByte(" \t(", s[k-1]) >= 0 {
-			return k
+// holdsPhone reports whether the digit run s[i:j] holds a number IsPhone
+// accepts that is more than dates and times (onlyDates), made of whole
+// digit groups from the run's first group or from a later one starting "0"
+// and another digit: a number after another ("Room 4 0470 …"). A run
+// written like a large number ("1 000 000 000", "345 012 789 456") is read
+// from its first group only.
+func holdsPhone(s string, dated []byte, i, j int) bool {
+	var groups [][2]int
+	for k := i; k < j; k++ {
+		if s[k] >= '0' && s[k] <= '9' && (k == i || s[k-1] < '0' || s[k-1] > '9') {
+			groups = append(groups, [2]int{k, k})
+		}
+		if s[k] >= '0' && s[k] <= '9' {
+			groups[len(groups)-1][1] = k + 1
 		}
 	}
-	return j
+	large := largeNumber(s, groups)
+	for a, g := range groups {
+		start := g[0]
+		if a == 0 {
+			start = i // with its "+"
+		} else if large || s[g[0]] != '0' || g[1]-g[0] < 2 || s[g[0]+1] == '0' {
+			continue
+		}
+		digits := 0
+		for _, h := range groups[a:] {
+			if digits += h[1] - h[0]; digits > 15 {
+				break
+			}
+			if IsPhone(s[start:h[1]]) && !onlyDates(dated[start:h[1]]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
-// onlyDates reports whether a digit run, with its dates blanked out, has
-// too little left to be a phone number: no "+", no group of three or more
-// digits and fewer than five digits (an event's text leaves at most a time
-// or a day and month: "07.11.2025 18:00",
-// "01.12.2025 - 05.12.2025", "08.30 07.11.2025"; a colon always ends a run,
-// so "18:00 07.11.2025" leaves only "00"). A number written with its last
-// digits like a date ("0470 12.11.23") keeps its "0470".
+// goesOn reports whether digits go on after a date: a ".", "-" or "/" and a
+// digit.
+func goesOn(rest string) bool {
+	return len(rest) > 1 && strings.IndexByte("./-", rest[0]) >= 0 && rest[1] >= '0' && rest[1] <= '9'
+}
+
+// largeNumber reports whether digit groups are written like a large number:
+// a first group of one to three digits, then groups of three, each after the
+// same one separator.
+func largeNumber(s string, groups [][2]int) bool {
+	if len(groups) < 2 || groups[0][1]-groups[0][0] > 3 {
+		return false
+	}
+	sep := s[groups[0][1]:groups[1][0]]
+	for k := 1; k < len(groups); k++ {
+		if groups[k][1]-groups[k][0] != 3 || len(sep) != 1 || s[groups[k-1][1]:groups[k][0]] != sep {
+			return false
+		}
+	}
+	return true
+}
+
+// onlyDates reports whether digits, with their dates blanked out, read as
+// dates and times rather than a phone number: no "+", no group of three or
+// more digits, and either fewer than five digits (an event's text leaves at
+// most a time or a day and month: "07.11.2025 18:00", "01.12.2025 -
+// 05.12.2025", "08.30 07.11.2025"; a colon always ends a run, so "18:00
+// 07.11.2025" leaves only "00") or groups not all joined by the same
+// separator ("09.30 - 10.30 - 11.30"; a number in pairs is:
+// "06.12.34.56.78"). A number written with its last digits like a date
+// ("0470 12.11.23") keeps its "0470".
 func onlyDates(run []byte) bool {
 	digits, group, longest := 0, 0, 0
+	var sep, cur []byte
+	mixed := false
 	for _, c := range run {
 		switch {
 		case c == '+':
 			return false
 		case c >= '0' && c <= '9':
+			if group == 0 && digits > 0 {
+				if sep == nil {
+					sep = cur
+				} else if !bytes.Equal(sep, cur) {
+					mixed = true
+				}
+			}
+			cur = cur[:0:0]
 			digits++
 			group++
 			longest = max(longest, group)
 		default:
+			if digits > 0 {
+				cur = append(cur, c)
+			}
 			group = 0
 		}
 	}
-	return longest < 3 && digits < 5
+	return longest < 3 && (digits < 5 || mixed)
 }
 
 func isASCIIAlnum(c byte) bool {
@@ -305,11 +371,11 @@ func detect(fields []client.Field, allowed map[string]bool) signals {
 		rest := v
 		links, read := LinkSpans(v, f.Name == "document.file_name", maxLinks+1)
 		if read > maxLinks {
-			// More than are read: the field has a link, and an invite host
-			// anywhere in it still counts.
+			// More than are read: the field has a link, and an invite or a
+			// shortener written with its path anywhere in it still counts.
 			s[AnyLink] = true
-			if inviteRe.MatchString(v) {
-				s[InviteLink] = true
+			for _, m := range pathLinkRe.FindAllStringSubmatchIndex(v, -1) {
+				linkSignals(v[m[2]:m[1]], allowed, s)
 			}
 			links = links[:min(len(links), maxLinks)]
 		}
