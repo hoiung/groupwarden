@@ -17,6 +17,7 @@ type monitor struct {
 	mu          sync.Mutex
 	connected   bool
 	since       time.Time // when the current connected/disconnected state began
+	listening   time.Time // when the bot last came back from a long (alerted) disconnect, or first connected
 	lastEvent   time.Time
 	deaf        bool // the current connected stretch is deaf (alert sent)
 	discAlerted bool
@@ -29,9 +30,15 @@ func (m *monitor) setThresholds(deafAfter, disconnectAfter time.Duration) {
 	m.deafAfter, m.disconnectAfter = deafAfter, disconnectAfter
 }
 
+// onConnected: a short drop does not restart the deafness clock, so a
+// connection that keeps dropping and coming straight back is still found
+// deaf; one back from a disconnect long enough to alert starts it again.
 func (m *monitor) onConnected(now time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.listening.IsZero() || !m.connected && now.Sub(m.since) >= m.disconnectAfter {
+		m.listening = now
+	}
 	m.connected, m.since, m.discAlerted = true, now, false
 }
 
@@ -56,7 +63,7 @@ func (m *monitor) check(now time.Time) []alert.Alert {
 	defer m.mu.Unlock()
 	var out []alert.Alert
 	if m.connected {
-		ref := m.since
+		ref := m.listening
 		if m.lastEvent.After(ref) {
 			ref = m.lastEvent
 		}
