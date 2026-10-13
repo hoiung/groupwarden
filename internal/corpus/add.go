@@ -50,7 +50,9 @@ func Add(dir, label string, s Sample, public bool, seed fs.FS) (Added, error) {
 	}
 	s.Text = Redact(s.Text, public)
 	s.PushName = Redact(s.PushName, public)
-	if !exists(filepath.Join(dir, Spam)) && !exists(filepath.Join(dir, Legit)) && seed != nil {
+	// A new corpus has no sample yet, though its empty folders may exist (a
+	// new private config repo keeps them with a .gitkeep).
+	if seed != nil && !hasSamples(dir) {
 		n, err := copySeed(seed, filepath.Join(dir, Legit))
 		if err != nil {
 			return a, fmt.Errorf("seed the legit samples: %w", err)
@@ -104,9 +106,19 @@ func sampleHash(s Sample) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+// hasSamples reports whether dir holds any sample file under spam/ or legit/.
+func hasSamples(dir string) bool {
+	found := false
+	for _, class := range []string{Spam, Legit} {
+		_ = filepath.WalkDir(filepath.Join(dir, class), func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.HasSuffix(d.Name(), ".yaml") {
+				found = true
+				return fs.SkipAll
+			}
+			return nil
+		})
+	}
+	return found
 }
 
 // copySeed copies every .yaml file of seed into dst, keeping its path.
