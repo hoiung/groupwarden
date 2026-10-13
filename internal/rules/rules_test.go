@@ -5,8 +5,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoiung/groupwarden/internal/client"
+	"github.com/hoiung/groupwarden/internal/normalise"
 )
 
 // Synthetic IDs only (listed exactly in .secret-pii-allowlist).
@@ -252,6 +254,110 @@ func TestLinkDigitsAreNotAPhone(t *testing.T) {
 	// A number written beside the link still counts.
 	if !sig(body("https://www.linkedin.com/in/x or call +44 7700 900123"), "linkedin.com")[PhoneNumber] {
 		t.Error("phone number next to a link not seen")
+	}
+}
+
+// TestSentenceBreakIsNotALink: a missing space after a full stop ("again.Is")
+// or a file name ("notes.zip") is not a link, so a keyword beside it never
+// acts. A link written with a scheme, "www." or a path still is one, and so
+// is an invite host or shortener on its own.
+func TestSentenceBreakIsNotALink(t *testing.T) {
+	for _, text := range []string{
+		"Bitcoin is down again.Is it time to sell?", "I bought some stocks last year.It was a mistake",
+		"The crypto talk was boring.So was the food", "Lost money on bitcoin.No more for me",
+		"crypto is a scam.My advice", "crypto again.To be honest", "stocks are down.Now is not the time",
+		"bitcoin chat.Today we dance", "bitcoin bores me.Love you all", "see crypto-notes.md and stocks.zip",
+	} {
+		if s := sig(body(text)); s[AnyLink] {
+			t.Errorf("%q: any_link", text)
+		}
+	}
+	if s := sig([]client.Field{{Name: "document.file_name", Text: "bitcoin-talk-recording.mov"}}); s[AnyLink] {
+		t.Errorf("a file name read as a link: %v", s)
+	}
+	for _, text := range []string{
+		"https://again.is", "www.again.is", "again.is/join", "again.is?ref=1", "t.me", "wa.me", "bit.ly",
+		"visit cryptoprofits.com", "join cryptoprofits.io",
+	} {
+		if !sig(body(text))[AnyLink] {
+			t.Errorf("%q: no any_link", text)
+		}
+	}
+	if !sig([]client.Field{{Name: "document.file_name", Text: "join t.me/example_pumps.pdf"}})[AnyLink] {
+		t.Error("a link with a path in a file name not seen")
+	}
+}
+
+// TestDatesAndDecimalsAreNotPhones: a date (with or without a time) and a
+// decimal that starts "0." are not phone numbers, so a keyword beside them
+// never acts. A number that goes on past a date-like start is still a phone.
+func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
+	for _, text := range []string{
+		"Free stock market talk at the town library on 07.11.2025 18:00, all welcome",
+		"Stock market evening class starts 07-11-2025 18:00 at the college",
+		"Sat 01.11.25 7.30pm stock market talk", "Bitcoin meetup 01.12.25 19.30 upstairs",
+		"After the crash I only have 0.00012345 BTC left lol", "I hold 0.00050000 BTC", "ETH is up +0.12345678% today",
+	} {
+		if s := sig(body(text)); s[PhoneNumber] {
+			t.Errorf("%q: phone_number", text)
+		}
+	}
+	// Built at run time, as in TestPhoneMoneyContactSignals.
+	national := "0" + "7700 900123"
+	for _, text := range []string{"call " + national + " on 07.11.2025 18:00", "ring 0" + "7.70.09.00.12.3", "+44 7700 900123 for 0.5 BTC"} {
+		if !sig(body(text))[PhoneNumber] {
+			t.Errorf("%q: no phone_number", text)
+		}
+	}
+}
+
+// TestLinkSpansMatchWholeTextSearch: searching in windows finds the same
+// links as one search over the whole text, wherever a link falls against a
+// window's edge.
+func TestLinkSpansMatchWholeTextSearch(t *testing.T) {
+	links := []string{"t.me/example_pumps", "https://example.com/" + strings.Repeat("a", 300), "bit.ly/x", "cryptoprofits.com"}
+	for _, l := range links {
+		for _, at := range []int{0, linkWindow - 300, linkWindow - len(l)/2, linkWindow - 1, linkWindow, 2*linkWindow - linkOverlap - 3, 3 * linkWindow} {
+			text := strings.Repeat("word ", at/5) + strings.Repeat("x", at%5) + " " + l + " again.Is " + strings.Repeat("more words ", 300)
+			var want [][2]int
+			for _, m := range linkRe.FindAllStringIndex(text, -1) {
+				if !notALink(text[m[0]:m[1]], text[m[1]:], false) {
+					want = append(want, [2]int{m[0], m[1]})
+				}
+			}
+			got, searched := LinkSpans(text, false, -1)
+			if searched != len(text) || !reflect.DeepEqual(got, want) || len(got) != 1 {
+				t.Errorf("link %.20q at %d: got %v (searched %d of %d), want %v", l, at, got, searched, len(text), want)
+			}
+		}
+	}
+}
+
+// TestLongLinkRunStaysFast: one long run with no spaces holding many short
+// links ("1.1.1.1…") is searched in bounded windows, so finding the signals
+// of a 64,000-character post costs about as much as reading it (Prepare).
+// Measured: reading 84 ms, finding the signals 164 ms; one search over the
+// whole post per link took over ten minutes.
+func TestLongLinkRunStaysFast(t *testing.T) {
+	text := "bitcoin " + strings.Repeat("1.", 32000)
+	start := time.Now()
+	normalise.Prepare(text, nil)
+	read := time.Since(start)
+	done := make(chan signals, 1)
+	start = time.Now()
+	go func() { done <- detect(body(text), nil) }()
+	select {
+	case s := <-done:
+		took := time.Since(start)
+		if !s[AnyLink] {
+			t.Errorf("the run's links not seen: %v", s)
+		}
+		if took > 10*read {
+			t.Fatalf("finding the signals of a %d-character post took %v, over ten times reading it (%v)", len(text), took, read)
+		}
+		t.Logf("read a %d-character post in %v, found its signals in %v", len(text), read, took)
+	case <-time.After(time.Minute):
+		t.Fatalf("finding the signals of a %d-character post took over a minute", len(text))
 	}
 }
 
