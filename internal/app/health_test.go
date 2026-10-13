@@ -86,6 +86,23 @@ func TestCleanStopRecordsDisconnected(t *testing.T) {
 	}
 }
 
+// TestRunForgetsThePreviousRunsAdminChat: "admin chat reached" as the
+// previous run left it is cleared when run starts, so the health check
+// waits for this run to reach the admin chat itself: a build that cannot
+// reach Telegram does not pass the install script's check.
+func TestRunForgetsThePreviousRunsAdminChat(t *testing.T) {
+	h := startWith(t, &clienttest.Fake{}, Settings{}, func(a *App) {
+		if err := a.Store.SetStatus(context.Background(), map[string]string{store.StatusTelegramOK: "1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	h.clock.step(time.Minute, 30*time.Second)
+	h.eventually("connected recorded", func() bool { return h.status(store.StatusConnected) == "1" })
+	if v := h.status(store.StatusTelegramOK); v != "" {
+		t.Fatalf("admin chat status %q from the previous run kept; want it cleared until this run reaches the chat", v)
+	}
+}
+
 func (h *harness) status(key string) string {
 	h.t.Helper()
 	st, err := h.st.Status(context.Background())
