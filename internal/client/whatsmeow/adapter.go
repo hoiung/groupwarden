@@ -122,7 +122,7 @@ func (r realClient) lidForPhone(ctx context.Context, phone types.JID) (types.JID
 func (r realClient) sendGroupIQ(ctx context.Context, to types.JID, content waBinary.Node) (*waBinary.Node, error) {
 	// Joining a community's linked group has no public call; WhatsApp's own
 	// "join_linked_group" request goes through the library's internal API.
-	//lint:ignore SA1019 the internal API is the only route to join_linked_group (README "Known limits")
+	//lint:ignore SA1019 the internal API is the only route to join_linked_group (no public call exists)
 	return r.DangerousInternals().SendGroupIQ(ctx, "set", to, content) //nolint:staticcheck // see above
 }
 
@@ -160,13 +160,20 @@ type sinkBox struct{ s client.Sink }
 
 var _ client.Adapter = (*Adapter)(nil)
 
+// sessionDSN opens whatsmeow.db with write transactions that take the write
+// lock when they begin, as groupwarden.db does: the library's decryption
+// reads a session and then writes, and a deferred transaction fails at once
+// (it never waits) if the hourly purge or `member forget` commits in
+// between, which loses the message to a retry request.
+func sessionDSN(path string) string { return gwstore.DSN(path) + "&_txlock=immediate" }
+
 // Open opens the session store under opts.DataDir and builds the client.
 func Open(ctx context.Context, opts Options) (*Adapter, error) {
 	if err := gwstore.CheckLinuxFS(opts.DataDir); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(opts.DataDir, "whatsmeow.db")
-	container, err := sqlstore.New(ctx, "sqlite", gwstore.DSN(path), newLogger(opts.Log).Sub("store"))
+	container, err := sqlstore.New(ctx, "sqlite", sessionDSN(path), newLogger(opts.Log).Sub("store"))
 	if err != nil {
 		return nil, fmt.Errorf("open WhatsApp session store: %w", err)
 	}
@@ -225,7 +232,7 @@ func (a *Adapter) Events(sink client.Sink) { a.sink.Store(&sinkBox{s: sink}) }
 // Connect opens the connection; the result arrives as a Lifecycle event.
 func (a *Adapter) Connect(ctx context.Context) error {
 	if !a.Paired() {
-		return errors.New("this device is not paired: run `groupwarden pair` first")
+		return fmt.Errorf("%w: run `groupwarden pair` first", client.ErrNotPaired)
 	}
 	if err := a.waitClosing(ctx); err != nil {
 		return err
