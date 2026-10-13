@@ -493,14 +493,16 @@ func TestNoSinkPassesOtherEventsOn(t *testing.T) {
 	cli.AddEventHandlerWithSuccessStatus(a.handle)
 	var last any
 	cli.AddEventHandler(func(evt any) { last = evt })
+	//lint:ignore SA1019 the test needs the library's own event dispatch
+	dispatch := cli.DangerousInternals().DispatchEvent
 	for _, evt := range []any{&events.QR{Codes: []string{"ref"}}, &events.PairSuccess{}, &events.PairError{}, &events.Connected{}, &events.Disconnected{}} {
 		last = nil
-		if held := cli.DangerousInternals().DispatchEvent(evt); held || last != evt {
+		if held := dispatch(evt); held || last != evt {
 			t.Errorf("%T: held=%v, reached the next handler=%v", evt, held, last == evt)
 		}
 	}
 	for _, evt := range []any{&events.Message{}, &events.GroupInfo{}, &events.JoinedGroup{}} {
-		if !cli.DangerousInternals().DispatchEvent(evt) {
+		if !dispatch(evt) {
 			t.Errorf("%T was acknowledged with no sink to store it", evt)
 		}
 	}
