@@ -370,6 +370,7 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 		"call +44 7700 900123 2025", "Room 4 0" + "7700 900 123 456",
 		"Room 4 00" + "44 7700 900123", "Support 24/7 00" + "44 7700 900123",
 		"Room 4 " + "447700900123", "call 0" + "6 12 34 56 78 21.11.2025 18:00",
+		"GSM 0" + "470.12.34.56", "call 0" + "612-34-56-78", "Room 4 (0" + "7700) 900123",
 	} {
 		if !sig(body(text))[PhoneNumber] {
 			t.Errorf("%q: no phone_number", text)
