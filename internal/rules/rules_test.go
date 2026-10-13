@@ -267,6 +267,8 @@ func TestSentenceBreakIsNotALink(t *testing.T) {
 		"The crypto talk was boring.So was the food", "Lost money on bitcoin.No more for me",
 		"crypto is a scam.My advice", "crypto again.To be honest", "stocks are down.Now is not the time",
 		"bitcoin chat.Today we dance", "bitcoin bores me.Love you all", "see crypto-notes.md and stocks.zip",
+		"Bitcoin is down again.How do I sell", "crypto crashed again.You should sell", "bitcoin crashed.One more time",
+		"I sold my stocks in 2025.So no more", "crypto again.lol",
 	} {
 		if s := sig(body(text)); s[AnyLink] {
 			t.Errorf("%q: any_link", text)
@@ -281,6 +283,9 @@ func TestSentenceBreakIsNotALink(t *testing.T) {
 	for _, text := range []string{
 		"https://again.is", "www.again.is", "again.is/join", "again.is?ref=1", "t.me", "wa.me", "bit.ly",
 		"visit cryptoprofits.com", "join cryptoprofits.io",
+		// More parts, a hyphen or a digit: a name, not the end of a sentence.
+		"join cryptopumps.t.me", "x.telegram.me", "earn.wa.me", "promo.co.in", "deals.com.my",
+		"crypto-profit.in", "casino-bonus.it", "earn24.me", "visit earnbig.top",
 	} {
 		if !sig(body(text))[AnyLink] {
 			t.Errorf("%q: no any_link", text)
@@ -300,6 +305,7 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 		"Stock market evening class starts 07-11-2025 18:00 at the college",
 		"Sat 01.11.25 7.30pm stock market talk", "Bitcoin meetup 01.12.25 19.30 upstairs",
 		"After the crash I only have 0.00012345 BTC left lol", "I hold 0.00050000 BTC", "ETH is up +0.12345678% today",
+		"Stock market talk 18:00 07.11.2025 at the library",
 	} {
 		if s := sig(body(text)); s[PhoneNumber] {
 			t.Errorf("%q: phone_number", text)
@@ -307,20 +313,61 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 	}
 	// Built at run time, as in TestPhoneMoneyContactSignals.
 	national := "0" + "7700 900123"
-	for _, text := range []string{"call " + national + " on 07.11.2025 18:00", "ring 0" + "7.70.09.00.12.3", "+44 7700 900123 for 0.5 BTC"} {
+	// A number with digits written like a date: "12.34.56" and "05.34.56"
+	// cannot be dates, and "12.11.23" after "+999 803" is the end of the number.
+	plus := "+" + "999 "
+	for _, text := range []string{
+		"call " + national + " on 07.11.2025 18:00", "ring 0" + "7.70.09.00.12.3", "+44 7700 900123 for 0.5 BTC",
+		"call " + plus + "470 12.34.56", "call " + plus + "803 12.11.23", "call " + plus + "171 12-34-56",
+		"call 0" + "5.34.56 789",
+	} {
 		if !sig(body(text))[PhoneNumber] {
 			t.Errorf("%q: no phone_number", text)
 		}
 	}
 }
 
+// TestManyLinksCountAsALink: a field with more links or email addresses than
+// are searched counts as having a link, and the text after them is still
+// read, so padding cannot hide an invite or a phone number.
+func TestManyLinksCountAsALink(t *testing.T) {
+	pad := strings.Repeat("a@example.com ", maxLinks)
+	if s := sig(body("bitcoin " + pad + "join chat.whatsapp.com/AbCdEf")); !s[AnyLink] {
+		t.Errorf("link after %d email addresses not counted: %v", maxLinks, s)
+	}
+	if s := sig(body("bitcoin " + pad + "call +44 7700 900123")); !s[PhoneNumber] {
+		t.Errorf("phone number after %d email addresses not seen: %v", maxLinks, s)
+	}
+	if s := sig(body("bitcoin " + strings.Repeat("a@example.com ", maxLinks-1) + "talk later")); s[AnyLink] {
+		t.Errorf("%d email addresses counted as a link: %v", maxLinks-1, s)
+	}
+}
+
+// TestLinkSpansInvalidUTF8: raw text that is not UTF-8 (corpus add reads it
+// before any normalising) is searched without a panic.
+func TestLinkSpansInvalidUTF8(t *testing.T) {
+	s := "a" + strings.Repeat("\x80", 3*linkWindow) + " t.me/x"
+	if got, _ := LinkSpans(s, false, -1); len(got) != 1 {
+		t.Errorf("got %v, want the one link", got)
+	}
+}
+
 // TestLinkSpansMatchWholeTextSearch: searching in windows finds the same
 // links as one search over the whole text, wherever a link falls against a
-// window's edge.
+// window's edge, including each of its dots as a window's last byte (the
+// matcher never ends a link on a dot, so "https://chat" was all it saw).
 func TestLinkSpansMatchWholeTextSearch(t *testing.T) {
-	links := []string{"t.me/example_pumps", "https://example.com/" + strings.Repeat("a", 300), "bit.ly/x", "cryptoprofits.com"}
+	links := []string{"t.me/example_pumps", "https://example.com/" + strings.Repeat("a", 300), "bit.ly/x", "cryptoprofits.com",
+		"https://chat.whatsapp.com/AbCdEf", "https://t.me/+AbCd", "https://bit.ly/x", "https://www.google.com/maps/place/x"}
 	for _, l := range links {
-		for _, at := range []int{0, linkWindow - 300, linkWindow - len(l)/2, linkWindow - 1, linkWindow, 2*linkWindow - linkOverlap - 3, 3 * linkWindow} {
+		// The link starts at byte at+1.
+		ats := []int{0, linkWindow - 300, linkWindow - len(l)/2, linkWindow - 1, linkWindow, 2*linkWindow - linkOverlap - 3, 3 * linkWindow}
+		for i, c := range l {
+			if c == '.' {
+				ats = append(ats, linkWindow-2-i)
+			}
+		}
+		for _, at := range ats {
 			text := strings.Repeat("word ", at/5) + strings.Repeat("x", at%5) + " " + l + " again.Is " + strings.Repeat("more words ", 300)
 			var want [][2]int
 			for _, m := range linkRe.FindAllStringIndex(text, -1) {
