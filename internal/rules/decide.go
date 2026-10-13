@@ -146,9 +146,12 @@ func (p *prepared) branchHolds(b branch, sc *scope) bool {
 // differentWords reports whether two of lists match different words: one
 // list matches on characters of the post that another list matches in no
 // reading. A keyword read one way by one list and another way by the other
-// (DOGECOIN, d0gecoin) is the same characters, so it is one word.
-// A phrase of one list overlapping a phrase of another on every reading is
-// not counted, which can only leave a post unactioned, never action one.
+// (DOGECOIN, d0gecoin) is the same characters, so it is one word. A "*"
+// reaches only as far as a break between words that some reading shows
+// (normalise.go stands), so "profit|bitcoin" is two words although the
+// look-alike reading joins them. A phrase of one list overlapping a phrase of
+// another is not counted, which can only leave a post unactioned, never
+// action one.
 func (p *prepared) differentWords(lists map[string]bool, sc *scope) bool {
 	names := sortedKeys(lists)
 	for _, a := range names {
