@@ -6,7 +6,6 @@ import (
 	_ "embed" // the bundled shortener list
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -55,42 +54,37 @@ var shorteners = func() map[string]bool {
 var (
 	linkRe = xurls.Relaxed()
 	tgRe   = regexp.MustCompile(`\btg://\S+`)
+	// inviteRe: an invite host (inviteHosts), for a field with more
+	// link-shaped matches than detect reads.
+	inviteRe = regexp.MustCompile(`\b(?:chat\.whatsapp\.com|api\.whatsapp\.com|wa\.me|t\.me|telegram\.me|telegram\.dog)\b`)
 	// handleRe: an "@username" not inside a word or an email address.
 	handleRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}_@.])@(\p{L}[\p{L}\p{N}_.]{2,31})`)
 	// phoneRe: a digit run with phone separators (group 1); IsPhone checks it.
 	phoneRe = regexp.MustCompile(`(?:^|[^\p{L}\p{N}])(\+?\d[\d \t().\-]{7,24}\d)`)
 	moneyRe = regexp.MustCompile(`[$£€¥₹₦₽]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*(?:\.\d+)?\s?(?:k|m)?\s?(?:usd|usdt|usdc|gbp|eur|dollars?|pounds?|euros?|btc|eth)\b`)
 	// dateRe: a date written with dots, dashes or slashes ("07.11.2025",
-	// "01-12-25"), perhaps followed by a time ("18:00", "19.30"); groups 1
-	// and 2 are its first two numbers (isDate).
-	dateRe = regexp.MustCompile(`\b(\d{1,2})[./-](\d{1,2})[./-](?:\d{4}|\d{2})\b(?:[ \t]+\d{1,2}[:.]\d{2})?`)
+	// "01-12-25"), perhaps followed by a time ("18:00", "19.30").
+	dateRe = regexp.MustCompile(`\b\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2})\b(?:[ \t]+\d{1,2}[:.]\d{2})?`)
 	// decimalRe: a number that starts "0." or "0," ("0.00012345 BTC",
 	// "+0.12345678%"); no phone number starts that way.
 	decimalRe = regexp.MustCompile(`(?:^|[^\d.,])([+-]?0[.,]\d+)`)
 )
 
-// sentenceTLDs are domain endings that are also words a sentence often
-// starts with. "Bitcoin is down again.Is it time to sell?" is a missing
-// space after a full stop, not a link to again.is, so a bare "word.word"
-// (notALink) ending in one of these is not a link. The matching view is
-// case-folded, so "earnbig.me" reads the same as "again.Me": a wrong ban is
-// the worse mistake, so neither counts. Endings scam sites favour (top,
-// click, win, money, …) are left out: "visit earnbig.top" is a link.
-var sentenceTLDs = func() map[string]bool {
+// bareEndings are the domain endings a name written with nothing else
+// ("cryptoprofits.com": no scheme, "www." or path) counts as a link with.
+// Most of the 1,400 endings are also words, file endings or stock exchange
+// codes: "Bitcoin is down again.Is it time to sell?", "5pm.So", "notes.zip"
+// and "SAP.DE" are text, and the case-folded view cannot tell "again.Me"
+// from "earnbig.me", so a bare name counts only with one of these, endings
+// spam uses that are not words a sentence often starts with. Anything with
+// a scheme, "www.", a path, a port or a query is a link whatever its ending.
+var bareEndings = func() map[string]bool {
 	m := map[string]bool{}
-	for _, w := range strings.Fields(`
-		am as at be by do in is it me my no so to us
-		you how now here one new next got like love live read run show talk call play help watch
-		meet eat fly rest work study open lol wow wtf fun cool best final fast hot total today day
-		life family team world chat`) {
-		m[w] = true
+	for _, e := range strings.Fields(`com net org biz io co cc ly xyz top site online shop store icu cyou buzz bid loan website`) {
+		m[e] = true
 	}
 	return m
 }()
-
-// fileEndings are domain endings that are also file endings: a bare
-// "crypto-notes.md" or "stocks.zip" is a file's name, not a link.
-var fileEndings = map[string]bool{"md": true, "mov": true, "zip": true}
 
 const (
 	// linkWindow bounds how far one search for a link reads. The link
@@ -101,23 +95,24 @@ const (
 	// one that runs past the window's end is taken to the next space.
 	linkWindow  = 1024
 	linkOverlap = 256
-	// maxLinks is how many links (and email addresses) one field is
-	// searched for. A field with more counts as having a link (detect):
-	// nobody shares that many in a chat message.
+	// maxLinks is how many link-shaped matches one field is read for:
+	// links, email addresses, and text such as "again.Is" or "1.1.1.1",
+	// each of which costs a search. A field with more counts as having a
+	// link (detect): no chat message holds that many.
 	maxLinks = 64
 )
 
-// LinkSpans finds the links in s, at most limit of them (limit < 0: no
-// limit), and how far s was searched. A sentence break such as "again.Is"
-// and, in a file name, a bare "notes.zip" are not links.
-func LinkSpans(s string, fileName bool, limit int) (spans [][2]int, searched int) {
+// LinkSpans finds the links in s, and how many link-shaped matches it
+// read: at most limit (limit < 0: all), the plain-text ones (notALink:
+// "again.Is", "notes.zip") included.
+func LinkSpans(s string, fileName bool, limit int) (spans [][2]int, read int) {
 	pos := 0
-	for pos < len(s) && (limit < 0 || len(spans) < limit) {
+	for pos < len(s) && (limit < 0 || read < limit) {
 		end := windowEnd(s, pos)
 		m := linkRe.FindStringIndex(s[pos:end])
 		if m == nil {
 			if end == len(s) {
-				return spans, len(s)
+				return spans, read
 			}
 			next := max(end-linkOverlap, pos+1)
 			for next < end && !utf8.RuneStart(s[next]) {
@@ -128,28 +123,31 @@ func LinkSpans(s string, fileName bool, limit int) (spans [][2]int, searched int
 		}
 		a, b := pos+m[0], pos+m[1]
 		if cutShort(s, b, end) {
-			// The window's end may have cut the link short: "https://chat"
-			// of "https://chat.whatsapp.com/…" when its "." is the window's
-			// last byte. Search again from the link's start; a link that
-			// still runs past that window is taken to the next space.
-			e := windowEnd(s, a)
-			if m2 := linkRe.FindStringIndex(s[a:e]); m2 != nil && m2[0] == 0 {
-				b = a + m2[1]
+			if a > pos {
+				// The window's end may have cut the link short ("https://chat"
+				// of "https://chat.whatsapp.com/…" when its "." is the
+				// window's last byte) or made one up ("dead.th" of "dead.The
+				// end"): search again from its start, with a whole window
+				// after it.
+				pos = a
+				continue
 			}
-			if cutShort(s, b, e) {
-				if i := strings.IndexFunc(s[b:], unicode.IsSpace); i >= 0 {
-					b += i
-				} else {
-					b = len(s)
-				}
+			// A link longer than a window: take it to the next space, less
+			// the punctuation a link never ends on.
+			if i := strings.IndexFunc(s[b:], unicode.IsSpace); i >= 0 {
+				b += i
+			} else {
+				b = len(s)
 			}
+			b = max(a+1, a+len(strings.TrimRight(s[a:b], `.,:;!?'"`)))
 		}
+		read++
 		if !notALink(s[a:b], s[b:], fileName) {
 			spans = append(spans, [2]int{a, b})
 		}
 		pos = b
 	}
-	return spans, pos
+	return spans, read
 }
 
 // windowEnd is where a search from i stops: linkWindow bytes on, moved back
@@ -171,83 +169,101 @@ func cutShort(s string, b, end int) bool {
 	return end < len(s) && end-b <= 16 && strings.IndexFunc(s[b:end], unicode.IsSpace) < 0
 }
 
-// notALink reports whether a found link is a sentence break or a file name:
-// written with no scheme, "www." or path, and, in a file name, anything;
-// elsewhere a name with a fileEnding ("crypto-notes.md"), or one word or
-// number, a dot and a sentenceTLD ("again.is", "2025.so"). Invite hosts and shorteners stay links, and so do a name with
-// more parts ("x.t.me", "promo.co.in"), a hyphen or a digit ("earn24.me"),
-// and one the text goes on from with a port, path, fragment or query
-// ("again.is?ref=1": the matcher stops before a query it cannot tell from a
-// question mark).
+// notALink reports whether a found link is plain text: written with no
+// scheme, "www.", user name, port, path, fragment or query (the text going
+// on with one, as in "again.is?ref=1", counts: the matcher stops before a
+// query it cannot tell from a question mark), not a shortener or an invite
+// host or a name under one ("x.t.me"), and either in a document's file name or
+// ending in neither one of bareEndings nor a secondLevels ending such as
+// "co.in".
 func notALink(raw, after string, fileName bool) bool {
 	low := strings.ToLower(raw)
 	if strings.Contains(low, "://") || strings.HasPrefix(low, "www.") || strings.ContainsAny(low, "/?#:@") {
 		return false
 	}
-	if len(after) > 0 && strings.IndexByte("/:#", after[0]) >= 0 {
-		return false
-	}
-	if len(after) > 1 && after[0] == '?' && isASCIIAlnum(after[1]) {
+	if len(after) > 0 && (after[0] == '/' || after[0] == '#') ||
+		len(after) > 1 && (after[0] == '?' && isASCIIAlnum(after[1]) || after[0] == ':' && after[1] >= '0' && after[1] <= '9') {
 		return false
 	}
 	host := strings.TrimSuffix(low, ".")
-	if inviteHosts[host] || shorteners[host] {
+	if inviteHosts[host] || shorteners[host] || inviteHosts[registrable(host)] {
 		return false
 	}
-	if fileName || fileEndings[host[strings.LastIndexByte(host, '.')+1:]] {
+	if fileName {
 		return true
 	}
-	word, tld, _ := strings.Cut(host, ".")
-	return sentenceTLDs[tld] && (allOf(word, unicode.IsLetter) || allOf(word, unicode.IsDigit))
+	labels := strings.Split(host, ".")
+	n := len(labels)
+	last := labels[n-1]
+	return !bareEndings[last] && (n < 3 || len(last) != 2 || !secondLevels[labels[n-2]])
 }
 
-// allOf reports whether s is not empty and every character of it is.
-func allOf(s string, is func(rune) bool) bool {
-	return s != "" && strings.IndexFunc(s, func(r rune) bool { return !is(r) }) < 0
-}
+// secondLevels make a two-part ending with a country code ("promo.co.in",
+// "deals.com.my"), which no missing space after a full stop produces.
+var secondLevels = map[string]bool{"co": true, "com": true, "net": true, "org": true}
 
-// PhoneSpans finds the phone numbers in s: the digit runs IsPhone accepts,
-// after dates, times and decimals that start "0." are set aside, so
-// "07.11.2025 18:00" and "0.00012345 BTC" are not phone numbers.
+// PhoneSpans finds the phone numbers in s: digit runs IsPhone accepts (from
+// a later group starting "0" when the run's first digits are something else,
+// as in "Room 4 0470 …") that are more than dates (onlyDates). A
+// decimal that starts "0." ("0.00012345 BTC") is never part of one.
 func PhoneSpans(s string) [][2]int {
 	masked := []byte(s)
-	for _, m := range dateRe.FindAllStringSubmatchIndex(s, -1) {
-		if isDate(s, m) {
-			blank(masked, m[0], m[1])
-		}
-	}
 	for _, m := range decimalRe.FindAllStringSubmatchIndex(s, -1) {
 		blank(masked, m[2], m[3])
 	}
+	dated := []byte(s)
+	for _, m := range dateRe.FindAllStringIndex(s, -1) {
+		// "06.12.34.56.78" goes on past the "date": a number written in pairs.
+		if rest := s[m[1]:]; len(rest) < 2 || !strings.ContainsRune("./-", rune(rest[0])) || rest[1] < '0' || rest[1] > '9' {
+			blank(dated, m[0], m[1])
+		}
+	}
 	var spans [][2]int
 	for _, m := range phoneRe.FindAllStringSubmatchIndex(string(masked), -1) {
-		if IsPhone(s[m[2]:m[3]]) {
-			spans = append(spans, [2]int{m[2], m[3]})
+		i, j := m[2], m[3]
+		for i < j && !IsPhone(s[i:j]) {
+			i = nextGroup(s, i, j)
+		}
+		if i < j && !onlyDates(dated[i:j]) {
+			spans = append(spans, [2]int{i, j})
 		}
 	}
 	return spans
 }
 
-// isDate reports whether a dateRe match m in s is a date rather than the end
-// of a phone number: its day and month can be a date ("12.34.56" cannot),
-// and the digits do not go on past it ("06.12.34.56.78") or start before it
-// with a "+" or "0" (a number written with its last six digits as
-// "12.11.23"; the minutes of a time just before a date do not count).
-func isDate(s string, m []int) bool {
-	d, _ := strconv.Atoi(s[m[2]:m[3]])
-	mo, _ := strconv.Atoi(s[m[4]:m[5]])
-	if d < 1 || mo < 1 || d > 31 || mo > 31 || d > 12 && mo > 12 {
-		return false
+// nextGroup is where the next digit group starting "0" after i begins in
+// s[:j] (j when there is none).
+func nextGroup(s string, i, j int) int {
+	for k := i + 1; k < j; k++ {
+		if s[k] == '0' && strings.IndexByte(" \t(", s[k-1]) >= 0 {
+			return k
+		}
 	}
-	if rest := s[m[1]:]; len(rest) > 1 && strings.ContainsRune("./-", rune(rest[0])) && rest[1] >= '0' && rest[1] <= '9' {
-		return false
+	return j
+}
+
+// onlyDates reports whether a digit run, with its dates blanked out, has
+// too little left to be a phone number: no "+", no group of three or more
+// digits and fewer than five digits (an event's text leaves at most a time
+// or a day and month: "07.11.2025 18:00",
+// "01.12.2025 - 05.12.2025", "08.30 07.11.2025"; a colon always ends a run,
+// so "18:00 07.11.2025" leaves only "00"). A number written with its last
+// digits like a date ("0470 12.11.23") keeps its "0470".
+func onlyDates(run []byte) bool {
+	digits, group, longest := 0, 0, 0
+	for _, c := range run {
+		switch {
+		case c == '+':
+			return false
+		case c >= '0' && c <= '9':
+			digits++
+			group++
+			longest = max(longest, group)
+		default:
+			group = 0
+		}
 	}
-	j := m[0]
-	for j > 0 && strings.IndexByte("0123456789 \t.-()+", s[j-1]) >= 0 {
-		j--
-	}
-	lead := strings.TrimLeft(s[j:m[0]], " \t(")
-	return lead == "" || lead[0] != '+' && lead[0] != '0' || j > 0 && s[j-1] == ':'
+	return longest < 3 && digits < 5
 }
 
 func isASCIIAlnum(c byte) bool {
@@ -287,9 +303,15 @@ func detect(fields []client.Field, allowed map[string]bool) signals {
 		// The other detectors read the text with every link blanked out:
 		// the digits of a job or event ID in a URL are not a phone number.
 		rest := v
-		links, searched := LinkSpans(v, f.Name == "document.file_name", maxLinks)
-		if searched < len(v) {
-			s[AnyLink] = true // more than maxLinks
+		links, read := LinkSpans(v, f.Name == "document.file_name", maxLinks+1)
+		if read > maxLinks {
+			// More than are read: the field has a link, and an invite host
+			// anywhere in it still counts.
+			s[AnyLink] = true
+			if inviteRe.MatchString(v) {
+				s[InviteLink] = true
+			}
+			links = links[:min(len(links), maxLinks)]
 		}
 		if len(links) > 0 {
 			var b strings.Builder
