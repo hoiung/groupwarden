@@ -22,6 +22,7 @@ type node struct {
 	root, good, ctlLog, sudoLog string
 	systemctl, sudo             string
 	script                      string // the install script run ("" = this directory's)
+	dir                         string // the directory it runs in ("" = this one)
 }
 
 // newNode builds the binary and a scratch root holding a live config and a
@@ -79,12 +80,17 @@ func (n *node) install(env []string, args ...string) (int, string) {
 	if script == "" {
 		script = "install.sh"
 	}
+	script, err := filepath.Abs(script)
+	if err != nil {
+		n.t.Fatal(err)
+	}
 	cmd := exec.Command("bash", append([]string{script}, args...)...)
+	cmd.Dir = n.dir
 	cmd.Env = append(os.Environ(), append([]string{"GW_ROOT=" + n.root, "SUDO=" + n.sudo, "SYSTEMCTL=" + n.systemctl,
 		"GW_HEALTH_WAIT=4"}, env...)...)
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
-	err := cmd.Run()
+	err = cmd.Run()
 	code := 0
 	if ee, ok := err.(*exec.ExitError); ok {
 		code = ee.ExitCode()
@@ -208,11 +214,51 @@ func TestInstallRendersRestartsAndRollsBack(t *testing.T) {
 	if code, out := n.install(nil, "--binary", odd); code != 1 || !strings.Contains(out, "the units expect 78") {
 		t.Fatalf("fatal-exit-code 77: exit %d\n%s", code, out)
 	}
+	// The same file named bare, run from its own directory while a good
+	// groupwarden is first on PATH: the check runs that file, not the PATH one.
+	bare := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bare, "groupwarden"), []byte("#!/bin/sh\n[ \"$1\" = fatal-exit-code ] && { echo 77; exit 0; }\nexec "+
+		n.good+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	n.dir = bare
+	code, out = n.install([]string{"PATH=" + filepath.Dir(n.good) + ":" + os.Getenv("PATH")}, "--binary", "groupwarden")
+	n.dir = ""
+	if code != 1 || !strings.Contains(out, "the units expect 78") {
+		t.Fatalf("a bare --binary name checked another file: exit %d\n%s", code, out)
+	}
 
 	for _, args := range [][]string{nil, {"--binary"}, {"--version", "x", "--binary", "y"}, {"--frobnicate"}} {
 		if code, out := n.install(nil, args...); code != 2 {
 			t.Fatalf("install %v: exit %d; want usage (2)\n%s", args, code, out)
 		}
+	}
+}
+
+// TestInstallPutsBackWhenTheNewBinaryRejectsTheConfig: an upgrade whose
+// binary rejects the live config (it cannot render the sync timer from it)
+// fails with the previous binary and units back and nothing restarted, so
+// the next restart, timer run or install never picks up the failed build.
+func TestInstallPutsBackWhenTheNewBinaryRejectsTheConfig(t *testing.T) {
+	n := newNode(t)
+	if code, out := n.install(nil, "--binary", n.good); code != 0 {
+		t.Fatalf("first install: exit %d\n%s", code, out)
+	}
+	restarts := strings.Count(n.calls(), "restart groupwarden.service\n")
+	strict := filepath.Join(t.TempDir(), "groupwarden-strict")
+	if err := os.WriteFile(strict, []byte("#!/bin/sh\n[ \"$1\" = schedule ] && { echo 'config: unknown key' >&2; exit 1; }\nexec "+
+		n.good+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, out := n.install(nil, "--binary", strict)
+	if code != 1 || !strings.Contains(out, "the previous binary and units are back in place") {
+		t.Fatalf("an upgrade that rejects the live config: exit %d\n%s", code, out)
+	}
+	if got, want := n.read("usr/local/bin/groupwarden"), readFile(t, n.good); got != want {
+		t.Fatal("the failed build was left installed")
+	}
+	if c := strings.Count(n.calls(), "restart groupwarden.service\n"); c != restarts {
+		t.Fatalf("restarted after a failed install:\n%s", n.calls())
 	}
 }
 
