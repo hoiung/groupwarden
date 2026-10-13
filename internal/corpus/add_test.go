@@ -86,6 +86,35 @@ func TestPublicFullRedaction(t *testing.T) {
 	}
 }
 
+// TestNumberAmongDigitsRedacted: a number with more digits beside it (a
+// second number, a date, a year) or in a tel: link leaves none of its digits
+// behind in either mode.
+func TestNumberAmongDigitsRedacted(t *testing.T) {
+	second := fmt.Sprintf("0%d %d", 7700, 900888)
+	for _, in := range []string{
+		"WhatsApp " + national + " " + second + " now",
+		"WhatsApp " + national + " " + second + " " + national + " " + second + " now",
+		"WhatsApp " + second + " " + second + " " + national + " now",
+		"Call " + ukMobile + " 21.11.2025 18:00", "call " + ukMobile + " 2025",
+		"msg " + waDigits + " " + strings.Replace(waDigits, "999", "888", 1),
+		"tap tel:+" + waDigits + " now",
+	} {
+		for _, public := range []bool{false, true} {
+			got := Redact(in, public)
+			for _, leaked := range []string{"900999", "900888"} {
+				if strings.Contains(got, leaked) {
+					t.Errorf("Redact(%q, public %v) kept %q: %q", in, public, leaked, got)
+				}
+			}
+		}
+	}
+	// A run longer than one number is replaced whole, wherever it would split.
+	in := "WhatsApp " + national + " - " + second + " - " + national + " now"
+	if got, want := Redact(in, true), "WhatsApp +44 7700 900123 now"; got != want {
+		t.Errorf("Redact(%q, public)\n got %q\nwant %q", in, got, want)
+	}
+}
+
 func countYAML(t *testing.T, dir string) int {
 	t.Helper()
 	n := 0
