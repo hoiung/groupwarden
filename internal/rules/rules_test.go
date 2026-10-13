@@ -272,8 +272,11 @@ func TestSentenceBreakIsNotALink(t *testing.T) {
 			t.Errorf("%q: any_link", text)
 		}
 	}
-	if s := sig([]client.Field{{Name: "document.file_name", Text: "bitcoin-talk-recording.mov"}}); s[AnyLink] {
-		t.Errorf("a file name read as a link: %v", s)
+	// ".ai" (an Illustrator file) is a country domain, not an everyday word.
+	for _, name := range []string{"bitcoin-talk-recording.mov", "bitcoin-logo.ai"} {
+		if s := sig([]client.Field{{Name: "document.file_name", Text: name}}); s[AnyLink] {
+			t.Errorf("file name %q read as a link: %v", name, s)
+		}
 	}
 	for _, text := range []string{
 		"https://again.is", "www.again.is", "again.is/join", "again.is?ref=1", "t.me", "wa.me", "bit.ly",
