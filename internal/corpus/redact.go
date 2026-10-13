@@ -147,6 +147,10 @@ func (r *redactor) link(raw string) string {
 	if j := strings.IndexAny(rest, "/?#"); j >= 0 {
 		host, path = rest[:j], rest[j:]
 	}
+	if scheme == "" && strings.Contains(host, ":") {
+		// A scheme with no "//" ("tel:+44…", "sms:"): its number is a phone.
+		host = r.numbers(host)
+	}
 	h := strings.TrimPrefix(strings.ToLower(host), "www.")
 	switch {
 	case path == "" || path == "/":
@@ -159,16 +163,21 @@ func (r *redactor) link(raw string) string {
 	case (h == "t.me" || h == "telegram.me" || h == "telegram.dog") && strings.HasPrefix(path, "/joinchat/"):
 		path = "/joinchat/INVITECODE"
 	case h == "wa.me" || h == "api.whatsapp.com":
-		path = digitRunRe.ReplaceAllStringFunc(path, func(d string) string {
-			if rules.IsPhone(d) {
-				return r.phone(d)
-			}
-			return d
-		})
+		path = r.numbers(path)
 	case r.public:
 		path = "/REDACTED"
 	}
 	return scheme + host + path
+}
+
+// numbers redacts the phone numbers written into a link as one run of digits.
+func (r *redactor) numbers(s string) string {
+	return digitRunRe.ReplaceAllStringFunc(s, func(d string) string {
+		if rules.IsPhone(d) {
+			return r.phone(d)
+		}
+		return d
+	})
 }
 
 // digitRunRe: a number written into a link (wa.me/<number>, ?phone=<number>).
