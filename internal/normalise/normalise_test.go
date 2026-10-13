@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"golang.org/x/text/unicode/norm"
@@ -406,6 +407,12 @@ func TestWordsAcrossReadings(t *testing.T) {
 		// punctuation with no space still separates two words
 		{"crypto,dm me", "crypto", "dm me", false, []string{"crypto"}, true},
 		{"bitcoin/guaranteed", "bitcoin", "guaranteed", false, []string{"bitcoin"}, true},
+		// a "*" stops at a break the plain reading shows, though the look-alike reading reads "|" as "l"
+		{"daily profit|bitcoin", "daily profit*", "*coin", false, []string{"daily", "profit"}, true},
+		{"daily profitxbitcoin", "daily profit*", "*coin", false, []string{"daily", "profitxbitcoin"}, false},
+		// a "*" at both ends reaches both ways, up to the break
+		{"crypto|bitcoin", "*ypt*", "*coin", false, []string{"crypto"}, true},
+		{"cryptocoin", "*ypt*", "*coin", false, []string{"cryptocoin"}, false},
 		// the look-alike reading of the click letter is "!", so it splits words there
 		{"crypto\u01c3dm me", "crypto", "dm me", false, []string{"crypto"}, true},
 		// letters merged across a soft hyphen are one word, read as the whole text reads it
@@ -425,5 +432,72 @@ func TestWordsAcrossReadings(t *testing.T) {
 		if got := second.MatchAvoiding(text, c.leet, used); got != c.secondElsewhere {
 			t.Errorf("%+q: %+q away from %+q's words = %v, want %v", c.text, c.second, c.first, got, c.secondElsewhere)
 		}
+	}
+}
+
+// apart is the rules package's lure check on one text: one pattern matches
+// characters the other matches in no reading.
+func apart(text Text, a, b Pattern) bool {
+	for _, x := range [][2]Pattern{{a, b}, {b, a}} {
+		used := map[int]bool{}
+		x[0].Words(text, false, used)
+		if x[1].MatchAvoiding(text, false, used) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestWildcardsStopAtABreak: with a "*" in each pattern, a character put
+// between the two words makes them different words exactly when the whole
+// text, read plainly or with look-alike letters, shows it as a space or
+// punctuation there. So a real lure ("daily profit|bitcoin") acts, and one
+// word ("dogecoin" with a letter in between) never does. Checked for every
+// character below U+30000 the two readings disagree on ("|" is punctuation
+// plainly and "l" with look-alike letters; U+01C3 the other way round), and
+// for every 101st other character as a control.
+func TestWildcardsStopAtABreak(t *testing.T) {
+	shapes := []struct{ left, right, a, b string }{
+		{"daily profit", "bitcoin", "daily profit*", "*coin"},
+		{"doge", "coin", "doge*", "*coin"},
+	}
+	const end, chunk = 0x30000, 0x2000
+	for _, sh := range shapes {
+		a, b := mustCompile(t, sh.a), mustCompile(t, sh.b)
+		l, r := []rune(sh.left), []rune(sh.right)
+		var disagree, controls atomic.Int64
+		t.Run(sh.left+sh.right, func(t *testing.T) {
+			for lo := rune(1); lo < end; lo += chunk {
+				t.Run(fmt.Sprintf("U+%05X", lo), func(t *testing.T) {
+					t.Parallel()
+					for c := lo; c < min(lo+chunk, end); c++ {
+						if c >= 0xD800 && c < 0xE000 {
+							continue
+						}
+						// only the letters either side can join with c in a reading
+						around := string([]rune{l[len(l)-1], c, r[0]})
+						plainSplit, lookSplit := len(tokens(base(around))) > 1, len(tokens(skeleton(around))) > 1
+						if plainSplit != lookSplit {
+							disagree.Add(1)
+						} else if c%101 != 0 {
+							continue
+						} else {
+							controls.Add(1)
+						}
+						s := sh.left + string(c) + sh.right
+						text := Prepare(s, nil)
+						want := (plainSplit || lookSplit) && a.MatchIn(text, false) && b.MatchIn(text, false)
+						if got := apart(text, a, b); got != want {
+							t.Fatalf("%+q: %q and %q on different words = %v, want %v", s, sh.a, sh.b, got, want)
+						}
+					}
+				})
+			}
+		})
+		// premise: the readings disagree on hundreds of characters ("|", U+01C3)
+		if disagree.Load() < 500 || controls.Load() < 1000 {
+			t.Fatalf("premise: %q: %d characters the readings disagree on, %d controls", sh.left+sh.right, disagree.Load(), controls.Load())
+		}
+		t.Logf("%q: %d characters the readings disagree on, %d controls", sh.left+sh.right, disagree.Load(), controls.Load())
 	}
 }
