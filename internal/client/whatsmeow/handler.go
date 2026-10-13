@@ -72,6 +72,11 @@ func (a *Adapter) handle(evt any) bool {
 		sink.Lifecycle(classify(e))
 	case *events.HistorySync:
 		// History sync is disabled (ManualHistorySyncDownload); nothing to do.
+	case *events.UndecryptableMessage:
+		// The library has asked the sender's device to send it again; if it
+		// does, it arrives as a Message. Logged, so a run of them shows.
+		a.log.Warn("a message could not be decrypted; WhatsApp asked the sender's device to send it again",
+			"chat", mask.IDs(e.Info.Chat.String()), "unavailable", e.IsUnavailable)
 	}
 	return true
 }
