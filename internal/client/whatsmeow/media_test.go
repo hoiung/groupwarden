@@ -107,7 +107,7 @@ func serveMedia(t *testing.T, body []byte, declareLength bool) *mediaServer {
 // limited.
 func TestMediaDownloadCapped(t *testing.T) {
 	cli := newConfiguredClient(t)
-	//lint:ignore SA1019 the test drives the library's own download path, as the adapter's join does (README "Known limits")
+	//lint:ignore SA1019 the test drives the library's own download path through its internal API, as the adapter's join does
 	internals := cli.DangerousInternals() //nolint:staticcheck // see above
 	const limit = 64 << 10
 	for _, declareLength := range []bool{true, false} {
