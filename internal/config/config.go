@@ -204,6 +204,10 @@ func Parse(raw []byte, dir string) (*Loaded, error) {
 		return nil, err
 	}
 	cfg.Dir = dir
+	// The version is of the paths as written: resolved against the config's
+	// directory, the same file would have one version in a clone (the
+	// spam-intake skill's check) and another on the node.
+	written := *cfg
 	for _, p := range []*string{&cfg.DataDir, &cfg.SecretsFile, &cfg.DeployKeyFile, &cfg.CorpusDir, &cfg.Backup.TargetDir} {
 		if *p != "" && !filepath.IsAbs(*p) {
 			*p = filepath.Join(dir, *p)
@@ -220,7 +224,7 @@ func Parse(raw []byte, dir string) (*Loaded, error) {
 		}
 		return nil, err
 	}
-	return &Loaded{Config: cfg, Rules: rs, Hash: hashOf(cfg, rs), Raw: raw}, nil
+	return &Loaded{Config: cfg, Rules: rs, Hash: hashOf(&written, rs), Raw: raw}, nil
 }
 
 func decode(root any) (*Config, error) {
