@@ -136,7 +136,8 @@ func (e *env) backupTarget(cfg *config.Config) error {
 }
 
 // healthcheck reads run's status from the store (no lock, no WhatsApp) and
-// exits 0 only when run is alive, connected, not deaf and has its config.
+// exits 0 only when run is alive, connected, not deaf, has its config and has
+// reached the admin chat.
 func (e *env) healthcheck(ctx context.Context, cfg *config.Config) int {
 	if _, err := os.Stat(cfg.StoreDB()); err != nil { // #nosec G703 -- operator-configured data dir
 		fmt.Fprintln(e.stdout, "running: no (no database yet)")
