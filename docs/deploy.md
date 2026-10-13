@@ -53,7 +53,7 @@ backup:
 The config repo also needs its first corpus before the first sync. Every load tests the rules against `corpus/` and refuses one without both spam and legit samples, so the sync would REJECT the commit. Start from the public corpus and check the config from a clone of this repo before you push:
 
 ```bash
-cp -r tests/corpus <config repo>/corpus
+mkdir -p <config repo>/corpus && cp -r tests/corpus/. <config repo>/corpus/
 go run ./cmd/groupwarden check --config <config repo>/config.yaml   # must print "OK config v…"
 ```
 
