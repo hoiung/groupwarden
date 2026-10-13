@@ -11,14 +11,15 @@ import (
 	"github.com/hoiung/groupwarden/internal/rules"
 )
 
-// Numbers outside the repo's PII allowlist are built at run time so the
-// public-repo scanner never sees one written out.
+// Numbers no person can have: the Ofcom drama range (900999 is not one of the
+// public stand-ins, so a leak of it shows) and the unassigned country code
+// +999, for a three-digit code.
 var (
-	ukMobile = fmt.Sprintf("+%d %d %d", 44, 7911, 123456) // +44, then 10 digits
-	ngMobile = fmt.Sprintf("+%d %d %d %d", 234, 803, 123, 4567)
-	national = fmt.Sprintf("0%d %d", 7911, 123456)
-	waDigits = fmt.Sprintf("%d%d", 44, 7911123456)
-	zeros    = strings.Repeat
+	ukMobile    = fmt.Sprintf("+%d %d %d", 44, 7700, 900999) // +44, then 10 digits
+	otherMobile = fmt.Sprintf("+%d %d %d %d", 999, 803, 123, 4567)
+	national    = fmt.Sprintf("0%d %d", 7700, 900999)
+	waDigits    = fmt.Sprintf("%d%d", 44, 7700900999)
+	zeros       = strings.Repeat
 )
 
 // acts reports whether the test ruleset's acting rules catch text.
@@ -35,7 +36,7 @@ func acts(t *testing.T, text string) bool {
 func TestPrivateKeepsShape(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"bitcoin desk " + ukMobile, "bitcoin desk +44 " + zeros("0", 4) + " " + zeros("0", 6)},
-		{"call " + ngMobile + " now", "call +234 " + zeros("0", 3) + " " + zeros("0", 3) + " " + zeros("0", 4) + " now"},
+		{"call " + otherMobile + " now", "call +999 " + zeros("0", 3) + " " + zeros("0", 3) + " " + zeros("0", 4) + " now"},
 		{"text " + national, "text 0" + zeros("0", 4) + " " + zeros("0", 6)},
 		{"wa.me/" + waDigits + " for crypto", "wa.me/44" + zeros("0", 10) + " for crypto"},
 		{"join https://chat.whatsapp.com/AbCdEf0123456789xyz now", "join https://chat.whatsapp.com/INVITECODE now"},
@@ -64,7 +65,7 @@ func TestPrivateKeepsShape(t *testing.T) {
 // every non-invite URL path for /REDACTED, every email for name@example.com,
 // and still trips the same rule.
 func TestPublicFullRedaction(t *testing.T) {
-	in := "bitcoin " + ukMobile + " or " + ngMobile + " again " + ukMobile +
+	in := "bitcoin " + ukMobile + " or " + otherMobile + " again " + ukMobile +
 		" wa.me/" + waDigits + " https://chat.whatsapp.com/AbCdEf0123456789xyz t.me/example_signals" +
 		" https://promo.example.co.uk/vip/join?ref=77 desk@example.org @" + waDigits
 	// The wa.me number is the first number again: it keeps the same stand-in.
@@ -75,7 +76,7 @@ func TestPublicFullRedaction(t *testing.T) {
 	if got != want {
 		t.Fatalf("Redact(public)\n got %q\nwant %q", got, want)
 	}
-	for _, leaked := range []string{"7911", "123456", "803", "4567", "AbCdEf", "example_signals", "vip", "desk@"} {
+	for _, leaked := range []string{"900999", "+999", "803", "4567", "AbCdEf", "example_signals", "vip", "desk@"} {
 		if strings.Contains(got, leaked) {
 			t.Errorf("public redaction kept %q: %q", leaked, got)
 		}
@@ -169,6 +170,20 @@ func TestTypeAndPushNameRecorded(t *testing.T) {
 	b, err := Add(dir, Legit, Sample{Text: "see you at class on Sunday"}, false, seed)
 	if err != nil || b.Seeded != 0 || filepath.Dir(b.Path) != filepath.Join(dir, Legit) {
 		t.Fatalf("second add: %+v %v", b, err)
+	}
+	// A new private config repo keeps its empty folders with a .gitkeep:
+	// still a new corpus, seeded at the first paste.
+	kept := filepath.Join(t.TempDir(), "corpus")
+	for _, class := range []string{Spam, Legit} {
+		if err := os.MkdirAll(filepath.Join(kept, class), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(kept, class, ".gitkeep"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if c, err := Add(kept, Spam, Sample{Text: "Earn daily with bitcoin, join t.me/example_pumps"}, false, seed); err != nil || c.Seeded != 2 {
+		t.Fatalf("first add to empty folders: %+v %v, want 2 seeded", c, err)
 	}
 	for _, bad := range []struct {
 		label string
