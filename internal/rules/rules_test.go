@@ -337,6 +337,13 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 		"Bitcoin market cap passed 1 000 000 000 000 today", "the crypto video got 1 000 000 000 views",
 		"crypto webinar on Teams Meeting ID: 345 012 789 456 Passcode: abc123",
 		"stocks: 2 000 000 000 shares traded", "crypto losses of 1 050 000 000 dollars", "the crypto market lost 1500 000 000 dollars", "stocks worth 2500 000 000 000 dollars", "crypto book ISBN 978 0 306 40615 7",
+		// Dates, IDs and lists the fourth review found.
+		"crypto dates 2025-11-07 - 2025-11-09", "crypto days 2025-11-07 2025-11-08", "stocks 2025.11.07 - 2025.11.09",
+		"crypto book ISBN-13: 978-0306406157", "crypto order 204-0571234-5678901", "crypto serial 4521-0874-3321-9910",
+		"crypto lottery 04 11 24 35 42 08 15 22 31",
+		// Dates joined or written year first (the class sweep).
+		"crypto 07.11.2025-07.11.2025", "crypto 07.11.25-07.11.2025", "crypto 07.11.2025 18:00-07.11.2025 18:00", "crypto 07-11-2025 18:00-07-11-2025 18:00",
+		"crypto 2025-11-07 2025-11-08 18:00", "crypto 09.30 07.11.2025-2025-11-07", "crypto 07.11.2025 2025.11.07",
 		"Bitcoin market cap passed 1\u00a0000\u00a0000\u00a0000 today",
 	} {
 		if s := sig(body(text)); s[PhoneNumber] {
@@ -361,6 +368,8 @@ func TestDatesAndDecimalsAreNotPhones(t *testing.T) {
 		// A number with more digits after it: a second number, a date, a year.
 		"WhatsApp " + national + " " + national + " now", "call +44 7700 900123 21.11.2025 18:00",
 		"call +44 7700 900123 2025", "Room 4 0" + "7700 900 123 456",
+		"Room 4 00" + "44 7700 900123", "Support 24/7 00" + "44 7700 900123",
+		"Room 4 " + "447700900123", "call 0" + "6 12 34 56 78 21.11.2025 18:00",
 	} {
 		if !sig(body(text))[PhoneNumber] {
 			t.Errorf("%q: no phone_number", text)
@@ -396,6 +405,9 @@ func TestManyLinksCountAsALink(t *testing.T) {
 		}
 		if s := sig(body("bitcoin " + p + "join whatsapp.com/channel/0029Va")); !s[InviteLink] {
 			t.Errorf("channel link after padding not an invite: %v", s)
+		}
+		if s := sig(body("bitcoin " + p + "join...chat.whatsapp.com/AbCd")); !s[InviteLink] {
+			t.Errorf("invite after dots after padding not counted: %v", s)
 		}
 		if s := sig(body("bitcoin " + p + "see https://bit.ly/AbCd")); !s[Shortener] {
 			t.Errorf("shortener after padding not counted: %v", s)
