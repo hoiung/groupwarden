@@ -315,6 +315,22 @@ func TestLureMatchBans(t *testing.T) {
 			t.Fatalf("%+q decision = %+v", text, d)
 		}
 	}
+	// A "*" in each list reaches only as far as a break between words that
+	// any reading shows, so a lure and a crypto word are two words when the
+	// look-alike reading joins them ("|" reads as "l"), when the plain reading
+	// does (U+01C3 is a letter there), and when each list reads its word only
+	// in the joined reading (Cyrillic letters). With no break it is one word.
+	wild := testSpec()
+	wild.WordLists["lures"] = append(wild.WordLists["lures"], "daily profit*")
+	rw := compile(t, wild)
+	for _, text := range []string{"Daily Profit|Bitcoin Mining", "daily profit\u01c3bitcoin", "daily prof\u0456t|bitco\u0456n"} {
+		if d := rw.Decide(Input{Community: communityA, Fields: body(text)}); d.Action != DeleteRemoveBan || d.Rule != "crypto-lure" {
+			t.Fatalf("%+q decision = %+v", text, d)
+		}
+	}
+	if d := rw.Decide(Input{Community: communityA, Fields: body("daily profitxbitcoin")}); d.Action != ActionNone {
+		t.Fatalf("one word decision = %+v", d)
+	}
 	// A lure phrase with no crypto or stock word does nothing.
 	if d := rs.Decide(Input{Community: communityA, Fields: body("inbox me for salsa lesson times")}); d.Action != ActionNone {
 		t.Fatalf("lure-only decision = %+v", d)
