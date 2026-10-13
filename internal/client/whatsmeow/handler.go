@@ -22,7 +22,15 @@ import (
 func (a *Adapter) handle(evt any) bool {
 	box := a.sink.Load()
 	if box == nil {
-		return false // no sink yet: do not acknowledge what nobody stored
+		// No sink yet: hold the ack of what this handler stores, so WhatsApp
+		// redelivers it. Every other event returns true, because the library
+		// stops at the first handler that returns false: pairing's QR handler
+		// comes after this one and would never see the pairing code.
+		switch evt.(type) {
+		case *events.Message, *events.GroupInfo, *events.JoinedGroup:
+			return false
+		}
+		return true
 	}
 	sink := box.s
 	switch e := evt.(type) {
