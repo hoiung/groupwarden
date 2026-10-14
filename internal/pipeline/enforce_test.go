@@ -156,31 +156,21 @@ func TestBannedJoinRequestRejected(t *testing.T) {
 	}
 }
 
-// TestCommunityOrPerGroupRemove: where the bot is a community admin and the
-// community enforces, the ban removes at community level as well as from each
-// group the person is in; elsewhere it removes group by group.
-func TestCommunityOrPerGroupRemove(t *testing.T) {
+// TestPerGroupRemoveOnly: a ban removes the person from each group they are
+// in, never from the community's own ID, which WhatsApp refuses with
+// "bad-request" (live, 2026-10-14), even when the bot is a community admin.
+func TestPerGroupRemoveOnly(t *testing.T) {
 	k := modtest.New(t, "")
 	k.Dir.Apply(&client.GroupChange{Group: modtest.GB, Joined: []client.JID{modtest.Spammer}})
 	k.Deliver(k.Spam("M1", modtest.G1))
 	k.Fire()
-	for _, g := range []client.JID{modtest.Community, modtest.G1, modtest.G2, modtest.GB} {
+	for _, g := range []client.JID{modtest.G1, modtest.G2, modtest.GB} {
 		if removed(k, g, modtest.Spammer) != 1 {
 			t.Errorf("not removed from %s: %v", g, k.Fake.Calls())
 		}
 	}
-	// The bot is not a community admin: group by group only.
-	k2 := modtest.New(t, "")
-	groups := modtest.Groups()
-	groups[0].Participants = groups[0].Participants[1:] // the bot is no longer in the community's admin list
-	modtest.Load(t, k2.Dir, groups)
-	k2.Deliver(k2.Spam("M1", modtest.G1))
-	k2.Fire()
-	if removed(k2, modtest.Community, modtest.Spammer) != 0 {
-		t.Fatal("removed at community level without being a community admin")
-	}
-	if removed(k2, modtest.G1, modtest.Spammer) != 1 || removed(k2, modtest.G2, modtest.Spammer) != 1 {
-		t.Fatalf("calls %v", k2.Fake.Calls())
+	if removed(k, modtest.Community, modtest.Spammer) != 0 {
+		t.Fatalf("removed on the community's own ID: %v", k.Fake.Calls())
 	}
 }
 
@@ -581,7 +571,7 @@ func TestHeldRemovalsNote(t *testing.T) {
 		t.Fatalf("note with nothing queued: %q, want none", got)
 	}
 	k.Deliver(k.Spam("M1", modtest.G1))
-	want := " 3 queued removal(s) or join-request rejection(s) go out only after [Resume]; a report may already say they were done."
+	want := " 2 queued removal(s) or join-request rejection(s) go out only after [Resume]; a report may already say they were done."
 	if got := pipeline.HeldRemovalsNote(k.Ctx, k.Store, k.Log); got != want {
 		var rows []string
 		for _, g := range []client.JID{modtest.Community, modtest.G1, modtest.G2, modtest.GB} {
