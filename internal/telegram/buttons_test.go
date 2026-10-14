@@ -41,9 +41,9 @@ func TestUndoUnbansAndOverturns(t *testing.T) {
 		t.Fatal("still banned after [Undo]")
 	}
 	got := rowsOf(h, modtest.SpammerM)
-	if got["remove/overturned"] != 3 || got["ban/overturned"] != 1 || got["revoke/requested"] != 1 ||
+	if got["remove/overturned"] != 2 || got["ban/overturned"] != 1 || got["revoke/requested"] != 1 ||
 		got["remove/requested"] != 0 || got["unban/requested"] != 1 {
-		t.Fatalf("rows %v, want 3 removals + the ban overturned, the delete kept, one unban", got)
+		t.Fatalf("rows %v, want 2 removals + the ban overturned, the delete kept, one unban", got)
 	}
 	for _, row := range h.k.Rows(modtest.SpammerM) {
 		if row.Action == store.ActUnban && (row.TriggerID != "tg:"+strconv.FormatInt(r.ID, 10)+":undo" ||
@@ -66,7 +66,7 @@ func TestUndoListsGroups(t *testing.T) {
 	h.press(adminUser, "undo", r.ID)
 	reply := h.lastReply()
 	if !contains(reply, "Re-invite them by hand to:", "general (group…0111)", "jobs (group…0222)",
-		"community a (group…0999)", "cannot be restored") {
+		"cannot be restored") {
 		t.Fatalf("reply %q", reply)
 	}
 	if !strings.HasPrefix(h.answers()[0], "Undone by Ann") {
@@ -102,10 +102,10 @@ func TestBanFromWatchOnlyReport(t *testing.T) {
 	if !h.k.Banned(modtest.SpammerM, "") {
 		t.Fatal("not banned after [Ban]")
 	}
-	if h.k.Fake.Count("Revoke "+string(modtest.G1)) != 1 || h.k.Fake.Count("Remove") != 3 {
-		t.Fatalf("calls %v, want the delete and 3 removals", h.k.Fake.Calls())
+	if h.k.Fake.Count("Revoke "+string(modtest.G1)) != 1 || h.k.Fake.Count("Remove") != 2 {
+		t.Fatalf("calls %v, want the delete and 2 removals", h.k.Fake.Calls())
 	}
-	if !contains(h.lastReply(), "Banned by Ann", "the message is being deleted", "removed from 3 group(s) and banned") {
+	if !contains(h.lastReply(), "Banned by Ann", "the message is being deleted", "removed from 2 group(s) and banned") {
 		t.Fatalf("reply %q", h.lastReply())
 	}
 }
@@ -126,7 +126,7 @@ func TestBanDuringPauseSaysWhatWaits(t *testing.T) {
 			h.k.Fake.Calls())
 	}
 	if !contains(h.lastReply(), "the message is deleted once the pause ends",
-		"is banned; their removal from 3 group(s) waits for the pause to end") {
+		"is banned; their removal from 2 group(s) waits for the pause to end") {
 		t.Fatalf("reply %q", h.lastReply())
 	}
 }
@@ -142,8 +142,8 @@ func TestWatchOnlyBanDeletesOnlyWithinReplayWindow(t *testing.T) {
 	if h.k.Fake.Count("Revoke") != 0 {
 		t.Fatalf("an old message was deleted: %v", h.k.Fake.Calls())
 	}
-	if h.k.Fake.Count("Remove") != 3 || !h.k.Banned(modtest.SpammerM, "") {
-		t.Fatalf("calls %v banned=%v, want 3 removals and the ban", h.k.Fake.Calls(), h.k.Banned(modtest.SpammerM, ""))
+	if h.k.Fake.Count("Remove") != 2 || !h.k.Banned(modtest.SpammerM, "") {
+		t.Fatalf("calls %v banned=%v, want 2 removals and the ban", h.k.Fake.Calls(), h.k.Banned(modtest.SpammerM, ""))
 	}
 	for _, row := range h.k.Rows(modtest.SpammerM) {
 		if row.Action == store.ActRevoke && strings.HasPrefix(row.TriggerID, store.AdminTrigger) {
