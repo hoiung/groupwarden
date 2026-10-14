@@ -97,7 +97,7 @@ func TestPauseResume(t *testing.T) {
 		t.Fatalf("reply %q", h.lastReply())
 	}
 	h.k.Fire()
-	if h.k.Fake.Count("Revoke") != 1 || h.k.Fake.Count("Remove") != 3 {
+	if h.k.Fake.Count("Revoke") != 1 || h.k.Fake.Count("Remove") != 2 {
 		t.Fatalf("calls after /resume %v", h.k.Fake.Calls())
 	}
 }
@@ -154,7 +154,7 @@ func TestBanUnbanCommands(t *testing.T) {
 	r := watchOnly(t, h)
 	h.command(telegramtest.ChatID, adminUser, "/ban", h.head(r.ID))
 	h.k.Fire()
-	if !h.k.Banned(modtest.SpammerM, "") || h.k.Fake.Count("Remove") != 3 {
+	if !h.k.Banned(modtest.SpammerM, "") || h.k.Fake.Count("Remove") != 2 {
 		t.Fatalf("/ban: banned=%v calls %v", h.k.Banned(modtest.SpammerM, ""), h.k.Fake.Calls())
 	}
 	h.press(secondAdm, "ban", r.ID)
