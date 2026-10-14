@@ -346,14 +346,6 @@ func (d *Directory) BotNotAdmin(group client.JID) {
 	})
 }
 
-// IsCommunity reports whether jid is a community the bot knows.
-func (d *Directory) IsCommunity(jid client.JID) bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	g := d.groups[jid]
-	return g != nil && g.community
-}
-
 // Groups lists the chat groups (not community parents) that belong to the
 // configured community, sorted.
 func (d *Directory) Groups(community string, rs *rules.Ruleset) []client.JID {
