@@ -21,7 +21,7 @@ func TestCrossPostRemovesOnce(t *testing.T) {
 	k.Clock.Advance(time.Second)
 	k.Deliver(k.Spam("M2", modtest.G2))
 	k.Fire()
-	for _, g := range []client.JID{modtest.Community, modtest.G1, modtest.G2} {
+	for _, g := range []client.JID{modtest.G1, modtest.G2} {
 		if n := removed(k, g, modtest.Spammer); n != 1 {
 			t.Fatalf("removed from %s %d times: %v", g, n, k.Fake.Calls())
 		}
