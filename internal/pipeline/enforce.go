@@ -47,12 +47,13 @@ func (e *Enforcer) wake() {
 func (e *Enforcer) Notify() { e.wake() }
 
 // Removals plans the removal of m from every group of each community where
-// the directory shows them, plus inChat (where they were just seen). Where
-// the bot is a community admin it also removes them at community level (the
-// AC 1.9 E1 probe says whether that alone reaches every group; the per-group
-// removals report already_gone when it did). A community in shadow mode gets
-// shadow rows. A current human admin is never planned for removal: ok is
-// false and the caller reports it instead.
+// the directory shows them, plus inChat (where they were just seen). The
+// community's announcement group is one of those groups, and leaving it takes
+// them out of the community. There is no removal from the community itself:
+// WhatsApp answers a participant removal on the community's own ID with
+// "bad-request" (live, 2026-10-14). A community in shadow mode gets shadow
+// rows. A current human admin is never planned for removal: ok is false and
+// the caller reports it instead.
 func (e *Enforcer) Removals(m client.Member, communities []string, inChat client.JID, rs *rules.Ruleset) (intents []ledger.Intent, ok bool) {
 	if e.Directory.IsAdmin(m.LID, m.Phone, rs) {
 		return nil, false
@@ -70,9 +71,6 @@ func (e *Enforcer) Removals(m client.Member, communities []string, inChat client
 				intents = append(intents, ledger.Intent{Action: store.ActRemove, Chat: chat, Community: c, Enforce: enforce,
 					Address: e.Directory.AddressIn(chat, m)})
 			}
-		}
-		if cj := client.JID(c); e.Directory.IsCommunity(cj) && e.Directory.BotIsAdmin(cj) {
-			add(cj)
 		}
 		if inChat != "" && e.Directory.Community(inChat, rs) == c {
 			add(inChat)
