@@ -253,7 +253,7 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 		if err != nil {
 			return fmt.Errorf("load the /enable list: %w", err)
 		}
-		log.Info("enabled list loaded", "config", "v"+l.Hash)
+		log.Info("enabled list loaded", "config", "v"+l.Hash, "communities", len(l.Rules.Communities()))
 		a, err := app.Build(app.Parts{Adapter: w.adapter, Store: w.store, Inbox: w.inbox, Config: holder,
 			Session: session, Telegram: opts, Alerts: w.alerter, Log: log})
 		if err != nil {
