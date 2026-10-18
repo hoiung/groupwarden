@@ -47,12 +47,21 @@ func TestEnableSweepsAfterTheJoin(t *testing.T) {
 	if pendingAtJoin != 0 || len(a.sweepNow) != 1 {
 		t.Fatalf("sweeps pending at the join %d, after /enable %d; want 0 then 1", pendingAtJoin, len(a.sweepNow))
 	}
+	// Who switched it on is kept with their Telegram ID, not the name alone.
+	if list, err := st.EnabledList(ctx); err != nil || len(list) != 1 || list[0].By != by.String() {
+		t.Fatalf("entry %+v %v, want By %q", list, err, by.String())
+	}
 	<-a.sweepNow
 	reply, err = controls{a}.Disable(ctx, "book club", by)
 	if err != nil || !strings.Contains(reply, `no longer moderates the community "book club"`) || len(a.sweepNow) != 1 {
 		t.Fatalf("disable: %q %v, %d sweeps pending", reply, err, len(a.sweepNow))
 	}
 	<-a.sweepNow
+	// A /disable that removed nothing changes nothing to sweep for.
+	if reply, err := (controls{a}).Disable(ctx, "https://chat.whatsapp.com/CoMm1", by); err != nil ||
+		!strings.Contains(reply, "is not on") || len(a.sweepNow) != 0 {
+		t.Fatalf("a /disable of what is off: %q %v, %d sweeps pending", reply, err, len(a.sweepNow))
+	}
 	// A join WhatsApp refuses, and one an admin must approve: the entry is
 	// kept either way, and the sweep lists the group as absent meanwhile.
 	group := client.JID("99999000000333@g.us") // listed in .secret-pii-allowlist
