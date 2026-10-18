@@ -147,8 +147,9 @@ type Loaded struct {
 	Config *Config
 	Rules  *rules.Ruleset
 	// Hash identifies the compiled config ("config v<Hash>"): the sha256 of
-	// the effective settings and the compiled ruleset, so comments, key
-	// order and defaults written out do not change it.
+	// the file's effective settings and compiled ruleset, so comments, key
+	// order and defaults written out do not change it. The /enable entries
+	// merged in do not change it either (parseEnabled).
 	Hash string
 	// Raw is the file as read (kept on disk as the last good copy).
 	Raw []byte
