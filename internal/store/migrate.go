@@ -227,6 +227,17 @@ ALTER TABLE reports ADD COLUMN owns_attachment INTEGER NOT NULL DEFAULT 0 CHECK 
 UPDATE reports SET owns_attachment = 1 WHERE evidence_id IS NOT NULL AND kind != 'log'
 	AND id = (SELECT MIN(o.id) FROM reports o WHERE o.evidence_id = reports.evidence_id);
 `,
+	// 11: the communities and single groups an admin switched on with
+	// /enable (moderated beside the config file's communities).
+	`
+CREATE TABLE enabled (
+	id         TEXT    PRIMARY KEY,
+	kind       TEXT    NOT NULL CHECK (kind IN ('community', 'group')),
+	name       TEXT    NOT NULL DEFAULT '',
+	enabled_by TEXT    NOT NULL,
+	created_at INTEGER NOT NULL
+);
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
