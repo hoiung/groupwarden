@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -48,7 +49,40 @@ func TestEnableSweepsAfterTheJoin(t *testing.T) {
 	}
 	<-a.sweepNow
 	reply, err = controls{a}.Disable(ctx, "book club", by)
-	if err != nil || !strings.Contains(reply, "no longer moderates") || len(a.sweepNow) != 1 {
+	if err != nil || !strings.Contains(reply, `no longer moderates the community "book club"`) || len(a.sweepNow) != 1 {
 		t.Fatalf("disable: %q %v, %d sweeps pending", reply, err, len(a.sweepNow))
+	}
+	<-a.sweepNow
+	// A join WhatsApp refuses, and one an admin must approve: the entry is
+	// kept either way, and the sweep lists the group as absent meanwhile.
+	group := client.JID("99999000000333@g.us") // listed in .secret-pii-allowlist
+	fake.Invites["GrOuP1"] = client.Group{JID: group, Name: "public chat"}
+	fake.FailNext("JoinWithLink", errors.New("join refused"))
+	if reply, err := (controls{a}).Enable(ctx, "https://chat.whatsapp.com/GrOuP1", by); err != nil ||
+		!strings.Contains(reply, "joining it failed") || len(a.sweepNow) != 1 {
+		t.Fatalf("a refused join: %q %v, %d sweeps pending", reply, err, len(a.sweepNow))
+	}
+	<-a.sweepNow
+	if _, err := st.Disable(ctx, string(group)); err != nil {
+		t.Fatal(err)
+	}
+	fake.JoinPending = map[client.JID]bool{group: true}
+	if reply, err := (controls{a}).Enable(ctx, "https://chat.whatsapp.com/GrOuP1", by); err != nil ||
+		!strings.Contains(reply, "join request sent") || len(a.sweepNow) != 1 {
+		t.Fatalf("a join to approve: %q %v, %d sweeps pending", reply, err, len(a.sweepNow))
+	}
+}
+
+// TestAndList: the own settings a reply names read as English.
+func TestAndList(t *testing.T) {
+	for want, words := range map[string][]string{
+		"":                               nil,
+		"mode":                           {"mode"},
+		"mode and retention":             {"mode", "retention"},
+		"mode, word_lists and retention": {"mode", "word_lists", "retention"},
+	} {
+		if got := andList(words); got != want {
+			t.Errorf("andList(%q) = %q, want %q", words, got, want)
+		}
 	}
 }
