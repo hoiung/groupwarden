@@ -162,7 +162,7 @@
       "type": "object", "additionalProperties": false,
       "properties": {
         "name": {"description": "A label for reports.", "type": "string"},
-        "groups": {"type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[0-9]+@g\\.us$"}},
+        "groups": {"description": "Group IDs: a number ending in @g.us; an older group's ID is two numbers joined by a dash.", "type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[0-9]+(-[0-9]+)?@g\\.us$"}},
         "mode": {"enum": ["shadow", "enforce"]},
         "disable_rules": {"type": "array", "items": {"type": "string"}},
         "word_lists": {
