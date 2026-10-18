@@ -271,6 +271,9 @@ func joinJIDs(js []client.JID) string {
 
 func (f *Fake) JoinWithLink(_ context.Context, code string) (client.JID, bool, error) {
 	f.record("JoinWithLink " + code)
+	if err := f.nextErr("JoinWithLink"); err != nil {
+		return "", false, err
+	}
 	return f.Invites[code].JID, false, nil
 }
 
