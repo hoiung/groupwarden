@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -119,6 +121,61 @@ func TestWithEnabledNoCommunitiesInTheFile(t *testing.T) {
 	}
 	if _, ok := m.Rules.ModeFor(communityB); !ok || m.Rules.CommunityOf(loneGroup, "") != loneGroup {
 		t.Fatalf("communities %v", m.Rules.Communities())
+	}
+}
+
+// TestSetEnabledWithTheCorpusAhead: the corpus on disk can be newer than the
+// running rules (a config sync swaps the copy in before the reload; a refused
+// file leaves the last good copy running). Merging the /enable list still
+// goes through, at an /enable or /disable and at the start on the last good
+// copy; loading the file still tests the corpus.
+func TestSetEnabledWithTheCorpusAhead(t *testing.T) {
+	dir, path, good := reloadFixture(t)
+	good += "corpus_dir: corpus\nrules:\n  list:\n" +
+		ruleYAML("pitch", "delete_remove_ban", "true", "        all:\n          - words: [crypto]\n          - has: [any_link, handle]\n")
+	sample := func(rel, text string) {
+		p := filepath.Join(dir, "corpus", rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("text: \""+text+"\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sample("spam/1.yaml", "bitcoin signals t.me/example_signals")
+	sample("legit/general/1.yaml", "see you on Sunday")
+	writeConfig(t, path, good)
+	h, rejected, err := Boot(path)
+	if err != nil || rejected != nil {
+		t.Fatalf("boot: %v %v", err, rejected)
+	}
+	book := []Enabled{{ID: communityB, Name: "book club"}}
+	if _, err := h.SetEnabled(book); err != nil {
+		t.Fatal(err)
+	}
+	// A new spam sample the running rules miss lands before its rule does.
+	sample("spam/2.yaml", "bitcoin to the moon, huge gains coming")
+	if _, err := h.SetEnabled(nil); err != nil {
+		t.Fatalf("the /disable merge with the corpus ahead: %v", err)
+	}
+	if _, ok := h.Current().Rules.ModeFor(communityB); ok {
+		t.Fatal("the community is still on")
+	}
+	if _, err := h.Reload(); err == nil || !strings.Contains(err.Error(), "1 spam sample(s) are not caught") {
+		t.Fatalf("a reload of the file with the sample missed: %v", err)
+	}
+	// The file is refused: the start runs the last good copy and merges the
+	// list into it.
+	writeConfig(t, path, good+"deafness_alert_hours: 999\n")
+	h2, rejected, err := Boot(path)
+	if err != nil || rejected == nil {
+		t.Fatalf("boot on the last good copy: %v %v", err, rejected)
+	}
+	if _, err := h2.SetEnabled(book); err != nil {
+		t.Fatalf("the start's merge on the last good copy: %v", err)
+	}
+	if _, ok := h2.Current().Rules.ModeFor(communityB); !ok {
+		t.Fatal("the start's merge left the community off")
 	}
 }
 
