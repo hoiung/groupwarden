@@ -14,7 +14,7 @@ import (
 )
 
 // wantCommands is every AC 4.3 command, in the list's order, with its argument.
-var wantCommands = []string{"/status", "/pause", "/resume", "/reload", "/join <invite link>", "/ban",
+var wantCommands = []string{"/status", "/pause", "/resume", "/reload", "/enable <invite link>", "/disable <invite link>", "/ban",
 	"/unban <report number>"}
 
 // setup runs the command list setup once and fails the test on an error.
