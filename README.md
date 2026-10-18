@@ -29,7 +29,7 @@ Moderating communities **you administer**. It is not for bulk messaging, member 
 
 ## How it works
 
-1. The bot's number joins every group of each configured community (by itself where WhatsApp allows it, otherwise through an invite link an admin sends with `/join`). A human admin promotes it to admin in each group — no bot can promote itself.
+1. An admin switches a community or a single group on: `/enable <invite link>` in the admin chat (a community link covers the whole community; a group link covers that group alone, so a friend can share one public group without the rest), or a `communities:` entry in the config file. `/disable <invite link>` switches off what `/enable` switched on. The bot's number joins every group of what is on (by itself where WhatsApp allows it, otherwise through the link `/enable` was sent with). A human admin promotes it to admin in each group — no bot can promote itself.
 2. Each message is saved to a local inbox before it is acknowledged, so a crash never loses one.
 3. Your rules decide whether it is spam. If it is, the bot saves an evidence copy (text and any attachment, kept 30 days), deletes the message for everyone, removes the sender and adds them to the ban list.
 4. A banned person who rejoins — by link, join request or community join — is removed or rejected. Only an admin can unban them: **[Undo]** in Telegram, `/unban`, or re-adding them by hand.
