@@ -1,22 +1,28 @@
 package config
 
 import (
+	"strings"
 	"testing"
 )
 
-// A group of no configured community (listed in .secret-pii-allowlist).
-const loneGroup = "99999000000333@g.us"
+// Groups of no configured community (listed in .secret-pii-allowlist); the
+// second has an older group's ID (creator's number, "-", creation time).
+const (
+	loneGroup = "99999000000333@g.us"
+	oldGroup  = "447700900123-1500000111@g.us"
+)
 
 // TestWithEnabledMergesTheList: an /enable community joins the communities
-// with the global settings, a single group becomes a set of one, and what the
-// file already lists keeps the file's settings; the version changes and the
-// file-only config is left as it was.
+// with the global settings, a single group becomes a set of one (an older
+// group's ID too), and what the file already lists keeps the file's settings;
+// the version stays the file's and the file-only config is left as it was.
 func TestWithEnabledMergesTheList(t *testing.T) {
 	l := parse(t, lists+"communities:\n  \""+communityA+"\":\n    name: from the file\n    mode: shadow\n"+
 		"  set-b:\n    groups: [\""+groupSet+"\"]\n")
 	m, err := l.WithEnabled([]Enabled{
 		{ID: communityB, Name: "book club"},
 		{ID: loneGroup, Group: true, Name: "public chat"},
+		{ID: oldGroup, Group: true, Name: "old chat"},
 		{ID: communityA, Name: "renamed"},
 		{ID: groupSet, Group: true, Name: "again"},
 	})
@@ -26,8 +32,10 @@ func TestWithEnabledMergesTheList(t *testing.T) {
 	if mode, ok := m.Rules.ModeFor(communityB); !ok || mode != m.Config.Mode {
 		t.Fatalf("community B: mode %q on %v, want the global %q", mode, ok, m.Config.Mode)
 	}
-	if got := m.Rules.CommunityOf(loneGroup, communityB); got != loneGroup {
-		t.Fatalf("the single group belongs to %q, want its own set", got)
+	for _, g := range []string{loneGroup, oldGroup} {
+		if got := m.Rules.CommunityOf(g, communityB); got != g {
+			t.Fatalf("the single group %s belongs to %q, want its own set", g, got)
+		}
 	}
 	if got := m.Rules.CommunityOf(groupSet, ""); got != "set-b" {
 		t.Fatalf("the file's set group moved to %q", got)
@@ -43,8 +51,8 @@ func TestWithEnabledMergesTheList(t *testing.T) {
 			t.Errorf("FromFile(%s) = %v, want %v", id, m.FromFile(id), want)
 		}
 	}
-	if m.Hash == l.Hash {
-		t.Fatal("the merged config has the file's version")
+	if m.Hash != l.Hash {
+		t.Fatalf("the merged config is v%s, the file v%s: check would print another version than the bot posts", m.Hash, l.Hash)
 	}
 	if _, ok := l.Rules.ModeFor(communityB); ok {
 		t.Fatal("WithEnabled changed the config it was called on")
@@ -53,6 +61,30 @@ func TestWithEnabledMergesTheList(t *testing.T) {
 	if err != nil || again.Hash != l.Hash {
 		t.Fatalf("an empty list: %v, version %s, want %s", err, again.Hash, l.Hash)
 	}
+}
+
+// TestOwnSettings names each setting a community gives itself, in the order
+// the reply lists them; an entry with only a name has none.
+func TestOwnSettings(t *testing.T) {
+	days := 7
+	full := Community{Name: "x", Mode: "shadow", DisableRules: []string{"r"}, WordLists: map[string][]string{"w": {"a"}},
+		Retention: &RetentionOverride{EvidenceDays: &days}}
+	if got := strings.Join(full.OwnSettings(), ","); got != "mode,disable_rules,word_lists,retention" {
+		t.Fatalf("own settings %q", got)
+	}
+	if got := (Community{Name: "x", Groups: []string{loneGroup}}).OwnSettings(); len(got) != 0 {
+		t.Fatalf("a name and groups only: %v", got)
+	}
+}
+
+// TestOlderGroupIDInASet: a set in the file may list an older group's ID; a
+// community key may not take that form.
+func TestOlderGroupIDInASet(t *testing.T) {
+	l := parse(t, lists+"communities:\n  set-old:\n    groups: [\""+oldGroup+"\"]\n")
+	if got := l.Rules.CommunityOf(oldGroup, ""); got != "set-old" {
+		t.Fatalf("the older group belongs to %q", got)
+	}
+	refused(t, lists+"communities:\n  \""+oldGroup+"\":\n    name: x\n", "is not a WhatsApp Community ID")
 }
 
 // TestWithEnabledNoCommunitiesInTheFile: a file with no communities: key
