@@ -46,8 +46,8 @@ type Fake struct {
 	// Linked answers SubGroups for a community (default: the Groups whose
 	// parent it is), so a community can list a group the bot is not in.
 	Linked map[client.JID][]client.GroupRef
-	// JoinPending lists the linked groups whose JoinLinkedGroup waits for an
-	// admin's approval (default: joined at once).
+	// JoinPending lists the groups whose JoinLinkedGroup or JoinWithLink
+	// waits for an admin's approval (default: joined at once).
 	JoinPending map[client.JID]bool
 
 	errs        map[string][]error
@@ -274,7 +274,10 @@ func (f *Fake) JoinWithLink(_ context.Context, code string) (client.JID, bool, e
 	if err := f.nextErr("JoinWithLink"); err != nil {
 		return "", false, err
 	}
-	return f.Invites[code].JID, false, nil
+	jid := f.Invites[code].JID
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return jid, f.JoinPending[jid], nil
 }
 
 func (f *Fake) JoinLinkedGroup(_ context.Context, community, g client.JID) (bool, bool, error) {
