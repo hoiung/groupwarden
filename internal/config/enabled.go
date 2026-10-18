@@ -21,9 +21,7 @@ func (c *Config) addEnabled(list []Enabled) map[string]bool {
 			inFile[g] = true
 		}
 	}
-	if len(list) > 0 && c.Communities == nil {
-		c.Communities = map[string]Community{}
-	}
+	// c.Communities is never nil here: the schema's default for it is {}.
 	for _, e := range list {
 		if inFile[e.ID] {
 			continue
