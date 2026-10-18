@@ -874,9 +874,9 @@ func TestAutoJoinNotSpentWithoutAConnection(t *testing.T) {
 }
 
 // TestAutoJoinFailureFallsBackToJoinRequest: when WhatsApp refuses the join
-// (after waiting out its rate limit) the admins are asked for a /join link
+// (after waiting out its rate limit) the admins are asked for an /enable link
 // instead, and the bot does not try that group by itself again. A
-// standalone group the bot is not in is always a /join request.
+// standalone group the bot is not in is always an /enable request.
 func TestAutoJoinFailureFallsBackToJoinRequest(t *testing.T) {
 	k := modtest.NewConfig(t, strings.Replace(modtest.Config, `groups: ["99999000000888@g.us"]`,
 		`groups: ["99999000000888@g.us", "99999000000777@g.us"]`, 1))
@@ -897,9 +897,9 @@ func TestAutoJoinFailureFallsBackToJoinRequest(t *testing.T) {
 		t.Fatalf("lists %q", lists)
 	}
 	mustContain(t, lists[0], "events (group…0333): the bot could not join it by itself (info query returned status "+
-		"501: feature-not-implemented): send /join <invite link> for it")
+		"501: feature-not-implemented): send /enable <invite link> for it")
 	mustContain(t, lists[1], "The bot checked the 2 group(s) of set b:",
-		"group…0777: the bot is not in it: send /join <invite link> for it")
+		"group…0777: the bot is not in it: send /enable <invite link> for it")
 	s.run(t)
 	if n := k.Fake.Count("JoinLinkedGroup"); n != 2 {
 		t.Fatalf("tried again: %v", k.Fake.Calls())
