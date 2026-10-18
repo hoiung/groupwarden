@@ -243,6 +243,21 @@ func TestBanCLIPerCommunity(t *testing.T) {
 		!strings.Contains(te.errb.String(), "not a configured community") {
 		t.Fatalf("unknown community: exit %d %q", code, te.errb)
 	}
+	// A community switched on with /enable is one --community can name.
+	est, err := store.Open(context.Background(), filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := est.Enable(context.Background(), store.Enabled{ID: "99999000000777@g.us", Kind: store.KindCommunity, By: "test",
+		At: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := est.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.sub("ban", "add", memberLID, "--community", "99999000000777@g.us"); code != 0 {
+		t.Fatalf("ban add in a community switched on with /enable: exit %d %q", code, te.errb)
+	}
 	if code := te.sub("ban", "add", memberLID, "--community", cmdCommunity); code != 0 {
 		t.Fatalf("ban add again: exit %d %q", code, te.errb)
 	}
