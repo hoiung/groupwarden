@@ -67,10 +67,11 @@ Run these as your own user (with sudo) from a clone of this repo. Each step says
 
    ```bash
    git fetch --tags
+   git checkout <tag or commit>
    deploy/install.sh --version <tag or commit>
    ```
 
-   It builds that version from a throwaway clone, creates the `groupwarden` user and installs the units. It ends with "no live config … yet" and "not enabled yet": both are expected at this point.
+   It builds that version from a throwaway clone, creates the `groupwarden` user and installs the units. The script that runs is this clone's own (`--version` takes only the binary and the units from that version), so check the version out first: an upgrade then runs that version's own steps, such as the backup before the restart. It ends with "no live config … yet" and "not enabled yet": both are expected at this point.
 
 2. **Secrets, deploy key and the backup disk.**
 
