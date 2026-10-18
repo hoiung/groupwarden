@@ -235,23 +235,28 @@ func (d *Directory) IsSelf(j client.JID) bool {
 func (d *Directory) Community(group client.JID, rs *rules.Ruleset) string {
 	d.mu.RLock()
 	var parent client.JID
+	var isCommunity bool
 	if g := d.groups[group]; g != nil {
-		parent = g.parent
-		if g.community {
-			parent = group
-		}
+		parent, isCommunity = g.parent, g.community
 	}
 	d.mu.RUnlock()
+	return GroupCommunity(group, parent, isCommunity, rs)
+}
+
+// GroupCommunity returns the configured community group belongs to under rs
+// ("" = not moderated): its set, else its parent community; a community
+// parent counts as its own community.
+func GroupCommunity(group, parent client.JID, isCommunity bool, rs *rules.Ruleset) string {
+	if isCommunity {
+		parent = group
+	}
 	return rs.CommunityOf(string(group), string(parent))
 }
 
 // moderatedCommunity reports which configured community a directory entry
-// counts towards (a community parent counts as its own community).
+// counts towards.
 func moderatedCommunity(jid client.JID, g *dirGroup, rs *rules.Ruleset) string {
-	if g.community {
-		return rs.CommunityOf(string(jid), string(jid))
-	}
-	return rs.CommunityOf(string(jid), string(g.parent))
+	return GroupCommunity(jid, g.parent, g.community, rs)
 }
 
 // IsAdmin reports whether a member (by either address) is a current admin
