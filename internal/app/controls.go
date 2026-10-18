@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/reconcile"
@@ -142,34 +141,6 @@ func (c controls) Reload(ctx context.Context, by telegram.Actor) (string, error)
 	return c.a.reload(ctx, false), nil
 }
 
-func (c controls) Join(ctx context.Context, link string, by telegram.Actor) (string, error) {
-	code, err := client.InviteCode(link)
-	if err != nil {
-		return "", err
-	}
-	g, parent, err := c.a.Adapter.InviteInfo(ctx, code)
-	if err != nil {
-		return "", fmt.Errorf("look up the invite link: %w", err)
-	}
-	rs := c.a.Config.Current().Rules
-	if _, configured := rs.ModeFor(string(parent)); parent == "" || !configured {
-		c.a.Log.Warn("join refused: not a group of a configured community", "group", mask.IDs(string(g.JID)),
-			"parent", mask.IDs(string(parent)), "by", by.String())
-		return fmt.Sprintf("Not joined: %q is not in a configured community. The bot joins only groups of the "+
-			"communities in its config.", g.Name), nil
-	}
-	jid, pending, err := c.a.Adapter.JoinWithLink(ctx, code)
-	if err != nil {
-		return "", fmt.Errorf("join: %w", err)
-	}
-	c.a.Log.Info("joined from the admin chat", "group", mask.IDs(string(jid)), "pending", pending, "by", by.String())
-	if pending {
-		return fmt.Sprintf("Join request sent to %q: a group admin must approve it, then promote the bot to admin.", g.Name), nil
-	}
-	return fmt.Sprintf("Joined %q. A human admin must now promote the bot to admin there; it moderates the group "+
-		"once it is an admin.", g.Name), nil
-}
-
 func (c controls) Status(ctx context.Context) (string, error) { return c.a.statusText(ctx) }
 
 // statusText is /status: the connection, coverage, modes, pauses, config,
@@ -255,7 +226,11 @@ func (a *App) statusText(ctx context.Context) (string, error) {
 		for _, g := range cc.Groups {
 			n[g.State]++
 		}
-		fmt.Fprintf(&b, "%s (%s): %d covered, %d absent, %d not admin\n", pipeline.CommunityLabel(cur.Config, c), mode,
+		how := string(mode)
+		if !cur.FromFile(c) {
+			how += ", switched on with /enable"
+		}
+		fmt.Fprintf(&b, "%s (%s): %d covered, %d absent, %d not admin\n", pipeline.CommunityLabel(cur.Config, c), how,
 			n[store.CoverageCovered], n[store.CoverageAbsent], n[store.CoverageNotAdmin])
 		if cc.Err != "" {
 			fmt.Fprintf(&b, "  could not list its groups: %s\n", cc.Err)
