@@ -114,6 +114,11 @@ func TestEnableCommunityLink(t *testing.T) {
 	if h.lastReply() != `The community "book club" is not on.` {
 		t.Fatalf("reply %q", h.lastReply())
 	}
+	// Only the /disable that removed the entry is in the audit log, not the
+	// two that removed nothing (the group's, and the second one).
+	if n := h.k.Logged("disabled from the admin chat"); n != 1 {
+		t.Fatalf("%d disable audit lines, want 1", n)
+	}
 }
 
 // TestEnableSingleGroupLink: a group link switches on that group alone, not
@@ -123,7 +128,7 @@ func TestEnableSingleGroupLink(t *testing.T) {
 	h.k.Fake.Invites = map[string]client.Group{"GrOuP1": {JID: otherGroup, Name: "public chat", Parent: otherCommunity}}
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/GrOuP1", 0)
 	if !strings.Contains(h.lastReply(), `the bot moderates the group "public chat" from now on`) ||
-		h.k.Fake.Count("JoinWithLink GrOuP1") != 1 {
+		strings.Contains(h.lastReply(), "/status lists") || h.k.Fake.Count("JoinWithLink GrOuP1") != 1 {
 		t.Fatalf("calls %v reply %q", h.k.Fake.Calls(), h.lastReply())
 	}
 	if c := h.belongsTo(otherGroup, otherCommunity); c != string(otherGroup) {
@@ -157,6 +162,11 @@ func TestEnableWhatIsAlreadyOn(t *testing.T) {
 	if !strings.Contains(h.lastReply(), `The group "events" is already on (as part of community a)`) ||
 		!strings.Contains(h.lastReply(), "promote the bot to admin") || h.k.Fake.Count("JoinWithLink OuRs1") != 1 {
 		t.Fatalf("calls %v reply %q", h.k.Fake.Calls(), h.lastReply())
+	}
+	// Its community is the file's: the file is where it is switched off.
+	h.command(telegramtest.ChatID, adminUser, "/disable https://chat.whatsapp.com/OuRs1", 0)
+	if !strings.Contains(h.lastReply(), `"events" is still on (as part of community a): remove it from the config file`) {
+		t.Fatalf("/disable of a group of a file community: reply %q", h.lastReply())
 	}
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/GeN1", 0)
 	if !strings.Contains(h.lastReply(), "the bot is in it and an admin there") || h.k.Fake.Count("JoinWithLink GeN1") != 0 {
@@ -420,5 +430,18 @@ func TestEnableWarnsOfTheFilesOwnSettings(t *testing.T) {
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMa1", 0)
 	if strings.Contains(h.lastReply(), "global settings") {
 		t.Fatalf("a community with only a name: reply %q", h.lastReply())
+	}
+}
+
+// TestDisableByNameOfAFileCommunity: /disable by the name of a community the
+// file lists, one the bot's group list does not hold yet, says it stays on.
+func TestDisableByNameOfAFileCommunity(t *testing.T) {
+	h := newHarness(t, "  \""+string(otherCommunity)+"\":\n    name: shadowed\n")
+	h.k.Fake.Invites = map[string]client.Group{"ShAd1": {JID: otherCommunity, Name: "shadowed", IsCommunity: true}}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/ShAd1", 0)
+	h.command(telegramtest.ChatID, adminUser, "/disable shadowed", 0)
+	if !strings.Contains(h.lastReply(), "still on (set in the config file): remove it from the config file") ||
+		!h.on(otherCommunity) || len(h.enabled()) != 0 {
+		t.Fatalf("reply %q, on %v, enabled %v", h.lastReply(), h.on(otherCommunity), h.enabled())
 	}
 }
