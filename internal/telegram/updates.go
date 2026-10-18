@@ -106,11 +106,16 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 		return call(func() (string, error) { return c.Controls.Resume(ctx, by) }), 0
 	case "reload":
 		return call(func() (string, error) { return c.Controls.Reload(ctx, by) }), 0
-	case "join":
+	case "enable":
 		if args == "" {
-			return "Usage: /join <invite link>", 0
+			return "Usage: /enable <invite link>", 0
 		}
-		return call(func() (string, error) { return c.Controls.Join(ctx, args, by) }), 0
+		return call(func() (string, error) { return c.Controls.Enable(ctx, args, by) }), 0
+	case "disable":
+		if args == "" {
+			return "Usage: /disable <invite link>", 0
+		}
+		return call(func() (string, error) { return c.Controls.Disable(ctx, args, by) }), 0
 	case "ban":
 		if m.ReplyToMessage == nil {
 			return "Send /ban as a reply to a report.", 0
