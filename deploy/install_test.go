@@ -183,7 +183,9 @@ func TestInstallRendersRestartsAndRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	code, out = n.install(nil, "--binary", bad)
-	if code != 1 || !strings.Contains(out, "ROLLED BACK to the previous binary and units; it is healthy") {
+	// Healthy again: nothing to restore, so the backup is not offered.
+	if code != 1 || !strings.Contains(out, "ROLLED BACK to the previous binary and units; it is healthy") ||
+		strings.Contains(out, "restore the backup") {
 		t.Fatalf("unhealthy upgrade: exit %d\n%s", code, out)
 	}
 	// The previous binary took a backup before the restart (the first install
@@ -351,6 +353,52 @@ func TestInstallWithNoDatabaseYet(t *testing.T) {
 		strings.Contains(out, "the backup before the restart failed") ||
 		strings.Count(n.calls(), "restart groupwarden.service\n") == restarts {
 		t.Fatalf("no database yet: the install did not go on to the restart:\n%s\n%s", out, n.calls())
+	}
+}
+
+// TestInstallStopsOnAFailedBackup: a backup that fails for a reason naming the
+// database (not that there is none yet) stops the install too, with the
+// previous units back as well as the previous binary.
+func TestInstallStopsOnAFailedBackup(t *testing.T) {
+	n := newNode(t)
+	failing := filepath.Join(t.TempDir(), "groupwarden-prev")
+	if err := os.WriteFile(failing, []byte("#!/bin/sh\n[ \"$1\" = backup ] && "+
+		"{ echo 'FAILED: copy groupwarden.db: no space left on device'; exit 1; }\nexec "+n.good+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := n.install(nil, "--binary", failing); code != 0 {
+		t.Fatalf("first install: exit %d\n%s", code, out)
+	}
+	// The previous version's unit differs from the one this version installs.
+	previous := n.read("etc/systemd/system/groupwarden.service") + "# the previous version's unit\n"
+	if err := os.WriteFile(filepath.Join(n.root, "etc/systemd/system/groupwarden.service"), []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarts := strings.Count(n.calls(), "restart groupwarden.service\n")
+	code, out := n.install(nil, "--binary", n.good)
+	if code != 1 || !strings.Contains(out, "the backup before the restart failed") ||
+		strings.Count(n.calls(), "restart groupwarden.service\n") != restarts {
+		t.Fatalf("a failed backup: exit %d\n%s\n%s", code, out, n.calls())
+	}
+	if n.read("etc/systemd/system/groupwarden.service") != previous {
+		t.Fatal("the previous unit was not put back after a failed backup")
+	}
+}
+
+// TestInstallEnabledWithNoLiveConfig: with the service enabled but no live
+// config (moved away by hand), the previous binary has no config to back up
+// with, so the install does not try.
+func TestInstallEnabledWithNoLiveConfig(t *testing.T) {
+	n := newNode(t)
+	if code, out := n.install(nil, "--binary", n.good); code != 0 {
+		t.Fatalf("first install: exit %d\n%s", code, out)
+	}
+	if err := os.Remove(filepath.Join(n.root, "var/lib/groupwarden/config/config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	_, out := n.install(nil, "--binary", n.good)
+	if strings.Contains(out, "the backup before the restart failed") || strings.Count(readFile(t, n.sudoLog), " backup --config ") != 0 {
+		t.Fatalf("a backup was tried with no live config:\n%s\n%s", out, readFile(t, n.sudoLog))
 	}
 }
 
