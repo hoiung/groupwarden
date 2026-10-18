@@ -284,9 +284,9 @@ func TestEnableJoinFailureKeepsItOn(t *testing.T) {
 }
 
 // TestDisableByName: an entry whose link no longer works (reset, revoked, the
-// group deleted) is switched off by the name /status shows; the dead link
-// says so, two entries of one name are refused, and a name nothing has is
-// told apart from a bad link.
+// group deleted) is switched off by the name /status shows, and only by the
+// whole name; the dead link says so, two entries of one name are refused,
+// and a name nothing has is told apart from a bad link.
 func TestDisableByName(t *testing.T) {
 	h := newHarness(t, "")
 	h.k.Fake.Invites = map[string]client.Group{
@@ -303,6 +303,19 @@ func TestDisableByName(t *testing.T) {
 	if !strings.Contains(h.lastReply(), "when its link no longer works, send /disable with the name /status shows for it") ||
 		len(h.enabled()) != 2 {
 		t.Fatalf("a dead link: reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+	// Only the whole name: part of one, or one with more words, switches
+	// nothing off. One word is also read as an invite code, so it is looked up.
+	for near, reply := range map[string]string{
+		"/disable chat":            "invite link not found: when its link no longer works",
+		"/disable book":            "invite link not found: when its link no longer works",
+		"/disable club":            "invite link not found: when its link no longer works",
+		"/disable public chat now": "nor the name of something switched on with /enable",
+	} {
+		h.command(telegramtest.ChatID, adminUser, near, 0)
+		if !strings.Contains(h.lastReply(), reply) || len(h.enabled()) != 2 {
+			t.Fatalf("%s: reply %q, enabled %v", near, h.lastReply(), h.enabled())
+		}
 	}
 	h.command(telegramtest.ChatID, adminUser, "/disable  public chat ", 0)
 	if !strings.Contains(h.lastReply(), `the bot no longer moderates the group "Public Chat"`) ||
