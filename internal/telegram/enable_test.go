@@ -65,7 +65,8 @@ func TestEnableCommunityLink(t *testing.T) {
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMm1", 0)
 	reply := h.lastReply()
 	if !strings.Contains(reply, `the bot moderates the community "book club" from now on`) ||
-		!strings.Contains(reply, "the bot joined it") || h.k.Fake.Count("JoinWithLink CoMm1") != 1 {
+		!strings.Contains(reply, "the bot joined it") || !strings.Contains(reply, "/status lists its groups after the sweep") ||
+		h.k.Fake.Count("JoinWithLink CoMm1") != 1 {
 		t.Fatalf("calls %v reply %q", h.k.Fake.Calls(), reply)
 	}
 	if got := h.enabled(); strings.Join(got, ",") != "community "+string(otherCommunity) || !h.on(otherCommunity) {
@@ -131,6 +132,10 @@ func TestEnableSingleGroupLink(t *testing.T) {
 	if h.on(otherCommunity) || strings.Join(h.enabled(), ",") != "group "+string(otherGroup) {
 		t.Fatalf("community on %v, enabled %v", h.on(otherCommunity), h.enabled())
 	}
+	h.command(telegramtest.ChatID, adminUser, "/status", 0)
+	if !strings.Contains(h.lastReply(), "public chat (enforce, switched on with /enable)") {
+		t.Fatalf("status %q", h.lastReply())
+	}
 	h.command(telegramtest.ChatID, adminUser, "/disable https://chat.whatsapp.com/GrOuP1", 0)
 	if !strings.Contains(h.lastReply(), `the bot no longer moderates the group "public chat"`) ||
 		h.belongsTo(otherGroup, otherCommunity) != "" {
@@ -176,6 +181,13 @@ func TestEnableWhatIsAlreadyOn(t *testing.T) {
 	if !strings.Contains(h.lastReply(), "still on (set in the config file): remove it from the config file") ||
 		!h.on(modtest.Community) || len(h.enabled()) != 0 {
 		t.Fatalf("reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+	// By the name /status shows, the same.
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMa1", 0)
+	h.command(telegramtest.ChatID, adminUser, "/disable community a", 0)
+	if !strings.Contains(h.lastReply(), "still on (set in the config file): remove it from the config file") ||
+		!h.on(modtest.Community) || len(h.enabled()) != 0 {
+		t.Fatalf("by name: reply %q, enabled %v", h.lastReply(), h.enabled())
 	}
 	// Moved: /enable, then the file without it, then a reload.
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMa1", 0)
@@ -251,7 +263,8 @@ func TestEnableRefusedEntryTakenBack(t *testing.T) {
 	before := h.k.Holder.Current()
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/OdD1", 0)
 	if !strings.HasPrefix(h.lastReply(), "Could not do that:") || len(h.enabled()) != 0 ||
-		h.k.Holder.Current() != before || h.k.Logged("enabled list not loaded") != 1 {
+		h.k.Holder.Current() != before || h.k.Logged("enabled list not loaded") != 1 ||
+		h.k.Logged("take back a refused /enable entry") != 0 {
 		t.Fatalf("reply %q, enabled %v", h.lastReply(), h.enabled())
 	}
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMm1", 0)
@@ -338,6 +351,44 @@ func TestDisableByName(t *testing.T) {
 	h.command(telegramtest.ChatID, adminUser, "/disable https://chat.whatsapp.com/CoMm1", 0)
 	if !strings.Contains(h.lastReply(), `the bot no longer moderates the community "book club"`) || h.on(otherCommunity) {
 		t.Fatalf("by link: reply %q", h.lastReply())
+	}
+}
+
+// TestDisableByOneWordName: one word is also read as an invite code, but the
+// name /status shows comes first, so an entry named in one word whose link no
+// longer works is still switched off by that name.
+func TestDisableByOneWordName(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Invites = map[string]client.Group{"EvEnTs1": {JID: oldGroup, Name: "Events"}}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/EvEnTs1", 0)
+	delete(h.k.Fake.Invites, "EvEnTs1")
+	h.command(telegramtest.ChatID, adminUser, "/disable events", 0)
+	if !strings.Contains(h.lastReply(), `the bot no longer moderates the group "Events"`) || len(h.enabled()) != 0 {
+		t.Fatalf("reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+}
+
+// TestDisableByNameStillOnThroughItsCommunity: a group switched on alone and
+// then with its whole community stays on when /disable names the group, and
+// the reply points at the community's link, as it does for the group's link.
+func TestDisableByNameStillOnThroughItsCommunity(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Invites = map[string]client.Group{
+		"GrOuP1": {JID: otherGroup, Name: "public chat", Parent: otherCommunity},
+		"CoMm1":  {JID: otherCommunity, Name: "book club", IsCommunity: true},
+	}
+	// The bot is in the group, so it knows the group's community.
+	h.k.Dir.Join(client.Group{JID: otherGroup, Name: "public chat", Parent: otherCommunity})
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/GrOuP1", 0)
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMm1", 0)
+	if len(h.enabled()) != 2 {
+		t.Fatalf("enabled %v", h.enabled())
+	}
+	h.command(telegramtest.ChatID, adminUser, "/disable public chat", 0)
+	if !strings.Contains(h.lastReply(), "still on (as part of book club): send /disable with that community's invite link") ||
+		h.belongsTo(otherGroup, otherCommunity) != string(otherCommunity) ||
+		strings.Join(h.enabled(), ",") != "community "+string(otherCommunity) {
+		t.Fatalf("reply %q, enabled %v", h.lastReply(), h.enabled())
 	}
 }
 
