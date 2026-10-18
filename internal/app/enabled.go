@@ -10,6 +10,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/pipeline"
+	"github.com/hoiung/groupwarden/internal/rules"
 	"github.com/hoiung/groupwarden/internal/store"
 	"github.com/hoiung/groupwarden/internal/telegram"
 )
@@ -33,9 +34,10 @@ func LoadEnabled(ctx context.Context, st *store.Store, h *config.Holder) (*confi
 	return h.SetEnabled(EnabledEntries(list))
 }
 
-// applyEnabled loads the /enable list into the running config again, then
-// asks for a sweep so coverage (and joining a community's groups) follows at
-// once.
+// applyEnabled loads the /enable list into the running config again. The
+// caller asks for the sweep once its own WhatsApp calls are done: a sweep
+// that lists a community's groups before /enable joined the community would
+// try to join them by itself too early, and never tries again.
 func (a *App) applyEnabled(ctx context.Context) error {
 	a.reloadMu.Lock()
 	defer a.reloadMu.Unlock()
@@ -44,9 +46,8 @@ func (a *App) applyEnabled(ctx context.Context) error {
 		a.Log.Error("enabled list not loaded", "err", err)
 		return err
 	}
-	a.Log.Info("enabled list loaded", "config", "v"+l.Hash)
+	a.Log.Info("enabled list loaded", "config", "v"+l.Hash, "communities", len(l.Rules.Communities()))
 	a.writeStatus(ctx)
-	a.requestSweep()
 	return nil
 }
 
@@ -54,7 +55,8 @@ func (a *App) applyEnabled(ctx context.Context) error {
 // group link that group alone, and the entry is kept even when the config
 // file lists it too (it stays on once it leaves the file). The bot joins
 // through the link when it is not in it; a group already on as part of its
-// community is only joined.
+// community is only joined. A sweep follows, so coverage (and joining a
+// community's groups) comes at once.
 func (c controls) Enable(ctx context.Context, link string, by telegram.Actor) (string, error) {
 	code, g, parent, err := c.lookUp(ctx, link)
 	if err != nil {
@@ -75,8 +77,14 @@ func (c controls) Enable(ctx context.Context, link string, by telegram.Actor) (s
 		case in == "":
 			parts = append(parts, fmt.Sprintf("Enabled by %s: the bot moderates the %s from now on", by.Name, what))
 		case cur.FromFile(in):
-			parts = append(parts, fmt.Sprintf("The %s is already on (set in the config file); /enable now keeps it "+
-				"on too, so it stays on once it leaves the file", what))
+			s := fmt.Sprintf("The %s is already on (set in the config file); /enable now keeps it on too, so it "+
+				"stays on once it leaves the file", what)
+			// Out of the file it runs on the global settings: say so where
+			// the file gives it its own (a shadow community would enforce).
+			if own := cur.Config.Communities[in].OwnSettings(); len(own) > 0 {
+				s += " (then with the global settings, not the file's own " + andList(own) + " for it)"
+			}
+			parts = append(parts, s)
 		default:
 			parts = append(parts, fmt.Sprintf("The %s is already on (switched on with /enable)", what))
 		}
@@ -101,6 +109,7 @@ func (c controls) Enable(ctx context.Context, link string, by telegram.Actor) (s
 			parts = append(parts, "the bot joined it: a human admin must now promote the bot to admin there")
 		}
 	}
+	c.a.requestSweep()
 	if g.IsCommunity {
 		parts = append(parts, "/status lists its groups after the sweep")
 	}
@@ -108,10 +117,12 @@ func (c controls) Enable(ctx context.Context, link string, by telegram.Actor) (s
 }
 
 // Disable is /disable: it switches off what /enable switched on for the
-// link's community or group. The bot stays in the group; what the config
-// file lists stays on.
-func (c controls) Disable(ctx context.Context, link string, by telegram.Actor) (string, error) {
-	_, g, parent, err := c.lookUp(ctx, link)
+// link's community or group, or for the entry /status shows under that name
+// (the way to switch one off once its link no longer works: reset, revoked,
+// or the group deleted). The bot stays in the group; what the config file
+// lists stays on.
+func (c controls) Disable(ctx context.Context, linkOrName string, by telegram.Actor) (string, error) {
+	g, onNow, err := c.disableTarget(ctx, linkOrName)
 	if err != nil {
 		return "", err
 	}
@@ -125,9 +136,10 @@ func (c controls) Disable(ctx context.Context, link string, by telegram.Actor) (
 		if err := c.a.applyEnabled(ctx); err != nil {
 			return "", fmt.Errorf("removed from the /enable list, but the running config still has it (a restart drops it): %w", err)
 		}
+		c.a.requestSweep()
 	}
 	cur := c.a.Config.Current()
-	in := pipeline.GroupCommunity(g.JID, parent, g.IsCommunity, cur.Rules)
+	in := onNow(cur.Rules)
 	switch {
 	case in == "" && removed:
 		return fmt.Sprintf("Disabled by %s: the bot no longer moderates the %s. It stays in it until an admin removes it.",
@@ -140,6 +152,57 @@ func (c controls) Disable(ctx context.Context, link string, by telegram.Actor) (
 	}
 	return fmt.Sprintf("The %s is still on (%s): send /disable with that community's invite link to switch it off.",
 		what, onBecause(cur, in, g.JID)), nil
+}
+
+// disableTarget finds what /disable names: the /enable entry /status shows
+// under that name, else the community or group an invite link points to.
+// onNow says which configured community it counts towards under a ruleset
+// ("" = not moderated).
+func (c controls) disableTarget(ctx context.Context, linkOrName string) (client.Group, func(*rules.Ruleset) string, error) {
+	list, err := c.a.Store.EnabledList(ctx)
+	if err != nil {
+		return client.Group{}, nil, err
+	}
+	name := strings.TrimSpace(linkOrName)
+	var named []store.Enabled
+	for _, e := range list {
+		if e.Name != "" && strings.EqualFold(e.Name, name) {
+			named = append(named, e)
+		}
+	}
+	switch {
+	case len(named) == 1:
+		e := named[0]
+		g := client.Group{JID: client.JID(e.ID), Name: e.Name, IsCommunity: e.Kind == store.KindCommunity}
+		return g, func(rs *rules.Ruleset) string {
+			if g.IsCommunity {
+				return pipeline.GroupCommunity(g.JID, "", true, rs)
+			}
+			// The link is not looked up, so the group's community is what the
+			// bot last learned about it.
+			return c.a.Directory.Community(g.JID, rs)
+		}, nil
+	case len(named) > 1:
+		return client.Group{}, nil, fmt.Errorf("%d entries switched on with /enable are named %q: send /disable with "+
+			"the invite link instead", len(named), name)
+	}
+	if _, err := client.InviteCode(linkOrName); err != nil {
+		return client.Group{}, nil, fmt.Errorf("%w, nor the name of something switched on with /enable (/status lists them)", err)
+	}
+	_, g, parent, err := c.lookUp(ctx, linkOrName)
+	if err != nil {
+		return client.Group{}, nil, fmt.Errorf("%w: when its link no longer works, send /disable with the name /status "+
+			"shows for it", err)
+	}
+	return g, func(rs *rules.Ruleset) string { return pipeline.GroupCommunity(g.JID, parent, g.IsCommunity, rs) }, nil
+}
+
+// andList joins words as "a", "a and b", "a, b and c".
+func andList(words []string) string {
+	if len(words) < 2 {
+		return strings.Join(words, "")
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 }
 
 // record keeps g in the /enable list and loads the list into the running
