@@ -44,7 +44,7 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 | `allowed_domains` | `internal/rules/compile.go`; `conditions.go` `linkSignals` |
 | `rules.min_word_length` | `internal/rules/compile.go` `addWords` |
 | `rules.list` (`name`, `action`, `confirmed`, `on`, `when`) | `internal/rules/compile.go` `compileRules`, `decide.go` |
-| `communities.<id>` (`name`, `groups`, `mode`, `disable_rules`, `word_lists`) | `internal/rules/compile.go` `compileCommunities`; `internal/pipeline/directory.go` |
+| `communities.<id>` (`name`, `groups`, `mode`, `disable_rules`, `word_lists`) | `internal/rules/compile.go` `compileCommunities`; `internal/pipeline/directory.go`. The admin chat's `/enable` adds to these without editing the file: the bot keeps that list in `groupwarden.db` and every load merges it in (`internal/config/enabled.go`), a community with the global settings, a single group as a set of one named by its ID; an entry the file already lists keeps the file's settings, and `/disable` cannot switch off what the file lists |
 | `communities.<id>.retention` | `internal/config/config.go` `RetentionFor` |
 
 ## Writing words and rules
