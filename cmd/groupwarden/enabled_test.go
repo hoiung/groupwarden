@@ -15,7 +15,8 @@ import (
 )
 
 // TestRunLoadsTheEnabledList: `run` merges the store's /enable list into the
-// config before it starts moderating (the startup report names that config).
+// config before it starts moderating, and the version stays the file's (the
+// one `check` prints).
 func TestRunLoadsTheEnabledList(t *testing.T) {
 	te := newTestEnv(t, &clienttest.Fake{})
 	te.provision(t)
@@ -46,19 +47,29 @@ func TestRunLoadsTheEnabledList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if merged.Hash == l.Hash {
-		t.Fatal("the /enable entry does not change the config version")
+	if merged.Hash != l.Hash {
+		t.Fatalf("the /enable entry changed the config version: v%s, the file's v%s", merged.Hash, l.Hash)
+	}
+	if got, file := len(merged.Rules.Communities()), len(l.Rules.Communities()); got != file+1 {
+		t.Fatalf("%d communities merged, the file has %d", got, file)
 	}
 	runEnv := *te.env
 	stderr := &syncBuffer{}
 	runEnv.stdout, runEnv.stderr, runEnv.telegramURL = &syncBuffer{}, stderr, tg.URL
 	done := make(chan int, 1)
 	go func() { done <- runEnv.run([]string{"run", "--config", te.cfgPath}) }()
-	want := `"msg":"enabled list loaded","config":"v` + merged.Hash + `"`
-	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(stderr.String(), want); time.Sleep(20 * time.Millisecond) {
+	want := `"msg":"enabled list loaded","config":"v` + l.Hash + `","communities":` +
+		strconv.Itoa(len(merged.Rules.Communities()))
+	// Stopped only once it has started (a stop during the ledger recovery
+	// exits 1).
+	started := `"msg":"watching outside timers"`
+	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(stderr.String(), started); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatalf("run did not load the /enable list (want %s):\n%s", want, stderr)
+			t.Fatalf("run did not start:\n%s", stderr)
 		}
+	}
+	if !strings.Contains(stderr.String(), want) {
+		t.Fatalf("run did not load the /enable list (want %s):\n%s", want, stderr)
 	}
 	te.cancel()
 	select {
