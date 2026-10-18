@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -31,8 +30,9 @@ func TestEnableSweepsAfterTheJoin(t *testing.T) {
 	holder, _ := configtest.Holder(t, testSet)
 	community := client.JID("99999000000777@g.us") // listed in .secret-pii-allowlist
 	fake := &clienttest.Fake{Invites: map[string]client.Group{"CoMm1": {JID: community, Name: "book club", IsCommunity: true}}}
+	var logs lockedBuffer
 	a := &App{Adapter: fake, Store: st, Config: holder, Directory: &pipeline.Directory{}, Clock: SystemClock{},
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), sweepNow: make(chan struct{}, 1)}
+		Log: slog.New(slog.NewTextHandler(&logs, nil)), sweepNow: make(chan struct{}, 1)}
 	pendingAtJoin := -1
 	fake.OnCall = func(call string) {
 		if strings.HasPrefix(call, "JoinWithLink") {
@@ -50,6 +50,10 @@ func TestEnableSweepsAfterTheJoin(t *testing.T) {
 	// Who switched it on is kept with their Telegram ID, not the name alone.
 	if list, err := st.EnabledList(ctx); err != nil || len(list) != 1 || list[0].By != by.String() {
 		t.Fatalf("entry %+v %v, want By %q", list, err, by.String())
+	}
+	// The running config took the list: the log says so, with no error line.
+	if out := logs.String(); !strings.Contains(out, `msg="enabled list loaded"`) || strings.Contains(out, "level=ERROR") {
+		t.Fatalf("the log after /enable:\n%s", out)
 	}
 	<-a.sweepNow
 	reply, err = controls{a}.Disable(ctx, "book club", by)
