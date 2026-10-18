@@ -67,7 +67,7 @@ WhatsApp retires old client versions; the bot then exits with "WhatsApp rejected
 
 ## Rollback
 
-`deploy/install.sh` keeps the binary it replaces as `/usr/local/bin/groupwarden.previous`. After an upgrade it restarts the bot and waits up to 3 minutes for `healthcheck`; when that fails it puts the previous binary and units back, restarts and checks again, and says `ROLLED BACK`.
+`deploy/install.sh` keeps the binary it replaces as `/usr/local/bin/groupwarden.previous`. Before an upgrade restarts the bot, that previous binary writes an encrypted backup to `backup.target_dir` (`backup before the restart: ok groupwarden-<time>.db.age …`); when the backup fails the install stops there, with the previous binary and units back and nothing restarted. Then it restarts the bot and waits up to 3 minutes for `healthcheck`; when that fails it puts the previous binary and units back, restarts and checks again, and says `ROLLED BACK`.
 
 To roll back by hand (the new version is healthy but wrong):
 
@@ -79,7 +79,7 @@ sudo cp -p /usr/local/bin/groupwarden.previous /usr/local/bin/groupwarden.new &&
 
 Copy to `groupwarden.new` and then move it over: copying straight onto the binary the service is running fails with "Text file busy".
 
-If the newer version changed the database, the older binary refuses to start ("groupwarden.db is at schema version N but this binary knows only M"): [restore](#restore-a-backup) the backup you took before the upgrade.
+If the newer version changed the database, the older binary refuses to start ("groupwarden.db is at schema version N but this binary knows only M") and the install ends `ROLLED BACK, but the previous binary is not healthy either`, naming the backup it took before the restart: [restore](#restore-a-backup) that one (it holds everything up to the upgrade), or install the newer version again once its problem is fixed.
 
 ## Bot number banned
 
@@ -101,7 +101,7 @@ The nightly backup is an age-encrypted copy of `groupwarden.db` only, never the 
 3. Copy the age **private** key to the node for the restore only: `sudo install -o groupwarden -m 0600 <key file> /var/lib/groupwarden/restore.key`
 4. `sudo -u groupwarden groupwarden restore --config CFG --identity /var/lib/groupwarden/restore.key <backup file>` (a `groupwarden-<time>.db.age` from `backup.target_dir`).
 5. Delete the key: `sudo rm /var/lib/groupwarden/restore.key`
-6. `sudo systemctl start groupwarden`. Check `/status`: it shows the restore pause. Press **[Resume]** once you have checked coverage and the config version; queued actions are checked again before they run.
+6. `sudo systemctl start groupwarden`. Check `/status`: it shows the restore pause. Press **[Resume]** once you have checked coverage and the config version; queued actions are checked again before they run. A community or group switched on with `/enable` after the backup was taken is off again: send `/enable` with its link.
 
 `restore` refuses to run while the bot runs, over an existing database or beside a leftover `-wal` or `-shm` file, with the wrong key, and on a file that is not a groupwarden backup.
 
@@ -135,4 +135,4 @@ If its reports include a real member's post, do not confirm it: change the rule 
 2. In the admin chat, send `/enable <invite link>`. A community's own invite link switches the whole community on; a group's link switches that group on alone, whatever community it is in. The reply says what is on and what an admin must still do (approve a join request, promote the bot).
 3. `/status` lists it at once, marked "switched on with /enable"; its groups and their coverage follow the sweep, which runs straight after `/enable`.
 
-`/disable <invite link>` switches off what `/enable` switched on; the bot stays in the group until an admin removes it. What `communities:` in the config file lists stays on: remove it there instead. To move a community from the file into the bot's list with no gap, send `/enable` with its link first (the reply says `/enable` now keeps it on too), then remove it from the file. The list lives in `groupwarden.db`, so it is in the nightly backup and survives a restart.
+`/disable <invite link>` switches off what `/enable` switched on; the bot stays in the group until an admin removes it. Once a link no longer works (reset, revoked, or the group deleted), send `/disable` with the name `/status` shows for it instead. What `communities:` in the config file lists stays on: remove it there instead. To move a community from the file into the bot's list with no gap, send `/enable` with its link first (the reply says `/enable` now keeps it on too), then remove it from the file. Out of the file it runs on the global settings: when the file gives it its own `mode`, `disable_rules`, `word_lists` or `retention`, the reply names them, and a community in `mode: shadow` would start deleting, removing and banning. Keep such a community in the file, or make the global settings what it needs first. The list lives in `groupwarden.db`, so it is in the nightly backup and survives a restart.
