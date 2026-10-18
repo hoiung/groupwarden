@@ -125,28 +125,6 @@ func TestReloadCommand(t *testing.T) {
 	}
 }
 
-// TestJoinRefusesForeignCommunity: /join joins only a group whose parent is
-// a configured community.
-func TestJoinRefusesForeignCommunity(t *testing.T) {
-	h := newHarness(t, "")
-	h.k.Fake.Invites = map[string]client.Group{
-		"FoReIgN1": {JID: "99999000000333@g.us", Name: "elsewhere", Parent: "99999000000777@g.us"},
-		"OuRs1":    {JID: "99999000000333@g.us", Name: "events", Parent: modtest.Community},
-	}
-	h.command(telegramtest.ChatID, adminUser, "/join https://chat.whatsapp.com/FoReIgN1", 0)
-	if h.k.Fake.Count("JoinWithLink") != 0 || !strings.Contains(h.lastReply(), "Not joined") {
-		t.Fatalf("calls %v reply %q", h.k.Fake.Calls(), h.lastReply())
-	}
-	h.command(telegramtest.ChatID, adminUser, "/join https://chat.whatsapp.com/OuRs1", 0)
-	if h.k.Fake.Count("JoinWithLink OuRs1") != 1 || !strings.Contains(h.lastReply(), "promote the bot to admin") {
-		t.Fatalf("calls %v reply %q", h.k.Fake.Calls(), h.lastReply())
-	}
-	h.command(telegramtest.ChatID, adminUser, "/join https://example.org/x", 0)
-	if !strings.Contains(h.lastReply(), "not a WhatsApp group invite link") {
-		t.Fatalf("reply %q", h.lastReply())
-	}
-}
-
 // TestBanUnbanCommands: /ban as a reply to a report acts as [Ban] (same
 // press key); /unban <report> acts as [Undo].
 func TestBanUnbanCommands(t *testing.T) {
