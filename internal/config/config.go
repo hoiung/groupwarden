@@ -152,12 +152,17 @@ type Loaded struct {
 	Hash string
 	// Raw is the file as read (kept on disk as the last good copy).
 	Raw []byte
+	// inFile: the IDs the file itself lists (FromFile).
+	inFile map[string]bool
 }
 
 // Load reads path, checks it fully (including the corpus when corpus_dir
 // is set) and compiles it.
-func Load(path string) (*Loaded, error) {
-	l, err := Read(path)
+func Load(path string) (*Loaded, error) { return load(path, nil) }
+
+// load is Load with the /enable entries merged in.
+func load(path string, enabled []Enabled) (*Loaded, error) {
+	l, err := read(path, enabled)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +174,9 @@ func Load(path string) (*Loaded, error) {
 
 // Read reads, checks and compiles path without the corpus test (which
 // `corpus test` runs itself, to print every result).
-func Read(path string) (*Loaded, error) {
+func Read(path string) (*Loaded, error) { return read(path, nil) }
+
+func read(path string, enabled []Enabled) (*Loaded, error) {
 	raw, err := os.ReadFile(path) // #nosec G304 -- the operator names the config file
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -177,12 +184,15 @@ func Read(path string) (*Loaded, error) {
 		}
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	return Parse(raw, filepath.Dir(path))
+	return parseEnabled(raw, filepath.Dir(path), enabled)
 }
 
 // Parse checks config bytes and compiles them; dir resolves relative paths.
 // It reads no other file.
-func Parse(raw []byte, dir string) (*Loaded, error) {
+func Parse(raw []byte, dir string) (*Loaded, error) { return parseEnabled(raw, dir, nil) }
+
+// parseEnabled is Parse with the /enable entries merged into the communities.
+func parseEnabled(raw []byte, dir string, enabled []Enabled) (*Loaded, error) {
 	if _, _, err := configSchema(); err != nil {
 		return nil, err
 	}
@@ -204,6 +214,7 @@ func Parse(raw []byte, dir string) (*Loaded, error) {
 		return nil, err
 	}
 	cfg.Dir = dir
+	inFile := cfg.addEnabled(enabled)
 	// The version is of the paths as written: resolved against the config's
 	// directory, the same file would have one version in a clone (the
 	// spam-intake skill's check) and another on the node.
@@ -224,7 +235,7 @@ func Parse(raw []byte, dir string) (*Loaded, error) {
 		}
 		return nil, err
 	}
-	return &Loaded{Config: cfg, Rules: rs, Hash: hashOf(&written, rs), Raw: raw}, nil
+	return &Loaded{Config: cfg, Rules: rs, Hash: hashOf(&written, rs), Raw: raw, inFile: inFile}, nil
 }
 
 func decode(root any) (*Config, error) {
