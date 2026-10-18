@@ -27,6 +27,11 @@ const (
 	oldGroup       client.JID = "447700900123-1500000111@g.us"
 )
 
+// statusPart ends a community's /enable reply and is absent from a group's:
+// one phrase for both checks, so a rewording cannot leave the absence check
+// looking for words no reply has.
+const statusPart = "/status lists its groups after the sweep"
+
 // enabled lists the store's /enable entries as "kind id".
 func (h *harness) enabled() []string {
 	h.t.Helper()
@@ -65,7 +70,7 @@ func TestEnableCommunityLink(t *testing.T) {
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMm1", 0)
 	reply := h.lastReply()
 	if !strings.Contains(reply, `the bot moderates the community "book club" from now on`) ||
-		!strings.Contains(reply, "the bot joined it") || !strings.Contains(reply, "/status lists its groups after the sweep") ||
+		!strings.Contains(reply, "the bot joined it") || !strings.Contains(reply, statusPart) ||
 		h.k.Fake.Count("JoinWithLink CoMm1") != 1 {
 		t.Fatalf("calls %v reply %q", h.k.Fake.Calls(), reply)
 	}
@@ -128,7 +133,7 @@ func TestEnableSingleGroupLink(t *testing.T) {
 	h.k.Fake.Invites = map[string]client.Group{"GrOuP1": {JID: otherGroup, Name: "public chat", Parent: otherCommunity}}
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/GrOuP1", 0)
 	if !strings.Contains(h.lastReply(), `the bot moderates the group "public chat" from now on`) ||
-		strings.Contains(h.lastReply(), "/status lists") || h.k.Fake.Count("JoinWithLink GrOuP1") != 1 {
+		strings.Contains(h.lastReply(), statusPart) || h.k.Fake.Count("JoinWithLink GrOuP1") != 1 {
 		t.Fatalf("calls %v reply %q", h.k.Fake.Calls(), h.lastReply())
 	}
 	if c := h.belongsTo(otherGroup, otherCommunity); c != string(otherGroup) {
@@ -439,6 +444,11 @@ func TestDisableByNameOfAFileCommunity(t *testing.T) {
 	h := newHarness(t, "  \""+string(otherCommunity)+"\":\n    name: shadowed\n")
 	h.k.Fake.Invites = map[string]client.Group{"ShAd1": {JID: otherCommunity, Name: "shadowed", IsCommunity: true}}
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/ShAd1", 0)
+	// Only the entry's kind says it is a community: the group list would
+	// answer the same for a group.
+	if h.k.Dir.Known(otherCommunity) {
+		t.Fatal("the bot's group list holds the community: the test no longer tells a community entry from a group one")
+	}
 	h.command(telegramtest.ChatID, adminUser, "/disable shadowed", 0)
 	if !strings.Contains(h.lastReply(), "still on (set in the config file): remove it from the config file") ||
 		!h.on(otherCommunity) || len(h.enabled()) != 0 {
