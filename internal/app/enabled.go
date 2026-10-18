@@ -121,10 +121,10 @@ func (c controls) Disable(ctx context.Context, link string, by telegram.Actor) (
 		return "", fmt.Errorf("remove it: %w", err)
 	}
 	if removed {
+		c.a.Log.Info("disabled from the admin chat", "id", mask.IDs(string(g.JID)), "by", by.String())
 		if err := c.a.applyEnabled(ctx); err != nil {
 			return "", fmt.Errorf("removed from the /enable list, but the running config still has it (a restart drops it): %w", err)
 		}
-		c.a.Log.Info("disabled from the admin chat", "id", mask.IDs(string(g.JID)), "by", by.String())
 	}
 	cur := c.a.Config.Current()
 	in := pipeline.GroupCommunity(g.JID, parent, g.IsCommunity, cur.Rules)
