@@ -334,6 +334,26 @@ func TestInstallBacksUpBeforeTheRestart(t *testing.T) {
 	}
 }
 
+// TestInstallWithNoDatabaseYet: with a previous binary but no groupwarden.db
+// (nothing has run yet), there is nothing to back up: the install goes on to
+// the restart instead of stopping.
+func TestInstallWithNoDatabaseYet(t *testing.T) {
+	n := newNode(t)
+	if code, out := n.install(nil, "--binary", n.good); code != 0 {
+		t.Fatalf("first install: exit %d\n%s", code, out)
+	}
+	if err := os.Remove(filepath.Join(n.root, "var/lib/groupwarden/groupwarden.db")); err != nil {
+		t.Fatal(err)
+	}
+	restarts := strings.Count(n.calls(), "restart groupwarden.service\n")
+	_, out := n.install(nil, "--binary", n.good)
+	if !strings.Contains(out, "no groupwarden.db yet: nothing to back up before the restart") ||
+		strings.Contains(out, "the backup before the restart failed") ||
+		strings.Count(n.calls(), "restart groupwarden.service\n") == restarts {
+		t.Fatalf("no database yet: the install did not go on to the restart:\n%s\n%s", out, n.calls())
+	}
+}
+
 // TestBackupUnitHasAFailureHandler: a backup unit that fails before
 // `groupwarden backup` records anything (systemd could not open the target,
 // the time limit) starts groupwarden-backup-failed.service, which runs
