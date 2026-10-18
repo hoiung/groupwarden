@@ -39,6 +39,26 @@ func (c *Config) addEnabled(list []Enabled) map[string]bool {
 // a group of a set) rather than /enable.
 func (l *Loaded) FromFile(id string) bool { return l.inFile[id] }
 
+// OwnSettings names the settings the entry gives itself instead of taking the
+// global ones ("mode", "disable_rules", "word_lists", "retention"); an /enable
+// entry has none.
+func (cm Community) OwnSettings() []string {
+	var own []string
+	if cm.Mode != "" {
+		own = append(own, "mode")
+	}
+	if len(cm.DisableRules) > 0 {
+		own = append(own, "disable_rules")
+	}
+	if len(cm.WordLists) > 0 {
+		own = append(own, "word_lists")
+	}
+	if cm.Retention != nil {
+		own = append(own, "retention")
+	}
+	return own
+}
+
 // WithEnabled builds the same file contents again with list as the /enable
 // entries (the commands beside `run` see what it moderates).
 func (l *Loaded) WithEnabled(list []Enabled) (*Loaded, error) {
