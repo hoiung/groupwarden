@@ -16,9 +16,12 @@
 #      (both read the live config; run this again once the first sync has
 #      put it there, and whenever config_sync_minutes or backup.target_dir
 #      changes);
-#   5. if groupwarden.service is enabled, restarts it and waits for
-#      `groupwarden healthcheck`; when that fails it puts the previous binary
-#      and units back, restarts and checks again (rollback).
+#   5. if groupwarden.service is enabled, has the previous binary take an
+#      encrypted backup (`groupwarden backup`; a failed backup stops the
+#      install), restarts it and waits for `groupwarden healthcheck`; when that
+#      fails it puts the previous binary and units back, restarts and checks
+#      again (rollback). A previous binary that refuses a database the new one
+#      moved to a newer schema needs that backup restored.
 #
 # Exit 0: installed (and healthy, when the service is enabled). Exit 1: it
 # failed (rolled back when there was something to roll back to). Exit 2: usage.
@@ -204,6 +207,23 @@ if ! "$SYSTEMCTL" is-enabled --quiet groupwarden.service; then
 	echo "  sudo systemctl enable --now groupwarden.service groupwarden-sync.timer groupwarden-backup.timer"
 	exit 0
 fi
+# The new version may move groupwarden.db to a newer schema, which the
+# previous binary then refuses, so a rollback alone cannot bring the bot back.
+# The previous binary takes an encrypted backup first (the new one would move
+# the schema as it opened the database).
+restore_hint=""
+if [ "$had_previous" = yes ] && as_service test -f "$LIVE_CONFIG"; then
+	# Its result line is on stdout; its log lines go to stderr as they are.
+	if out=$(as_service "$PREV" backup --config "$LIVE_CONFIG"); then
+		echo "backup before the restart: $out"
+		restore_hint=" If its log says groupwarden.db is at a newer schema version, restore the backup taken before the restart ($out) as docs/runbook.md says."
+	elif [[ $out == "FAILED: no groupwarden.db to back up"* ]]; then
+		echo "no groupwarden.db yet: nothing to back up before the restart"
+	else
+		echo "$out" >&2
+		undo "the backup before the restart failed (above); fix backup.target_dir and run this again"
+	fi
+fi
 priv "$SYSTEMCTL" restart groupwarden.service
 priv "$SYSTEMCTL" try-restart groupwarden-sync.timer groupwarden-backup.timer
 echo "restarted groupwarden.service; waiting up to ${HEALTH_WAIT}s for groupwarden healthcheck"
@@ -217,4 +237,4 @@ priv "$SYSTEMCTL" restart groupwarden.service
 if healthy; then
 	die "ROLLED BACK to the previous binary and units; it is healthy. The new version was not installed."
 fi
-die "ROLLED BACK, but the previous binary is not healthy either; see docs/runbook.md"
+die "ROLLED BACK, but the previous binary is not healthy either; see docs/runbook.md.$restore_hint"
