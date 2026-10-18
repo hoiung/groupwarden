@@ -178,6 +178,33 @@ func TestCoverageAbsentNotAdminCovered(t *testing.T) {
 	}
 }
 
+// TestLinkedGroupInASetCountedOnce: a community's linked group that a
+// standalone set also lists (a group switched on by itself, then its whole
+// community) is checked and reported under the set only.
+func TestLinkedGroupInASetCountedOnce(t *testing.T) {
+	k := modtest.New(t, "  set-c:\n    groups: [\"99999000000222@g.us\"]\n")
+	k.Fake.SetLinked(modtest.Community, []client.GroupRef{{JID: modtest.G1, Name: "general"}, {JID: modtest.G2, Name: "jobs"}})
+	s := newSweep(k)
+	s.run(t)
+	listed := map[string][]client.JID{}
+	for _, cc := range s.Coverage().Communities {
+		for _, g := range cc.Groups {
+			listed[cc.Community] = append(listed[cc.Community], g.JID)
+		}
+	}
+	if fmt.Sprint(listed[string(modtest.Community)]) != fmt.Sprint([]client.JID{modtest.G1}) ||
+		fmt.Sprint(listed["set-c"]) != fmt.Sprint([]client.JID{modtest.G2}) {
+		t.Fatalf("listed %v", listed)
+	}
+	rows, err := k.Store.CoverageRows(k.Ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := rows[string(modtest.G2)]; r.Community != "set-c" {
+		t.Fatalf("stored jobs row %+v, want it under set-c", r)
+	}
+}
+
 // TestFewerThanTwoHumanAdminsAlert: a group the bot is in with fewer than 2
 // human admins draws one routine alert per episode; a group with 2 does not,
 // and neither does a group the bot is not in.
