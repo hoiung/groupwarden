@@ -46,9 +46,10 @@ func checkCorpus(l *Loaded) error {
 
 // Holder holds the running config and swaps it whole on reload.
 type Holder struct {
-	path string
-	cur  atomic.Pointer[Loaded]
-	mu   sync.Mutex // one reload at a time
+	path    string
+	cur     atomic.Pointer[Loaded]
+	mu      sync.Mutex // one reload at a time
+	enabled []Enabled  // the /enable list every reload merges in
 }
 
 // Current is the config in use. Read it once per decision: a reload swaps
@@ -109,13 +110,29 @@ func LoadRunning(path string) (l *Loaded, rejected *Rejected, err error) {
 func (h *Holder) Reload() (*Loaded, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	l, err := Load(h.path)
+	l, err := load(h.path, h.enabled)
 	if err != nil {
 		return nil, &Rejected{Reason: err, Running: h.Current().Hash}
 	}
 	if err := saveLastGood(l); err != nil {
 		return nil, &Rejected{Reason: err, Running: h.Current().Hash}
 	}
+	h.cur.Store(l)
+	return l, nil
+}
+
+// SetEnabled swaps in the running config built again, from the same file
+// contents, with list as its /enable entries; every later reload merges list
+// too. On any failure the running config stays and the error is a *Rejected.
+func (h *Holder) SetEnabled(list []Enabled) (*Loaded, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cur := h.Current()
+	l, err := cur.WithEnabled(list)
+	if err != nil {
+		return nil, &Rejected{Reason: err, Running: cur.Hash}
+	}
+	h.enabled = append([]Enabled(nil), list...)
 	h.cur.Store(l)
 	return l, nil
 }
