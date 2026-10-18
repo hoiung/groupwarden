@@ -34,6 +34,10 @@ func TestWithEnabledMergesTheList(t *testing.T) {
 	if mode, ok := m.Rules.ModeFor(communityB); !ok || mode != m.Config.Mode {
 		t.Fatalf("community B: mode %q on %v, want the global %q", mode, ok, m.Config.Mode)
 	}
+	// A community, not a set of one: the sweep lists its groups.
+	if gs := m.Rules.SetGroups(communityB); len(gs) != 0 {
+		t.Fatalf("the /enable community became a set of %v", gs)
+	}
 	for _, g := range []string{loneGroup, oldGroup} {
 		if got := m.Rules.CommunityOf(g, communityB); got != g {
 			t.Fatalf("the single group %s belongs to %q, want its own set", g, got)
