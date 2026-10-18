@@ -62,7 +62,7 @@ WhatsApp retires old client versions; the bot then exits with "WhatsApp rejected
 3. **Read the diff** between the pinned commit and the new one: `https://github.com/tulir/whatsmeow/compare/<pinned commit>...<new commit>`. Look for changes to the calls groupwarden uses (message revoke, group participants, join requests, community groups, the store).
 4. Bump the pin: `go get go.mau.fi/whatsmeow@<new commit>`, then `go mod tidy`.
 5. Test: `go test -race ./...`, then the corpus test against your own rules: `groupwarden corpus test --config <your config> --corpus <your corpus>`.
-6. Commit (and update the version row in `docs/architecture.md`), then install on the node: `deploy/install.sh --version <that commit>`.
+6. Commit (and update the version row in `docs/architecture.md`), then install on the node from its clone, checked out at that commit first ([deploy.md](deploy.md) step 1 says why): `git fetch && git checkout <that commit>`, then `deploy/install.sh --version <that commit>`.
 7. Check `/status` in the admin chat: connected, the right config version.
 
 ## Rollback
