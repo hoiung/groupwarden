@@ -14,6 +14,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/config/configtest"
 	"github.com/hoiung/groupwarden/internal/modtest"
 	"github.com/hoiung/groupwarden/internal/pipeline"
+	"github.com/hoiung/groupwarden/internal/store"
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
 
@@ -206,6 +207,64 @@ func TestEnableWhatIsAlreadyOn(t *testing.T) {
 	}
 	if len(h.enabled()) != 0 {
 		t.Fatalf("a refused command stored %v", h.enabled())
+	}
+}
+
+// TestEnableReplies: the bot in the group but not an admin, a join that waits
+// for approval, and a second /enable of what /enable switched on.
+func TestEnableReplies(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Invites = map[string]client.Group{
+		"JoBs1":  {JID: modtest.G2, Name: "jobs", Parent: modtest.Community},
+		"GrOuP1": {JID: otherGroup, Name: "public chat"},
+	}
+	h.k.Dir.BotNotAdmin(modtest.G2)
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/JoBs1", 0)
+	if !strings.Contains(h.lastReply(), "the bot is in it but not an admin: a human admin must promote it there") ||
+		h.k.Fake.Count("JoinWithLink JoBs1") != 0 {
+		t.Fatalf("calls %v reply %q", h.k.Fake.Calls(), h.lastReply())
+	}
+	h.k.Fake.JoinPending = map[client.JID]bool{otherGroup: true}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/GrOuP1", 0)
+	if !strings.Contains(h.lastReply(), "join request sent: an admin there must approve it, then promote the bot to admin") ||
+		h.k.Logged("join requested from the admin chat") != 1 {
+		t.Fatalf("reply %q", h.lastReply())
+	}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/GrOuP1", 0)
+	if !strings.Contains(h.lastReply(), `The group "public chat" is already on (switched on with /enable)`) ||
+		h.k.Logged("enabled from the admin chat") != 1 {
+		t.Fatalf("a second /enable: reply %q", h.lastReply())
+	}
+}
+
+// TestEnableRefusedEntryTakenBack: an entry the config will not take (here
+// an ID that is no group ID) is taken back out of the store and nothing is
+// switched on; a /disable whose rebuild fails still logs who removed what.
+func TestEnableRefusedEntryTakenBack(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Invites = map[string]client.Group{
+		"OdD1":  {JID: "not-a-group", Name: "odd"},
+		"CoMm1": {JID: otherCommunity, Name: "book club", IsCommunity: true},
+	}
+	before := h.k.Holder.Current().Hash
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/OdD1", 0)
+	if !strings.HasPrefix(h.lastReply(), "Could not do that:") || len(h.enabled()) != 0 ||
+		h.k.Holder.Current().Hash != before || h.k.Logged("enabled list not loaded") != 1 {
+		t.Fatalf("reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMm1", 0)
+	if !h.on(otherCommunity) {
+		t.Fatalf("reply %q", h.lastReply())
+	}
+	// A row the config cannot take, written beside the bot: the rebuild fails.
+	if err := h.k.Store.Enable(context.Background(), store.Enabled{ID: "not-a-group", Kind: store.KindGroup, By: "test",
+		At: h.k.Clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h.command(telegramtest.ChatID, adminUser, "/disable https://chat.whatsapp.com/CoMm1", 0)
+	if !strings.Contains(h.lastReply(), "removed from the /enable list, but the running config still has it") ||
+		h.k.Logged("disabled from the admin chat") != 1 {
+		t.Fatalf("reply %q", h.lastReply())
 	}
 }
 
