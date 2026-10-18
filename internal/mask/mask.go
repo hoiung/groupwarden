@@ -13,8 +13,9 @@ import (
 // keep is how many trailing digits stay visible.
 const keep = 4
 
-// jidRe matches a WhatsApp ID: digits, an optional ":device", "@", a server.
-var jidRe = regexp.MustCompile(`\+?([0-9]{5,})(?::[0-9]+)?@(s\.whatsapp\.net|c\.us|g\.us|lid|newsletter|broadcast)`)
+// jidRe matches a WhatsApp ID: digits (an older group's ID is the creator's
+// number, "-" and a creation time), an optional ":device", "@", a server.
+var jidRe = regexp.MustCompile(`\+?([0-9]{5,})(?:-([0-9]{4,}))?(?::[0-9]+)?@(s\.whatsapp\.net|c\.us|g\.us|lid|newsletter|broadcast)`)
 
 // runRe matches any other digit run long enough to identify someone (a bare
 // phone number, a group ID written without its server). A run that touches a
@@ -38,7 +39,11 @@ var kinds = map[string]string{
 func IDs(s string) string {
 	s = jidRe.ReplaceAllStringFunc(s, func(j string) string {
 		m := jidRe.FindStringSubmatch(j)
-		return kinds[m[2]] + "…" + last(m[1])
+		digits := m[1]
+		if m[2] != "" { // an older group ID: its creation time, not the creator's number
+			digits = m[2]
+		}
+		return kinds[m[3]] + "…" + last(digits)
 	})
 	var b strings.Builder
 	prev := 0
