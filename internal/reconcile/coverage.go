@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -89,6 +90,10 @@ func (s *Sweep) discover(ctx context.Context, res *Result) []listing {
 		}); err != nil {
 			l.err = mask.IDs(err.Error())
 			s.Log.Error("sweep: could not list a community's groups", "community", mask.IDs(c), "err", l.err)
+		} else {
+			// A linked group a standalone set lists (a group switched on by
+			// itself) is checked and reported under that set only.
+			l.refs = slices.DeleteFunc(l.refs, func(r client.GroupRef) bool { return rs.CommunityOf(string(r.JID), c) != c })
 		}
 		sort.Slice(l.refs, func(i, j int) bool { return l.refs[i].JID < l.refs[j].JID })
 		out = append(out, l)
