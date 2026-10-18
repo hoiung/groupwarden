@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoiung/groupwarden/internal/app"
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/ledger"
@@ -108,6 +109,15 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		return exitFail
 	}
 	defer st.Close()
+	// --community may name a community switched on with /enable.
+	list, err := st.EnabledList(ctx)
+	if err == nil {
+		l, err = l.WithEnabled(app.EnabledEntries(list))
+	}
+	if err != nil {
+		fmt.Fprintf(e.stderr, "groupwarden: the /enable list: %v\n", err)
+		return exitFail
+	}
 	if sub == "list" {
 		bans, err := st.Bans(ctx)
 		if err != nil {
