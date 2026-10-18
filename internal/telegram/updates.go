@@ -113,7 +113,7 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 		return call(func() (string, error) { return c.Controls.Enable(ctx, args, by) }), 0
 	case "disable":
 		if args == "" {
-			return "Usage: /disable <invite link>", 0
+			return "Usage: /disable <invite link or name>", 0
 		}
 		return call(func() (string, error) { return c.Controls.Disable(ctx, args, by) }), 0
 	case "ban":
