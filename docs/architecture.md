@@ -29,8 +29,9 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                naming the group and the member (once a day for the same
                action, group and member, and for a delete the same message)
 
-           internal/reconcile sweep (at connect, every reconcile interval, and
-           when the bot joins a group; the group list is read from WhatsApp first,
+           internal/reconcile sweep (at connect, every reconcile interval,
+           when the bot joins a group, after each /enable and after a /disable
+           that removes an entry; the group list is read from WhatsApp first,
            and a read that fails is tried again every 30 seconds; a sweep waits
            until the list has loaded and, after a connect, until the worker has
            decided everything WhatsApp held while the bot was offline):
