@@ -17,7 +17,13 @@ import (
 // any/all tree cannot make validation slow.
 const maxBranches = 1024
 
-var groupID = regexp.MustCompile(`^[0-9]+@g\.us$`)
+// communityID is a WhatsApp Community's ID. groupID also takes the older
+// group form, the creator's number and a creation time ("<digits>-<digits>"),
+// which groups made before the plain-number IDs still have.
+var (
+	communityID = regexp.MustCompile(`^[0-9]+@g\.us$`)
+	groupID     = regexp.MustCompile(`^[0-9]+(-[0-9]+)?@g\.us$`)
+)
 
 type wordList struct {
 	name     string
@@ -335,12 +341,12 @@ func (c *compiler) compileCommunities() {
 	}
 	for _, cs := range c.rs.spec.Communities {
 		path := []string{"communities", cs.ID}
-		if len(cs.Groups) == 0 && !groupID.MatchString(cs.ID) {
+		if len(cs.Groups) == 0 && !communityID.MatchString(cs.ID) {
 			c.fail(path, "communities: %q is not a WhatsApp Community ID (a number ending in @g.us); a named set of standalone groups needs a groups: list", cs.ID)
 		}
 		for i, g := range cs.Groups {
 			if !groupID.MatchString(g) {
-				c.fail(append(append([]string{}, path...), "groups", strconv.Itoa(i)), "communities.%s: %q is not a group ID (a number ending in @g.us)", cs.ID, g)
+				c.fail(append(append([]string{}, path...), "groups", strconv.Itoa(i)), "communities.%s: %q is not a group ID (a number, or an older group's number-number, ending in @g.us)", cs.ID, g)
 				continue
 			}
 			if other, dup := c.rs.groupSet[g]; dup {
