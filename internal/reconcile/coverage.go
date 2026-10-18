@@ -138,7 +138,7 @@ type joinResult struct {
 // autoJoin asks WhatsApp to join, by itself, every linked group of a
 // community that the bot is not in and has never tried to join or been in.
 // WhatsApp joins it at once or holds it for an admin's approval; a refusal
-// leaves a /join link as the way in.
+// leaves an /enable link as the way in.
 func (s *Sweep) autoJoin(ctx context.Context, res *Result, lists []listing, prev map[string]store.CoverageRow) map[client.JID]joinResult {
 	out := map[client.JID]joinResult{}
 	for _, l := range lists {
@@ -189,13 +189,13 @@ func todo(state string, jr joinResult, tried bool) string {
 	case state == store.CoverageNotAdmin:
 		return "the bot is in it but not an admin: a human admin must promote it"
 	case tried && jr.err != "":
-		return "the bot could not join it by itself (" + jr.err + "): send /join <invite link> for it"
+		return "the bot could not join it by itself (" + jr.err + "): send /enable <invite link> for it"
 	case tried && jr.pending:
 		return "the bot asked to join: an admin of that group must approve it, then promote the bot"
 	case tried:
 		return "the bot joined it by itself: a human admin must promote it"
 	}
-	return "the bot is not in it: send /join <invite link> for it"
+	return "the bot is not in it: send /enable <invite link> for it"
 }
 
 // settle joins absent linked groups by itself, then, in one transaction,
