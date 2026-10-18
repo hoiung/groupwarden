@@ -247,6 +247,13 @@ func (e *env) runBot(ctx context.Context, path string, log *slog.Logger) int {
 			return err
 		}
 		defer session.Close()
+		// The /enable list is part of what the bot moderates: merged before
+		// the first event is decided.
+		l, err := app.LoadEnabled(ctx, w.store, holder)
+		if err != nil {
+			return fmt.Errorf("load the /enable list: %w", err)
+		}
+		log.Info("enabled list loaded", "config", "v"+l.Hash)
 		a, err := app.Build(app.Parts{Adapter: w.adapter, Store: w.store, Inbox: w.inbox, Config: holder,
 			Session: session, Telegram: opts, Alerts: w.alerter, Log: log})
 		if err != nil {
