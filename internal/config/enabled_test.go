@@ -55,6 +55,22 @@ func TestWithEnabledMergesTheList(t *testing.T) {
 	}
 }
 
+// TestWithEnabledNoCommunitiesInTheFile: a file with no communities: key
+// (it is optional) takes /enable entries too.
+func TestWithEnabledNoCommunitiesInTheFile(t *testing.T) {
+	l := parse(t, lists)
+	if len(l.Config.Communities) != 0 {
+		t.Fatalf("the fixture lists communities: %v", l.Config.Communities)
+	}
+	m, err := l.WithEnabled([]Enabled{{ID: communityB, Name: "book club"}, {ID: loneGroup, Group: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := m.Rules.ModeFor(communityB); !ok || m.Rules.CommunityOf(loneGroup, "") != loneGroup {
+		t.Fatalf("communities %v", m.Rules.Communities())
+	}
+}
+
 // TestSetEnabledSurvivesReload: the holder keeps the list, so a reload of
 // the file merges it again; an empty list switches it off.
 func TestSetEnabledSurvivesReload(t *testing.T) {
