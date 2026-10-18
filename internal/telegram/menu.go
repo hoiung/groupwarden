@@ -34,7 +34,7 @@ var adminCommands = []adminCommand{
 	{"resume", "", "end every pause; queued actions are checked again before they run"},
 	{"reload", "", "load the config again (a rejected config leaves the old one running)"},
 	{"enable", "<invite link>", "moderate what the link points to (a community link: the whole community; a group link: that group alone), joining it if needed"},
-	{"disable", "<invite link>", "stop moderating what /enable switched on for that link (the bot stays in the group)"},
+	{"disable", "<invite link or name>", "stop moderating what /enable switched on for that link, or under the name /status shows (the bot stays in the group)"},
 	{"ban", "", "send as a reply to a \"would have acted\" report: delete that post, remove and ban its sender"},
 	{"unban", "<report number>", "unban the person in that report everywhere"},
 }
