@@ -15,7 +15,8 @@ func TestEnabledList(t *testing.T) {
 	for _, e := range []Enabled{
 		{ID: "99999000000777@g.us", Kind: KindCommunity, Name: "book club", By: "telegram:1 (A)", At: at},
 		{ID: "99999000000333@g.us", Kind: KindGroup, Name: "public chat", By: "telegram:1 (A)", At: at},
-		{ID: "99999000000777@g.us", Kind: KindCommunity, Name: "book club 2", By: "telegram:2 (B)", At: at.Add(time.Hour)},
+		// The same ID again replaces the whole entry, its kind included.
+		{ID: "99999000000777@g.us", Kind: KindGroup, Name: "book club 2", By: "telegram:2 (B)", At: at.Add(time.Hour)},
 	} {
 		if err := s.Enable(ctx, e); err != nil {
 			t.Fatal(err)
@@ -26,7 +27,8 @@ func TestEnabledList(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(list) != 2 || list[0].ID != "99999000000333@g.us" || list[0].Kind != KindGroup ||
-		list[1].Name != "book club 2" || list[1].By != "telegram:2 (B)" || !list[1].At.Equal(at.Add(time.Hour)) {
+		list[1].Name != "book club 2" || list[1].Kind != KindGroup || list[1].By != "telegram:2 (B)" ||
+		!list[1].At.Equal(at.Add(time.Hour)) {
 		t.Fatalf("list %+v", list)
 	}
 	if err := s.Enable(ctx, Enabled{ID: "99999000000111@g.us", Kind: "everything", By: "x", At: at}); err == nil {
