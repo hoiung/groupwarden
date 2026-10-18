@@ -31,9 +31,9 @@ type Controls interface {
 	// whole community, a group link that group alone) and joins it through
 	// the link when the bot is not in it.
 	Enable(ctx context.Context, link string, by Actor) (string, error)
-	// Disable switches off what Enable switched on for the link; the bot
-	// stays in the group.
-	Disable(ctx context.Context, link string, by Actor) (string, error)
+	// Disable switches off what Enable switched on for an invite link, or for
+	// the entry /status shows under that name; the bot stays in the group.
+	Disable(ctx context.Context, linkOrName string, by Actor) (string, error)
 	// Status describes the bot's state.
 	Status(ctx context.Context) (string, error)
 }
