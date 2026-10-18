@@ -19,11 +19,13 @@ const (
 func TestWithEnabledMergesTheList(t *testing.T) {
 	l := parse(t, lists+"communities:\n  \""+communityA+"\":\n    name: from the file\n    mode: shadow\n"+
 		"  set-b:\n    groups: [\""+groupSet+"\"]\n")
+	// One the file lists first: it is skipped, and the entries after it are
+	// still merged.
 	m, err := l.WithEnabled([]Enabled{
+		{ID: communityA, Name: "renamed"},
 		{ID: communityB, Name: "book club"},
 		{ID: loneGroup, Group: true, Name: "public chat"},
 		{ID: oldGroup, Group: true, Name: "old chat"},
-		{ID: communityA, Name: "renamed"},
 		{ID: groupSet, Group: true, Name: "again"},
 	})
 	if err != nil {
@@ -60,6 +62,19 @@ func TestWithEnabledMergesTheList(t *testing.T) {
 	again, err := l.WithEnabled(nil)
 	if err != nil || again.Hash != l.Hash {
 		t.Fatalf("an empty list: %v, version %s, want %s", err, again.Hash, l.Hash)
+	}
+}
+
+// TestWithEnabledKeepsThePaths: the merged config resolves a relative path
+// against the config file's directory, as the file alone does.
+func TestWithEnabledKeepsThePaths(t *testing.T) {
+	l := parse(t, lists+"deploy_key_file: keys/deploy\n")
+	m, err := l.WithEnabled([]Enabled{{ID: communityB, Name: "book club"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "/etc/groupwarden/keys/deploy"; l.Config.DeployKeyFile != want || m.Config.DeployKeyFile != want {
+		t.Fatalf("deploy key: file %q, merged %q, want %q", l.Config.DeployKeyFile, m.Config.DeployKeyFile, want)
 	}
 }
 
