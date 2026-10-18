@@ -212,11 +212,13 @@ func TestCommandMenuScopedToAdminChat(t *testing.T) {
 	if len(cmds) != len(wantCommands) {
 		t.Fatalf("menu %+v, want %d commands", cmds, len(wantCommands))
 	}
+	// What /enable and /disable do, in words an admin acts on.
+	says := map[string]string{"enable": "moderate what the link points to", "disable": "stop moderating what /enable switched on"}
 	for i, c := range cmds {
 		name, args, _ := strings.Cut(wantCommands[i], " ")
 		if "/"+c.Command != name || c.Description == "" || len(c.Description) > 256 ||
 			(args != "" && !strings.HasPrefix(c.Description, args+": ")) ||
-			!strings.Contains(telegram.CommandList(), "/"+c.Command) {
+			!strings.Contains(telegram.CommandList(), "/"+c.Command) || !strings.Contains(c.Description, says[c.Command]) {
 			t.Fatalf("menu entry %d = %+v, want %s", i, c, wantCommands[i])
 		}
 		// A listed command is one the bot runs, not answered with the list.
