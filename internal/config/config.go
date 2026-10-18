@@ -192,7 +192,23 @@ func read(path string, enabled []Enabled) (*Loaded, error) {
 func Parse(raw []byte, dir string) (*Loaded, error) { return parseEnabled(raw, dir, nil) }
 
 // parseEnabled is Parse with the /enable entries merged into the communities.
+// parseEnabled builds the file with the /enable entries merged in. The
+// version stays the file's alone: the list is the bot's own state, as the ban
+// list is, so `check` prints the version the bot posts once it loads the file.
 func parseEnabled(raw []byte, dir string, enabled []Enabled) (*Loaded, error) {
+	file, err := build(raw, dir, nil)
+	if err != nil || len(enabled) == 0 {
+		return file, err
+	}
+	l, err := build(raw, dir, enabled)
+	if err != nil {
+		return nil, err
+	}
+	l.Hash = file.Hash
+	return l, nil
+}
+
+func build(raw []byte, dir string, enabled []Enabled) (*Loaded, error) {
 	if _, _, err := configSchema(); err != nil {
 		return nil, err
 	}
