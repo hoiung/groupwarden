@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
+
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -21,6 +23,7 @@ type node struct {
 	t                           *testing.T
 	root, good, ctlLog, sudoLog string
 	systemctl, sudo             string
+	backup                      string // backup.target_dir
 	script                      string // the install script run ("" = this directory's)
 	dir                         string // the directory it runs in ("" = this one)
 }
@@ -41,10 +44,21 @@ func newNode(t *testing.T) *node {
 	n.write("sudo", "#!/bin/sh\necho \"$*\" >> "+n.sudoLog+"\n[ \"$1\" = -u ] && shift 2\nexec \"$@\"\n", 0o755)
 	state := filepath.Join(n.root, "var/lib/groupwarden")
 	n.mkdir("var/lib/groupwarden/config")
-	n.mkdir("srv/backup")
+	// `groupwarden backup` refuses a target on the data dir's disk: /dev/shm
+	// is a mount of its own.
+	backupDir, err := os.MkdirTemp("/dev/shm", "groupwarden-backup-")
+	if err != nil {
+		t.Fatalf("a backup target on another disk: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(backupDir) })
+	n.backup = backupDir
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	n.write("root/var/lib/groupwarden/config/config.yaml", "data_dir: "+state+"\nsecrets_file: "+
 		filepath.Join(n.root, "etc/groupwarden/secrets.env")+"\nconfig_sync_minutes: 15\nbackup:\n  target_dir: "+
-		filepath.Join(n.root, "srv/backup")+"\n", 0o600)
+		n.backup+"\n  age_recipient: "+id.Recipient().String()+"\n", 0o600)
 	st, err := store.Open(context.Background(), filepath.Join(state, "groupwarden.db"), store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +149,7 @@ func TestInstallRendersRestartsAndRollsBack(t *testing.T) {
 		t.Fatalf("sync timer not rendered from config_sync_minutes 15:\n%s", timer)
 	}
 	if got, want := n.read("etc/systemd/system/groupwarden-backup.service.d/target.conf"),
-		"[Service]\nReadWritePaths=-"+filepath.Join(n.root, "srv/backup")+"\n"; got != want {
+		"[Service]\nReadWritePaths=-"+n.backup+"\n"; got != want {
 		t.Fatalf("backup drop-in %q; want %q", got, want)
 	}
 	for _, u := range []string{"groupwarden.service", "groupwarden-sync.service", "groupwarden-backup.service",
@@ -171,6 +185,14 @@ func TestInstallRendersRestartsAndRollsBack(t *testing.T) {
 	code, out = n.install(nil, "--binary", bad)
 	if code != 1 || !strings.Contains(out, "ROLLED BACK to the previous binary and units; it is healthy") {
 		t.Fatalf("unhealthy upgrade: exit %d\n%s", code, out)
+	}
+	// The previous binary took a backup before the restart (the first install
+	// had nothing before it to take one).
+	backedUp := strings.Index(out, "backup before the restart: ok ")
+	if backedUp < 0 || backedUp > strings.Index(out, "restarted groupwarden.service") ||
+		!strings.Contains(readFile(t, n.sudoLog), "-u groupwarden "+bin+".previous backup --config "+live+"\n") ||
+		strings.Count(readFile(t, n.sudoLog), " backup --config ") != 1 {
+		t.Fatalf("no backup by the previous binary before the restart:\n%s\n%s", out, readFile(t, n.sudoLog))
 	}
 	if got, want := n.read("usr/local/bin/groupwarden"), readFile(t, n.good); got != want {
 		t.Fatal("the rolled-back binary is not the previous one")
@@ -259,6 +281,56 @@ func TestInstallPutsBackWhenTheNewBinaryRejectsTheConfig(t *testing.T) {
 	}
 	if c := strings.Count(n.calls(), "restart groupwarden.service\n"); c != restarts {
 		t.Fatalf("restarted after a failed install:\n%s", n.calls())
+	}
+}
+
+// TestInstallBacksUpBeforeTheRestart: an upgrade whose new binary moves the
+// database to a schema the previous binary refuses ends rolled back but down,
+// and says which backup (taken before the restart) to restore; a backup that
+// fails stops the install before anything restarts.
+func TestInstallBacksUpBeforeTheRestart(t *testing.T) {
+	n := newNode(t)
+	moved := filepath.Join(t.TempDir(), "schema-moved")
+	prev := filepath.Join(t.TempDir(), "groupwarden-prev")
+	if err := os.WriteFile(prev, []byte("#!/bin/sh\n[ \"$1\" = healthcheck ] && [ -f "+moved+" ] && "+
+		"{ echo 'groupwarden.db is at schema version 11 but this binary knows only 10'; exit 1; }\nexec "+
+		n.good+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := n.install(nil, "--binary", prev); code != 0 {
+		t.Fatalf("first install: exit %d\n%s", code, out)
+	}
+	newer := filepath.Join(t.TempDir(), "groupwarden-newer")
+	if err := os.WriteFile(newer, []byte("#!/bin/sh\n[ \"$1\" = healthcheck ] && { touch "+moved+"; echo 'running: no'; exit 1; }\nexec "+
+		n.good+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, out := n.install(nil, "--binary", newer)
+	if code != 1 || !strings.Contains(out, "ROLLED BACK, but the previous binary is not healthy either") ||
+		!strings.Contains(out, "restore the backup taken before the restart (ok groupwarden-") {
+		t.Fatalf("a rollback the previous binary cannot run: exit %d\n%s", code, out)
+	}
+	files, err := os.ReadDir(n.backup)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("backups %v %v", files, err)
+	}
+
+	// A backup that fails stops the install: nothing restarts and the
+	// installed binary stays the previous one.
+	if err := os.Remove(moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(n.backup); err != nil {
+		t.Fatal(err)
+	}
+	restarts := strings.Count(n.calls(), "restart groupwarden.service\n")
+	code, out = n.install(nil, "--binary", n.good)
+	if code != 1 || !strings.Contains(out, "the backup before the restart failed") ||
+		strings.Count(n.calls(), "restart groupwarden.service\n") != restarts {
+		t.Fatalf("a failed backup: exit %d\n%s\n%s", code, out, n.calls())
+	}
+	if got, want := n.read("usr/local/bin/groupwarden"), readFile(t, prev); got != want {
+		t.Fatal("the new binary was left installed after a failed backup")
 	}
 }
 
