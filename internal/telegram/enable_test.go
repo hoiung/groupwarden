@@ -18,11 +18,13 @@ import (
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
 
-// Synthetic IDs for /enable: a community the config does not list and one
-// of its groups.
+// Synthetic IDs for /enable: a community the config does not list, one of
+// its groups, and a group with an older group's ID (creator's number, "-",
+// creation time).
 const (
 	otherCommunity client.JID = "99999000000777@g.us"
 	otherGroup     client.JID = "99999000000333@g.us"
+	oldGroup       client.JID = "447700900123-1500000111@g.us"
 )
 
 // enabled lists the store's /enable entries as "kind id".
@@ -195,9 +197,9 @@ func TestEnableWhatIsAlreadyOn(t *testing.T) {
 	}
 	for cmd, want := range map[string]string{
 		"/enable":                                 "Usage: /enable <invite link>",
-		"/disable":                                "Usage: /disable <invite link>",
+		"/disable":                                "Usage: /disable <invite link or name>",
 		"/enable https://example.org/x":           "not a WhatsApp group invite link",
-		"/disable https://example.org/x":          "not a WhatsApp group invite link",
+		"/disable https://example.org/x":          "not a WhatsApp group invite link, nor the name of something switched on with /enable",
 		"/enable https://chat.whatsapp.com/NoNe1": "look up the invite link",
 	} {
 		h.command(telegramtest.ChatID, adminUser, cmd, 0)
@@ -246,10 +248,10 @@ func TestEnableRefusedEntryTakenBack(t *testing.T) {
 		"OdD1":  {JID: "not-a-group", Name: "odd"},
 		"CoMm1": {JID: otherCommunity, Name: "book club", IsCommunity: true},
 	}
-	before := h.k.Holder.Current().Hash
+	before := h.k.Holder.Current()
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/OdD1", 0)
 	if !strings.HasPrefix(h.lastReply(), "Could not do that:") || len(h.enabled()) != 0 ||
-		h.k.Holder.Current().Hash != before || h.k.Logged("enabled list not loaded") != 1 {
+		h.k.Holder.Current() != before || h.k.Logged("enabled list not loaded") != 1 {
 		t.Fatalf("reply %q, enabled %v", h.lastReply(), h.enabled())
 	}
 	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMm1", 0)
@@ -278,5 +280,81 @@ func TestEnableJoinFailureKeepsItOn(t *testing.T) {
 	if !strings.Contains(h.lastReply(), "joining it failed (join refused): send /enable again to retry") ||
 		strings.Join(h.enabled(), ",") != "group "+string(otherGroup) {
 		t.Fatalf("reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+}
+
+// TestDisableByName: an entry whose link no longer works (reset, revoked, the
+// group deleted) is switched off by the name /status shows; the dead link
+// says so, two entries of one name are refused, and a name nothing has is
+// told apart from a bad link.
+func TestDisableByName(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Invites = map[string]client.Group{
+		"GrOuP1": {JID: otherGroup, Name: "Public Chat"},
+		"CoMm1":  {JID: otherCommunity, Name: "book club", IsCommunity: true},
+	}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/GrOuP1", 0)
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMm1", 0)
+	if len(h.enabled()) != 2 {
+		t.Fatalf("enabled %v", h.enabled())
+	}
+	delete(h.k.Fake.Invites, "GrOuP1") // the friend reset the group's link
+	h.command(telegramtest.ChatID, adminUser, "/disable https://chat.whatsapp.com/GrOuP1", 0)
+	if !strings.Contains(h.lastReply(), "when its link no longer works, send /disable with the name /status shows for it") ||
+		len(h.enabled()) != 2 {
+		t.Fatalf("a dead link: reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+	h.command(telegramtest.ChatID, adminUser, "/disable  public chat ", 0)
+	if !strings.Contains(h.lastReply(), `the bot no longer moderates the group "Public Chat"`) ||
+		h.belongsTo(otherGroup, "") != "" || strings.Join(h.enabled(), ",") != "community "+string(otherCommunity) {
+		t.Fatalf("by name: reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+	h.command(telegramtest.ChatID, adminUser, "/disable no such chat", 0)
+	if !strings.Contains(h.lastReply(), "nor the name of something switched on with /enable (/status lists them)") {
+		t.Fatalf("an unknown name: reply %q", h.lastReply())
+	}
+	// Two entries of one name: the link tells them apart.
+	if err := h.k.Store.Enable(context.Background(), store.Enabled{ID: string(otherGroup), Kind: store.KindGroup,
+		Name: "Book Club", By: "test", At: h.k.Clock.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h.command(telegramtest.ChatID, adminUser, "/disable book club", 0)
+	if !strings.Contains(h.lastReply(), `2 entries switched on with /enable are named "book club"`) || len(h.enabled()) != 2 {
+		t.Fatalf("an ambiguous name: reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+	h.command(telegramtest.ChatID, adminUser, "/disable https://chat.whatsapp.com/CoMm1", 0)
+	if !strings.Contains(h.lastReply(), `the bot no longer moderates the community "book club"`) || h.on(otherCommunity) {
+		t.Fatalf("by link: reply %q", h.lastReply())
+	}
+}
+
+// TestEnableOlderGroupID: a group with an older group's ID is switched on
+// alone like any other, and the creator's number stays out of the reply.
+func TestEnableOlderGroupID(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Invites = map[string]client.Group{"OlD1": {JID: oldGroup, Name: "old chat"}}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/OlD1", 0)
+	if !strings.Contains(h.lastReply(), `the bot moderates the group "old chat" from now on`) ||
+		h.belongsTo(oldGroup, "") != string(oldGroup) {
+		t.Fatalf("reply %q, enabled %v", h.lastReply(), h.enabled())
+	}
+}
+
+// TestEnableWarnsOfTheFilesOwnSettings: /enable of a community the file
+// gives its own settings says that, out of the file, it runs on the global
+// ones (a shadow community would start enforcing).
+func TestEnableWarnsOfTheFilesOwnSettings(t *testing.T) {
+	h := newHarness(t, "  \""+string(otherCommunity)+"\":\n    name: shadowed\n    mode: shadow\n")
+	h.k.Fake.Invites = map[string]client.Group{
+		"ShAd1": {JID: otherCommunity, Name: "shadowed", IsCommunity: true},
+		"CoMa1": {JID: modtest.Community, Name: "community a", IsCommunity: true},
+	}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/ShAd1", 0)
+	if !strings.Contains(h.lastReply(), "stays on once it leaves the file (then with the global settings, not the file's own mode for it)") {
+		t.Fatalf("reply %q", h.lastReply())
+	}
+	h.command(telegramtest.ChatID, adminUser, "/enable https://chat.whatsapp.com/CoMa1", 0)
+	if strings.Contains(h.lastReply(), "global settings") {
+		t.Fatalf("a community with only a name: reply %q", h.lastReply())
 	}
 }
