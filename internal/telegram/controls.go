@@ -27,9 +27,13 @@ type Controls interface {
 	Pause(ctx context.Context, by Actor) (string, error)
 	// Reload reads the config file again (whole, or not at all).
 	Reload(ctx context.Context, by Actor) (string, error)
-	// Join joins a group by invite link, only when its parent is a
-	// configured community.
-	Join(ctx context.Context, link string, by Actor) (string, error)
+	// Enable switches on what an invite link points to (a community link the
+	// whole community, a group link that group alone) and joins it through
+	// the link when the bot is not in it.
+	Enable(ctx context.Context, link string, by Actor) (string, error)
+	// Disable switches off what Enable switched on for the link; the bot
+	// stays in the group.
+	Disable(ctx context.Context, link string, by Actor) (string, error)
 	// Status describes the bot's state.
 	Status(ctx context.Context) (string, error)
 }
