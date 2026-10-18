@@ -128,3 +128,11 @@ A rule added later starts with `confirmed: false`: each match is only reported i
 3. Commit and push. Within `config_sync_minutes` the admin chat says `config v<hash> loaded`, and `/status` shows that version. From then on the rule deletes, removes and bans.
 
 If its reports include a real member's post, do not confirm it: change the rule (or add the post to the corpus as legit with the `spam-intake` skill) and watch again.
+
+## Switching a community or group on or off
+
+1. Add the bot's number to the community or group (or let `/enable` join it through the link) and have a human admin make it an admin in each group.
+2. In the admin chat, send `/enable <invite link>`. A community's own invite link switches the whole community on; a group's link switches that group on alone, whatever community it is in. The reply says what is on and what an admin must still do (approve a join request, promote the bot).
+3. `/status` lists it at once, marked "switched on with /enable"; its groups and their coverage follow the sweep, which runs straight after `/enable`.
+
+`/disable <invite link>` switches off what `/enable` switched on; the bot stays in the group until an admin removes it. What `communities:` in the config file lists stays on: remove it there instead. To move a community from the file into the bot's list with no gap, send `/enable` with its link first (the reply says `/enable` now keeps it on too), then remove it from the file. The list lives in `groupwarden.db`, so it is in the nightly backup and survives a restart.
