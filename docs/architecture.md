@@ -36,7 +36,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
            decided everything WhatsApp held while the bot was offline):
                coverage per group (absent / not admin / covered) ► compared with
                what the admins were told ► changes reported; absent linked groups
-               ► joined by the bot itself, else /join asked for; a refused
+               ► joined by the bot itself, else /enable asked for; a refused
                admin-only call ► group marked not covered at once
                banned members present ► removed; their join requests ► rejected
 
