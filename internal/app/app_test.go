@@ -579,7 +579,7 @@ func TestNothingDecidedBeforeGroupsLoad(t *testing.T) {
 }
 
 // TestJoinedGroupRefreshesGroups: when the bot joins a group (by itself,
-// through /join, or added by an admin) WhatsApp's group list is read again
+// through /enable, or added by an admin) WhatsApp's group list is read again
 // at once, so the group and its community are known before the next
 // reconcile interval.
 func TestJoinedGroupRefreshesGroups(t *testing.T) {
