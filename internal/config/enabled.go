@@ -60,14 +60,12 @@ func (cm Community) OwnSettings() []string {
 }
 
 // WithEnabled builds the same file contents again with list as the /enable
-// entries (the commands beside `run` see what it moderates).
+// entries (the commands beside `run` see what it moderates). The corpus is
+// not tested again: an entry runs on the global settings, so the rules catch
+// what the file's own load found, and the corpus on disk can be newer than
+// the running rules (a config sync swaps it in before the reload; a refused
+// file leaves the last good copy running), which would refuse every /enable,
+// /disable and the start.
 func (l *Loaded) WithEnabled(list []Enabled) (*Loaded, error) {
-	nl, err := parseEnabled(l.Raw, l.Config.Dir, list)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkCorpus(nl); err != nil {
-		return nil, err
-	}
-	return nl, nil
+	return parseEnabled(l.Raw, l.Config.Dir, list)
 }
