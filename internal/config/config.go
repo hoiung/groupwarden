@@ -191,7 +191,6 @@ func read(path string, enabled []Enabled) (*Loaded, error) {
 // It reads no other file.
 func Parse(raw []byte, dir string) (*Loaded, error) { return parseEnabled(raw, dir, nil) }
 
-// parseEnabled is Parse with the /enable entries merged into the communities.
 // parseEnabled builds the file with the /enable entries merged in. The
 // version stays the file's alone: the list is the bot's own state, as the ban
 // list is, so `check` prints the version the bot posts once it loads the file.
