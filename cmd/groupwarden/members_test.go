@@ -258,6 +258,24 @@ func TestBanCLIPerCommunity(t *testing.T) {
 	if code := te.sub("ban", "add", memberLID, "--community", "99999000000777@g.us"); code != 0 {
 		t.Fatalf("ban add in a community switched on with /enable: exit %d %q", code, te.errb)
 	}
+	// Switched off with /disable, it keeps the ban, and --community lifts it.
+	est, err = store.Open(context.Background(), filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := est.Disable(context.Background(), "99999000000777@g.us"); err != nil {
+		t.Fatal(err)
+	}
+	if err := est.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.sub("ban", "remove", memberLID, "--community", "99999000000777@g.us"); code != 0 ||
+		te.out.String() != "unbanned "+memberLID+" in 99999000000777@g.us\n" {
+		t.Fatalf("ban remove in a community switched off: exit %d %q %q", code, te.out, te.errb)
+	}
+	if code := te.sub("ban", "add", memberLID, "--community", "99999000000777@g.us"); code != exitUsage {
+		t.Fatalf("ban add in a community switched off: exit %d %q", code, te.errb)
+	}
 	if code := te.sub("ban", "add", memberLID, "--community", cmdCommunity); code != 0 {
 		t.Fatalf("ban add again: exit %d %q", code, te.errb)
 	}
@@ -283,8 +301,8 @@ func TestBanCLIPerCommunity(t *testing.T) {
 			lifted = append(lifted, r.Chat)
 		}
 	}
-	if len(lifted) != 2 || lifted[0] != cmdCommunity || lifted[1] != "" {
-		t.Fatalf("unban rows lift %q, want %s then every community", lifted, cmdCommunity)
+	if len(lifted) != 3 || lifted[0] != cmdCommunity || lifted[1] != "99999000000777@g.us" || lifted[2] != "" {
+		t.Fatalf("unban rows lift %q, want %s, the switched-off community, then every community", lifted, cmdCommunity)
 	}
 }
 
