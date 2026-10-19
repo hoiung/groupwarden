@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -60,9 +61,16 @@ func (c *Chat) message(ctx context.Context, m *models.Message) {
 		c.migrate(ctx, m.MigrateToChatID)
 		return
 	}
-	cmd, args, ok := parseCommand(m.Text)
+	cmd, to, args, ok := parseCommand(m.Text)
 	if !ok || m.From == nil {
 		return // admins talking among themselves
+	}
+	if to != "" {
+		// The bot is an admin of the chat, so Telegram also sends it the
+		// commands written for another bot there.
+		if own := c.ownName(ctx); own != "" && !strings.EqualFold(to, own) {
+			return
+		}
 	}
 	if !c.isAdmin(ctx, m.From.ID) {
 		c.Log.Warn("command from a non-admin ignored", "user", m.From.ID, "command", cmd)
@@ -75,15 +83,37 @@ func (c *Chat) message(ctx context.Context, m *models.Message) {
 	c.reply(ctx, m.ID, reportID, text)
 }
 
-// parseCommand splits "/cmd@botname args" into "cmd" and "args".
-func parseCommand(text string) (cmd, args string, ok bool) {
+// parseCommand splits "/cmd@botname args" into "cmd", "botname" and "args".
+// Any space, tab or newline ends the command (Shift+Enter puts the link on
+// the next line).
+func parseCommand(text string) (cmd, to, args string, ok bool) {
 	text = strings.TrimSpace(text)
 	if !strings.HasPrefix(text, "/") {
-		return "", "", false
+		return "", "", "", false
 	}
-	head, rest, _ := strings.Cut(text[1:], " ")
-	head, _, _ = strings.Cut(head, "@")
-	return strings.ToLower(head), strings.TrimSpace(rest), head != ""
+	head, rest := text[1:], ""
+	if i := strings.IndexFunc(head, unicode.IsSpace); i >= 0 {
+		head, rest = head[:i], head[i:]
+	}
+	head, to, _ = strings.Cut(head, "@")
+	return strings.ToLower(head), to, strings.TrimSpace(rest), head != ""
+}
+
+// ownName is the bot's @name, asked of Telegram the first time a command is
+// addressed with one; "" while Telegram cannot say (the command then runs, as
+// it did before the bot knew its name).
+func (c *Chat) ownName(ctx context.Context) string {
+	c.nameMu.Lock()
+	defer c.nameMu.Unlock()
+	if c.username == "" {
+		me, err := c.api.GetMe(ctx)
+		if err != nil {
+			c.Log.Warn("read the bot's own @name", "err", c.redact(err))
+			return ""
+		}
+		c.username = me.Username
+	}
+	return c.username
 }
 
 // command runs one admin command and returns the reply and the report it is
