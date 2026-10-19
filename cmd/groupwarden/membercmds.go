@@ -159,8 +159,10 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		fmt.Fprintln(e.stderr, "groupwarden: bans.scope is all_communities: a ban covers every community, so leave out --community")
 		return exitUsage
 	case community != "":
-		if _, ok := l.Rules.ModeFor(community); !ok {
-			fmt.Fprintf(e.stderr, "groupwarden: %s is not a configured community\n", community)
+		// A ban is added only where the bot moderates, but lifted anywhere it
+		// was held: a community switched off with /disable keeps its bans.
+		if _, ok := l.Rules.ModeFor(community); !ok && sub == "add" {
+			fmt.Fprintf(e.stderr, "groupwarden: %s is not a configured community (nor switched on with /enable)\n", community)
 			return exitUsage
 		}
 		scope = community
