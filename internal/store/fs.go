@@ -26,9 +26,12 @@ func CheckLinuxFS(path string) error {
 }
 
 // OwnerOnly makes the SQLite database at path readable by its owner alone,
-// creating it empty when it is not there. SQLite gives its -wal and -shm the
-// database file's mode, and `pair` run by hand or in a container is outside
-// the units' UMask=0077, so the WhatsApp session keys would be made 0644.
+// creating it empty when it is not there. SQLite gives a new -wal and -shm
+// the database file's mode, and `pair` run by hand or in a container is
+// outside the units' UMask=0077, so the WhatsApp session keys would be made
+// 0644. A -wal or -shm an earlier run left behind keeps its own mode (SQLite
+// recovers from a WAL that still holds pages, it does not recreate it), so
+// those are made owner-only too.
 func OwnerOnly(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600) // #nosec G304 -- the data dir's own database
 	if err != nil {
@@ -37,8 +40,10 @@ func OwnerOnly(path string) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("create %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("make %s owner-only: %w", path, err)
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Chmod(p, 0o600); err != nil && !(p != path && os.IsNotExist(err)) {
+			return fmt.Errorf("make %s owner-only: %w", p, err)
+		}
 	}
 	return nil
 }
