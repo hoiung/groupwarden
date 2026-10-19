@@ -285,6 +285,73 @@ func TestHumanAdminAddLiftsOnlyThatCommunity(t *testing.T) {
 	}
 }
 
+// TestAdminElsewhereActionedHere: someone who is an admin only of another
+// moderated scope (set b here, as a friend's group switched on with /enable
+// is) is a plain member in community a: their spam there is deleted and they
+// are removed and banned. Where they are an admin they are not removed; the
+// sweep reports them there, once.
+func TestAdminElsewhereActionedHere(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Dir.Apply(&client.GroupChange{Group: modtest.GB, Promoted: []client.JID{modtest.Member}})
+	k.Deliver(k.Msg("M1", modtest.G1, modtest.Member, modtest.SpamText))
+	k.Fire()
+	if k.Fake.Count("Revoke "+string(modtest.G1)+" "+string(modtest.Member)+" M1") != 1 || removed(k, modtest.G1, modtest.Member) != 1 {
+		t.Fatalf("an admin of set b only was not actioned in community a: %v", k.Fake.Calls())
+	}
+	if !k.Banned(modtest.MemberM, string(modtest.Community)) {
+		t.Fatal("not banned")
+	}
+	if removed(k, modtest.GB, modtest.Member) != 0 || len(k.Find(modtest.MemberM, store.ActRemove, modtest.GB)) != 0 {
+		t.Fatalf("a removal from set b, where they are an admin: %v", k.Fake.Calls())
+	}
+	for _, run := range []string{"run1", "run2"} {
+		if err := k.Enforcer.CheckPresent(k.Ctx, modtest.GB, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if reps := k.Reports(ledger.KindAdminSpared); len(reps) != 1 || reps[0].Community != modtest.SetB {
+		t.Fatalf("admin-spared reports %+v, want one for set b", reps)
+	}
+}
+
+// TestAdminElsewhereSweptOut: the sweep finds a banned member in community
+// a who is an admin only of another scope and removes them; no admin-spared
+// report is made for community a.
+func TestAdminElsewhereSweptOut(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Dir.Apply(&client.GroupChange{Group: modtest.GB, Promoted: []client.JID{modtest.Member}})
+	k.Ban(modtest.MemberM)
+	if err := k.Enforcer.CheckPresent(k.Ctx, modtest.G1, "run1"); err != nil {
+		t.Fatal(err)
+	}
+	k.Fire()
+	if removed(k, modtest.G1, modtest.Member) != 1 {
+		t.Fatalf("the sweep did not remove a banned admin of set b only: %v", k.Fake.Calls())
+	}
+	for _, r := range k.Reports(ledger.KindAdminSpared) {
+		if r.Community == string(modtest.Community) {
+			t.Fatalf("spared in community a, where they are not an admin: %+v", r)
+		}
+	}
+}
+
+// TestAdminElsewhereAddDoesNotLiftTheBan: an add into community a by someone
+// who is an admin only of another scope is not a human admin's re-add: the
+// ban stays and the banned member is removed again.
+func TestAdminElsewhereAddDoesNotLiftTheBan(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Dir.Apply(&client.GroupChange{Group: modtest.GB, Promoted: []client.JID{modtest.Member}})
+	k.Ban(modtest.Other1M)
+	k.Deliver(change(k, modtest.G1, modtest.Member, []client.JID{modtest.Other1}, nil))
+	k.Fire()
+	if !k.Banned(modtest.Other1M, string(modtest.Community)) || len(k.Reports(ledger.KindBanLifted)) != 0 {
+		t.Fatalf("an add by an admin of set b only lifted the ban: reports %+v", k.Reports(ledger.KindBanLifted))
+	}
+	if removed(k, modtest.G1, modtest.Other1) != 1 {
+		t.Fatalf("the banned member was not removed again: %v", k.Fake.Calls())
+	}
+}
+
 // TestReaddedNextSpamRemovedAndRebanned: someone re-added by a human admin
 // who then spams is deleted, removed and banned again, like anyone.
 func TestReaddedNextSpamRemovedAndRebanned(t *testing.T) {
