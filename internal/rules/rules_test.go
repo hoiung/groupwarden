@@ -679,7 +679,10 @@ func TestOneKeywordNeverActsAlone(t *testing.T) {
 	}
 }
 
-func TestAdminAnywhereReportOnly(t *testing.T) {
+// TestAdminInItsCommunityReportOnly: a sender who is an admin in the post's
+// community is reported, never actioned (who counts as one there is the
+// directory's IsAdmin).
+func TestAdminInItsCommunityReportOnly(t *testing.T) {
 	rs := compile(t, testSpec())
 	d := rs.Decide(Input{Community: communityA, SenderIsAdmin: true, Fields: body("crypto pump t.me/+AbCd")})
 	if d.Action != Log || d.Exempt != ExemptAdmin || d.Rule == "" || len(d.BanIn) != 0 {
