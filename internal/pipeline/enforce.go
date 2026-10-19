@@ -52,15 +52,18 @@ func (e *Enforcer) Notify() { e.wake() }
 // them out of the community. There is no removal from the community itself:
 // WhatsApp answers a participant removal on the community's own ID with
 // "bad-request" (live, 2026-10-14). A community in shadow mode gets shadow
-// rows. A current human admin is never planned for removal: ok is false and
-// the caller reports it instead.
-func (e *Enforcer) Removals(m client.Member, communities []string, inChat client.JID, rs *rules.Ruleset) (intents []ledger.Intent, ok bool) {
-	if e.Directory.IsAdmin(m.LID, m.Phone, rs) {
-		return nil, false
-	}
+// rows. A current human admin is never planned for removal from a community
+// they are an admin in: those communities are returned in spared, and the
+// caller reports it when one is where the action started (the sweep reports
+// a banned admin in the others, once per ban).
+func (e *Enforcer) Removals(m client.Member, communities []string, inChat client.JID, rs *rules.Ruleset) (intents []ledger.Intent, spared []string) {
 	for _, c := range communities {
 		mode, configured := rs.ModeFor(c)
 		if !configured {
+			continue
+		}
+		if e.Directory.IsAdmin(m.LID, m.Phone, c, rs) {
+			spared = append(spared, c)
 			continue
 		}
 		enforce := mode == rules.Enforce
@@ -81,7 +84,7 @@ func (e *Enforcer) Removals(m client.Member, communities []string, inChat client
 			}
 		}
 	}
-	return intents, true
+	return intents, spared
 }
 
 // BanScopes is where a new ban for a post in community applies: the ban
@@ -121,7 +124,7 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 	}
 	trigger := eventID("join:", ch.DedupeKey())
 	actor := ch.Actor.Bare()
-	humanAdmin := actor != "" && !e.Directory.IsSelf(actor) && e.Directory.IsAdmin(actor, ch.ActorAlt, rs)
+	humanAdmin := actor != "" && !e.Directory.IsSelf(actor) && e.Directory.IsAdmin(actor, ch.ActorAlt, community, rs)
 	for _, j := range ch.Joined {
 		m := e.Directory.Complete(client.MemberOf(j))
 		ban, banned, err := store.FindBan(ctx, tx, m.IDs(), community)
@@ -144,8 +147,8 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 				"A human admin re-added a banned member to a group in %s: the ban is lifted (their next spam post is deleted, removed and banned again).",
 				where)}}
 		default:
-			intents, ok := e.Removals(m, []string{community}, ch.Group, rs)
-			if !ok {
+			intents, spared := e.Removals(m, []string{community}, ch.Group, rs)
+			if len(spared) > 0 {
 				p.Reports = []store.Report{adminSpared(community, where)}
 				break
 			}
@@ -319,7 +322,7 @@ func (e *Enforcer) enforceBan(ctx context.Context, m client.Member, group client
 		if a == store.ActReject {
 			p.Reason = "banned member asked to join"
 		}
-		if e.Directory.IsAdmin(m.LID, m.Phone, rs) {
+		if e.Directory.IsAdmin(m.LID, m.Phone, community, rs) {
 			// Once per ban: a sweep finds the same admin every time.
 			told, err := store.Reported(ctx, tx, ledger.KindAdminSpared, community, m.Key(), ban.CreatedAt)
 			if err != nil || told {
