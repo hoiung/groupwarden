@@ -68,8 +68,9 @@ func (e *env) recordBackup(ctx context.Context, st *store.Store, cfg *config.Con
 	var report *store.Report
 	if failure != nil && !strings.HasPrefix(status[store.StatusBackupResult].Value, "FAILED") {
 		report = &store.Report{Kind: string(alert.BackupFailed),
-			Text: "The nightly backup FAILED: " + failure.Error() + ". Earlier backups in " + cfg.Backup.TargetDir +
-				" are kept; it tries again tomorrow night (docs/runbook.md)."}
+			Text: "A backup FAILED: " + failure.Error() + ". Earlier backups in " + cfg.Backup.TargetDir +
+				" are kept; the nightly backup tries again tomorrow night, and an upgrade with deploy/install.sh stops " +
+				"until a backup works (docs/runbook.md)."}
 	}
 	if err := st.SetStatusReporting(ctx, map[string]string{
 		store.StatusBackupLastRun:    store.StatusTime(e.now()),
