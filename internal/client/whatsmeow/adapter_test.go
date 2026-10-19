@@ -377,21 +377,28 @@ func TestJoinPendingDerived(t *testing.T) {
 	ctx := context.Background()
 	self := types.GroupParticipant{JID: botLID, PhoneNumber: botPhone.ToNonAD()}
 	other := types.GroupParticipant{JID: member2}
+	// A community lists only its admins; its members are in its groups.
+	community := &types.GroupInfo{GroupParent: types.GroupParent{IsParent: true}, Participants: []types.GroupParticipant{other}}
 	cases := []struct {
 		name        string
 		info        *types.GroupInfo
 		infoErr     error
+		linked      []types.JID
+		linkedErr   error
 		wantPending bool
 		wantErr     bool
 	}{
-		{"joined", &types.GroupInfo{Participants: []types.GroupParticipant{other, self}}, nil, false, false},
-		{"request only (not allowed to read)", nil, wm.ErrNotInGroup, true, false},
-		{"request only (forbidden)", nil, wm.ErrIQForbidden, true, false},
-		{"readable but not a member", &types.GroupInfo{Participants: []types.GroupParticipant{other}}, nil, true, false},
-		{"lookup failed", nil, errors.New("timeout"), false, true},
+		{"joined", &types.GroupInfo{Participants: []types.GroupParticipant{other, self}}, nil, nil, nil, false, false},
+		{"request only (not allowed to read)", nil, wm.ErrNotInGroup, nil, nil, true, false},
+		{"request only (forbidden)", nil, wm.ErrIQForbidden, nil, nil, true, false},
+		{"readable but not a member", &types.GroupInfo{Participants: []types.GroupParticipant{other}}, nil, nil, nil, true, false},
+		{"lookup failed", nil, errors.New("timeout"), nil, nil, false, true},
+		{"a community: a member of its groups", community, nil, []types.JID{member2, botLID}, nil, false, false},
+		{"a community: not in its groups", community, nil, []types.JID{member2}, nil, true, false},
+		{"a community: its groups unreadable", community, nil, nil, wm.ErrIQForbidden, true, false},
 	}
 	for _, c := range cases {
-		f := &fakeWA{joinResult: groupJID, info: c.info, infoErr: c.infoErr}
+		f := &fakeWA{joinResult: groupJID, info: c.info, infoErr: c.infoErr, linked: c.linked, linkedErr: c.linkedErr}
 		g, pending, err := newTestAdapter(t, f, nil).JoinWithLink(ctx, "INVITECODE")
 		if (err != nil) != c.wantErr || pending != c.wantPending {
 			t.Errorf("%s: pending=%v err=%v", c.name, pending, err)
