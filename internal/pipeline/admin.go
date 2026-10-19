@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -206,8 +207,8 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 		return Banned{}, fmt.Errorf("%s is no longer a configured community", community)
 	}
 	enforce := mode == rules.Enforce
-	removals, ok := a.Enforcer.Removals(p.Target, rs.BanTargets(community), inChat, rs)
-	if !ok {
+	removals, spared := a.Enforcer.Removals(p.Target, rs.BanTargets(community), inChat, rs)
+	if slices.Contains(spared, community) {
 		a.Log.Info("admin ban skipped: the member is a current admin", "target", mask.IDs(p.Target.Key()), "by", actor)
 		return Banned{Member: p.Target, Spared: true}, nil
 	}
