@@ -129,7 +129,7 @@ func TestBanAnAdminOnlyElsewhere(t *testing.T) {
 	r = watchOnly(t, own)
 	own.k.Dir.Apply(&client.GroupChange{Group: modtest.G1, Promoted: []client.JID{modtest.Spammer}})
 	own.press(adminUser, "ban", r.ID)
-	if !strings.Contains(own.lastReply(), "Not banned: they are a current admin in the community this report is from") ||
+	if !strings.Contains(own.lastReply(), "Not banned: they are a current admin of the community or group this report is from") ||
 		own.k.Banned(modtest.SpammerM, "") {
 		t.Fatalf("[Ban] on an admin of community a: reply %q, banned %v", own.lastReply(), own.k.Banned(modtest.SpammerM, ""))
 	}
