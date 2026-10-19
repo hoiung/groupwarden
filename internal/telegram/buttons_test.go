@@ -110,6 +110,31 @@ func TestBanFromWatchOnlyReport(t *testing.T) {
 	}
 }
 
+// TestBanAnAdminOnlyElsewhere: [Ban] on someone who is an admin only of
+// another moderated scope (set b here, as a friend's group switched on with
+// /enable is) bans them and removes them from community a, not from set b;
+// [Ban] on an admin of the report's own community is refused.
+func TestBanAnAdminOnlyElsewhere(t *testing.T) {
+	h := newHarness(t, "")
+	r := watchOnly(t, h)
+	h.k.Dir.Apply(&client.GroupChange{Group: modtest.GB, Joined: []client.JID{modtest.Spammer}})
+	h.k.Dir.Apply(&client.GroupChange{Group: modtest.GB, Promoted: []client.JID{modtest.Spammer}})
+	h.press(adminUser, "ban", r.ID)
+	h.k.Fire()
+	if !h.k.Banned(modtest.SpammerM, "") || h.k.Fake.Count("Remove") != 2 || h.k.Fake.Count("Remove "+string(modtest.GB)) != 0 {
+		t.Fatalf("banned %v, calls %v: want the ban and the 2 removals in community a, none in set b",
+			h.k.Banned(modtest.SpammerM, ""), h.k.Fake.Calls())
+	}
+	own := newHarness(t, "")
+	r = watchOnly(t, own)
+	own.k.Dir.Apply(&client.GroupChange{Group: modtest.G1, Promoted: []client.JID{modtest.Spammer}})
+	own.press(adminUser, "ban", r.ID)
+	if !strings.Contains(own.lastReply(), "Not banned: they are a current admin in the community this report is from") ||
+		own.k.Banned(modtest.SpammerM, "") {
+		t.Fatalf("[Ban] on an admin of community a: reply %q, banned %v", own.lastReply(), own.k.Banned(modtest.SpammerM, ""))
+	}
+}
+
 // TestBanDuringPauseSaysWhatWaits: [Ban] during /pause bans at once, and its
 // reply says the delete and the removals wait for the pause to end.
 func TestBanDuringPauseSaysWhatWaits(t *testing.T) {
