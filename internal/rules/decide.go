@@ -12,9 +12,10 @@ type Input struct {
 	Community string
 	Fields    []client.Field
 	PushName  string
-	// SenderIsAdmin: the sender is a current admin of ANY moderated group or
-	// community. Admins are reported, never actioned (a hijacked admin still
-	// shows up in the report).
+	// SenderIsAdmin: the sender is a current admin in Community (of it or of
+	// a group that counts towards it). Admins are reported, never actioned (a
+	// hijacked admin still shows up in the report); an admin only elsewhere is
+	// actioned like anyone.
 	SenderIsAdmin bool
 	// FromMetaAI: the sender is WhatsApp's Meta AI participant.
 	FromMetaAI bool
