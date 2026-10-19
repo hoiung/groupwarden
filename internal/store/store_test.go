@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -352,5 +354,30 @@ func TestInboxDecidedThrough(t *testing.T) {
 	check("a row queued after the inbox emptied", mark, false)
 	if last, _ := s.InboxLast(ctx); last <= mark {
 		t.Fatalf("row ID %d reused at or below the mark %d", last, mark)
+	}
+}
+
+// TestOpenMakesTheDatabaseOwnerOnly: groupwarden.db is owner-only whatever
+// umask the caller has (a store command run by hand gets 022).
+func TestOpenMakesTheDatabaseOwnerOnly(t *testing.T) {
+	old := syscall.Umask(0o022)
+	t.Cleanup(func() { syscall.Umask(old) })
+	path := filepath.Join(t.TempDir(), "groupwarden.db")
+	s, err := Open(context.Background(), path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, f := range []string{path, path + "-wal", path + "-shm"} {
+		st, err := os.Stat(f)
+		if os.IsNotExist(err) && f != path {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := st.Mode().Perm(); mode != 0o600 {
+			t.Errorf("%s: mode %o, want 600", f, mode)
+		}
 	}
 }
