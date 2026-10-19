@@ -370,8 +370,9 @@ func TestOpenMakesTheDatabaseOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Copied while s is open, before its WAL is checkpointed.
-	for _, suffix := range []string{"", "-wal"} {
+	// Copied while s is open, before its WAL is checkpointed: the database
+	// and every side file OwnerOnly names.
+	for _, suffix := range []string{"", "-wal", "-shm"} {
 		b, err := os.ReadFile(path + suffix)
 		if err != nil {
 			t.Fatal(err)
