@@ -248,6 +248,12 @@ func TestCommandFromOtherChatIgnored(t *testing.T) {
 	if rows := rowsOf(h, modtest.SpammerM); rows["unban/requested"] != 0 || !h.k.Banned(modtest.SpammerM, "") {
 		t.Fatalf("a press from another chat acted: rows %v", rows)
 	}
+	// A command written for another bot in the admin chat is not ours.
+	before := len(h.srv.Posted())
+	h.command(telegramtest.ChatID, adminUser, "/pause@other_bot", 0)
+	if paused, _ := h.k.Store.PausedFor(h.k.Ctx, store.ScopeAll); paused || len(h.srv.Posted()) != before {
+		t.Fatalf("/pause@other_bot: paused %v, %d replies", paused, len(h.srv.Posted())-before)
+	}
 	h.command(telegramtest.ChatID, adminUser, "/pause@groupwarden_test_bot", 0)
 	if paused, _ := h.k.Store.PausedFor(h.k.Ctx, store.ScopeAll); !paused {
 		t.Fatal("/pause in the admin chat did nothing")
