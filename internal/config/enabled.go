@@ -10,8 +10,8 @@ type Enabled struct {
 }
 
 // addEnabled adds each entry the file does not already list, with the global
-// settings: a community under its ID, a single group as a set of one named by
-// its ID. It returns the IDs the file itself lists (its community keys and
+// settings: a community under its ID, a single group as a set of one under
+// its ID, each named with WhatsApp's name for it. It returns the IDs the file itself lists (its community keys and
 // the groups of its sets).
 func (c *Config) addEnabled(list []Enabled) map[string]bool {
 	inFile := map[string]bool{}
