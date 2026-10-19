@@ -456,6 +456,20 @@ func TestDisableByNameOfAFileCommunity(t *testing.T) {
 	}
 }
 
+// TestDisableGroupOfAFileSet: a group the config file lists in a set is
+// switched off by removing it from that set, so the reply says "remove it",
+// not "remove that community" (a set is not a community).
+func TestDisableGroupOfAFileSet(t *testing.T) {
+	h := newHarness(t, "")
+	h.k.Fake.Invites = map[string]client.Group{"SeTb1": {JID: modtest.GB, Name: "group b"}}
+	h.command(telegramtest.ChatID, adminUser, "/disable https://chat.whatsapp.com/SeTb1", 0)
+	reply := h.lastReply()
+	if !strings.Contains(reply, `"group b" is still on (as part of set b): remove it from the config file`) ||
+		strings.Contains(reply, "remove that community") || h.belongsTo(modtest.GB, "") != "set-b" {
+		t.Fatalf("reply %q, belongs to %q", reply, h.belongsTo(modtest.GB, ""))
+	}
+}
+
 // TestDisableByTheNameStatusShows: /disable takes the name /status shows. For
 // a community only the config file lists that is the file's name, and the
 // reply says to remove it there (the name is not sent to WhatsApp as an invite
