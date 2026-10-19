@@ -163,7 +163,7 @@ Instead of a second disk, `backup.target_dir` can be a folder on a NAS or anothe
 3. **Point `backup.target_dir` at a folder inside the share**, `/mnt/share/groupwarden` here, never at the mount point itself: while the share is not mounted, the mount point is an empty folder on the node's own disk.
 4. **Install again and test a backup** (steps 6 and 8 above): `deploy/install.sh --version …`, then `sudo systemctl start groupwarden-backup.service` and `/status`.
 
-When the share is not there at night (the NAS is off, the network is down, the password changed), that night's backup fails and the admins get "The nightly backup FAILED: …" with the reason: the folder is missing, it is on the same disk as the data, or systemd could not open it to start the backup unit (then, with systemd 251 or later, the reason asks whether the network share is reachable; older systemd does not say how the unit failed, so the reason points to its journal). Nothing is written to the node's own disk. Earlier backups on the share are kept.
+When the share is not there at night (the NAS is off, the network is down, the password changed), that night's backup fails and the admins get "A backup FAILED: …" with the reason: the folder is missing, it is on the same disk as the data, or systemd could not open it to start the backup unit (then, with systemd 251 or later, the reason asks whether the network share is reachable; older systemd does not say how the unit failed, so the reason points to its journal). Nothing is written to the node's own disk. Earlier backups on the share are kept.
 
 ## Windows node running WSL2
 
