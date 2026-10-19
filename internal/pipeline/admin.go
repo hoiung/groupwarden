@@ -42,8 +42,8 @@ type Undone struct {
 	Member     client.Member
 	BansLifted int
 	Overturned int64
-	// RemovedFrom lists every group (or community) the bot removed the
-	// member from: an admin re-invites them there by hand.
+	// RemovedFrom lists every group the bot removed the member from: an
+	// admin re-invites them there by hand.
 	RemovedFrom []client.JID
 }
 
