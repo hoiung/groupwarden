@@ -27,6 +27,15 @@ func TestOpenMakesTheSessionOwnerOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"whatsmeow.db", "whatsmeow.db-wal", "whatsmeow.db-shm"} {
+		// The first Open alone (what `pair` does) already leaves the device
+		// keys and the side files SQLite makes for them owner-only.
+		st, err := os.Stat(filepath.Join(fresh, f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := st.Mode().Perm(); mode != 0o600 {
+			t.Errorf("%s after the first Open: mode %o, want 600", f, mode)
+		}
 		copyMode(t, filepath.Join(fresh, f), filepath.Join(left, f), 0o644)
 	}
 	if err := a.Close(); err != nil {
