@@ -397,7 +397,7 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 		why := "the message is older than act_on_replay_max_age (" + maxAge.String() + ")"
 		return verdict{outcome: fail, reason: why, report: x.notDone(row, why)}, nil
 	}
-	if x.Directory.IsAdmin(member.LID, member.Phone, cur.Rules) {
+	if x.Directory.IsAdmin(member.LID, member.Phone, row.Community, cur.Rules) {
 		return verdict{outcome: fail, reason: "the member is a current admin", report: &store.Report{
 			Kind: ledger.KindAdminSpared, Priority: true, Community: row.Community, Subject: row.Target,
 			Text: fmt.Sprintf("The bot did not %s: the member is a current admin in %s. An admin must decide.",
