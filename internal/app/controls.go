@@ -76,7 +76,7 @@ func (c controls) AddToBanList(ctx context.Context, reportID int64, by telegram.
 
 func banReply(res pipeline.Banned, reportID int64, by telegram.Actor, message bool) string {
 	if res.Spared {
-		return "Not banned: they are a current admin of a moderated group. An admin must decide."
+		return "Not banned: they are a current admin in the community this report is from. An admin must decide."
 	}
 	var parts []string
 	if message {
