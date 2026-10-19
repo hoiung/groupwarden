@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/hoiung/groupwarden/internal/alert"
 	"github.com/hoiung/groupwarden/internal/client"
@@ -60,7 +61,7 @@ func (m *Moderator) evaluate(msg *client.Message, community string, cur *config.
 	}
 	d := cur.Rules.Decide(rules.Input{
 		Community: community, Fields: msg.Fields, PushName: msg.PushName,
-		SenderIsAdmin: m.Directory.IsAdmin(msg.Sender, msg.SenderAlt, cur.Rules),
+		SenderIsAdmin: m.Directory.IsAdmin(msg.Sender, msg.SenderAlt, community, cur.Rules),
 		FromMetaAI:    msg.FromMetaAI,
 	})
 	return d, community, cur.Hash
@@ -198,10 +199,12 @@ func (m *Moderator) messagePlan(ev *client.Message, item Item, d rules.Decision,
 		}
 		p.Intents = []ledger.Intent{{Action: store.ActRevoke, Chat: ev.Chat, Community: community, Enforce: enforce,
 			Address: ev.Sender, MsgID: ev.TargetID, MsgTime: targetTime}}
-		removals, ok := m.Enforcer.Removals(member, banIn, ev.Chat, cur.Rules)
-		if !ok {
-			// An admin's post is never actioned (an enforced match was
-			// already turned into an exempt report by the rules).
+		removals, spared := m.Enforcer.Removals(member, banIn, ev.Chat, cur.Rules)
+		if slices.Contains(spared, community) {
+			// An admin's post is never actioned where they are an admin (an
+			// enforced match was already turned into an exempt report by the
+			// rules). An admin only in another community is removed and
+			// banned here; the sweep reports them there.
 			p.Intents = nil
 			p.Reports = []store.Report{{Kind: ledger.KindExempt, Community: community,
 				Text: fmt.Sprintf("Rule %s matched a post in %s by an admin: reported only.", d.Rule, where)}}
