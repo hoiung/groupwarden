@@ -20,12 +20,13 @@ func TestOpenMakesTheSessionOwnerOnly(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	fresh, left := t.TempDir(), t.TempDir()
 	// The left store is a copy of a store still open in fresh, taken before
-	// its WAL is checkpointed: the copy's -wal holds pages SQLite must recover.
+	// its WAL is checkpointed: the copy's -wal holds pages SQLite must recover,
+	// and every side file OwnerOnly names is left 0644.
 	a, err := Open(context.Background(), Options{DataDir: fresh, Log: log})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{"whatsmeow.db", "whatsmeow.db-wal"} {
+	for _, f := range []string{"whatsmeow.db", "whatsmeow.db-wal", "whatsmeow.db-shm"} {
 		copyMode(t, filepath.Join(fresh, f), filepath.Join(left, f), 0o644)
 	}
 	if err := a.Close(); err != nil {
