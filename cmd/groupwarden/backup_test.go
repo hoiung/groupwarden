@@ -74,7 +74,8 @@ func TestBackupUnitFailureRecorded(t *testing.T) {
 		t.Fatalf("recorded result %q (%v)", status[store.StatusBackupResult].Value, err)
 	}
 	reps, err := st.UnsentReportsOf(context.Background(), string(alert.BackupFailed), 10)
-	if err != nil || len(reps) != 1 || !strings.Contains(reps[0].Text, "The nightly backup FAILED: the backup unit stopped") {
+	if err != nil || len(reps) != 1 || !strings.Contains(reps[0].Text, "A backup FAILED: the backup unit stopped") ||
+		!strings.Contains(reps[0].Text, "an upgrade with deploy/install.sh stops until a backup works") {
 		t.Fatalf("backup failure alerts %+v (%v), want one", reps, err)
 	}
 
