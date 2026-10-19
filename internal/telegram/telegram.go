@@ -110,6 +110,10 @@ type Chat struct {
 	owedMu sync.Mutex
 	owed   []owedWrite
 
+	// nameMu guards username, the bot's own @name (ownName).
+	nameMu   sync.Mutex
+	username string
+
 	mu     sync.Mutex // guards the fields below
 	chatID int64
 	// blockedUntil: Telegram said retry_after; nothing is sent before it.
