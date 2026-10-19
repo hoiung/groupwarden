@@ -14,7 +14,7 @@ type Action string
 
 const (
 	ActRevoke Action = "revoke" // delete a message for everyone
-	ActRemove Action = "remove" // remove a member from a group or community
+	ActRemove Action = "remove" // remove a member from a group
 	ActReject Action = "reject" // reject a pending join request
 	ActBan    Action = "ban"    // add to the ban list (applied in the same transaction, or held by a pause)
 	ActUnban  Action = "unban"  // lift a ban (applied in the same transaction)
