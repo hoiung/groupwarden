@@ -66,6 +66,8 @@ type fakeWA struct {
 	downloadDeadline          bool  // whether it carried a deadline
 	devices                   []types.JID
 	subGroups                 []*types.GroupLinkTarget
+	linked                    []types.JID // the members of a community's groups
+	linkedErr                 error
 	requests                  []types.GroupParticipantRequest
 	requestAction             wm.ParticipantRequestChange
 	onWhatsApp                []types.IsOnWhatsAppResponse
@@ -144,6 +146,12 @@ func (f *fakeWA) GetGroupInfo(context.Context, types.JID) (*types.GroupInfo, err
 		return nil, err
 	}
 	return f.info, f.infoErr
+}
+func (f *fakeWA) GetLinkedGroupsParticipants(context.Context, types.JID) ([]types.JID, error) {
+	if err := f.net("GetLinkedGroupsParticipants"); err != nil {
+		return nil, err
+	}
+	return f.linked, f.linkedErr
 }
 func (f *fakeWA) GetSubGroups(context.Context, types.JID) ([]*types.GroupLinkTarget, error) {
 	if err := f.net("GetSubGroups"); err != nil {
