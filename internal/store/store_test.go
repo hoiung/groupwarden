@@ -370,6 +370,17 @@ func TestOpenMakesTheDatabaseOwnerOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The first Open alone (what a store command run by hand does) already
+	// leaves the database and the side files SQLite makes for it owner-only.
+	for _, f := range []string{path, path + "-wal", path + "-shm"} {
+		st, err := os.Stat(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := st.Mode().Perm(); mode != 0o600 {
+			t.Errorf("%s after the first Open: mode %o, want 600", f, mode)
+		}
+	}
 	// Copied while s is open, before its WAL is checkpointed: the database
 	// and every side file OwnerOnly names.
 	for _, suffix := range []string{"", "-wal", "-shm"} {
