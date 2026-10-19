@@ -10,8 +10,9 @@ import (
 
 // TestDirectoryCommunityAndAdmins: a group resolves to its configured
 // community (by parent or standalone set), and a member counts as an admin
-// only when they administer a moderated group or community, under either of
-// their addresses.
+// in a community only when they administer it or a group that counts
+// towards it, under either of their addresses: an admin of a set (a group
+// switched on with /enable) or of an unmoderated group is not one there.
 func TestDirectoryCommunityAndAdmins(t *testing.T) {
 	const (
 		community = client.JID("99999000000999@g.us")
@@ -24,6 +25,7 @@ func TestDirectoryCommunityAndAdmins(t *testing.T) {
 		outsider  = client.JID("99999000000555@lid")
 		owner     = client.JID("99999000000666@lid")
 		member    = client.JID("99999000000777@lid")
+		setAdmin  = client.JID("99999000000999@lid")
 	)
 	rs, err := rules.Compile(rules.Spec{Mode: rules.Shadow, BanScope: rules.AllCommunities, MinWordLength: 3,
 		Communities: []rules.CommunitySpec{{ID: string(community)}, {ID: "set", Groups: []string{string(standalon)}}}})
@@ -34,8 +36,8 @@ func TestDirectoryCommunityAndAdmins(t *testing.T) {
 	load(t, d, []client.Group{
 		{JID: community, IsCommunity: true, Participants: []client.Participant{{JID: owner, IsSuperAdmin: true}}},
 		{JID: linked, Parent: community, Participants: []client.Participant{
-			{JID: adminLID, Phone: adminTel, LID: adminLID, IsAdmin: true}, {JID: member}}},
-		{JID: standalon},
+			{JID: adminLID, Phone: adminTel, LID: adminLID, IsAdmin: true}, {JID: member}, {JID: setAdmin}}},
+		{JID: standalon, Participants: []client.Participant{{JID: setAdmin, IsAdmin: true}}},
 		{JID: elsewhere, Parent: otherComm, Participants: []client.Participant{{JID: outsider, IsAdmin: true}}},
 	})
 	for g, want := range map[client.JID]string{linked: string(community), standalon: "set", elsewhere: "", "99999000000333@g.us": ""} {
@@ -46,24 +48,29 @@ func TestDirectoryCommunityAndAdmins(t *testing.T) {
 	cases := []struct {
 		name        string
 		member, alt client.JID
+		in          string
 		want        bool
 	}{
-		{"admin by LID", adminLID, "", true},
-		{"admin by phone", adminTel, "", true},
-		{"admin by the alternate address", "99999000000888@lid", adminTel, true},
-		{"community owner", owner, "", true},
-		{"admin of an unmoderated group only", outsider, "", false},
-		{"plain member", member, "", false},
+		{"admin by LID", adminLID, "", string(community), true},
+		{"admin by phone", adminTel, "", string(community), true},
+		{"admin by the alternate address", "99999000000888@lid", adminTel, string(community), true},
+		{"community owner", owner, "", string(community), true},
+		{"admin of an unmoderated group only", outsider, "", string(community), false},
+		{"plain member", member, "", string(community), false},
+		{"the set's admin, in the set", setAdmin, "", "set", true},
+		{"the set's admin, a plain member in the community", setAdmin, "", string(community), false},
+		{"the community's admin, in the set", adminLID, "", "set", false},
+		{"no community, for an admin of an unmoderated group", outsider, "", "", false},
 	}
 	for _, c := range cases {
-		if got := d.IsAdmin(c.member, c.alt, rs); got != c.want {
+		if got := d.IsAdmin(c.member, c.alt, c.in, rs); got != c.want {
 			t.Errorf("%s: IsAdmin = %v, want %v", c.name, got, c.want)
 		}
 	}
 	load(t, d, nil)
 	// A refresh replaces everything: with no entries, the admin and the
 	// linked group's parent are both forgotten.
-	if d.IsAdmin(adminLID, "", rs) || d.Community(linked, rs) != "" {
+	if d.IsAdmin(adminLID, "", string(community), rs) || d.Community(linked, rs) != "" {
 		t.Error("the refresh did not replace the directory")
 	}
 }
@@ -121,8 +128,8 @@ func TestRefreshKeepsChangesMadeDuringTheFetch(t *testing.T) {
 		what      string
 		got, want bool
 	}{
-		{"a promotion made during the fetch", d.IsAdmin(promoted, "", rs), true},
-		{"a demotion made during the fetch", d.IsAdmin(demoted, "", rs), false},
+		{"a promotion made during the fetch", d.IsAdmin(promoted, "", string(community), rs), true},
+		{"a demotion made during the fetch", d.IsAdmin(demoted, "", string(community), rs), false},
 		{"a member who left during the fetch", d.Present(g1, client.MemberOf(leaver)), false},
 		{"the bot found not to be an admin during the fetch", d.BotIsAdmin(g1), false},
 		{"a group joined during the fetch", d.Community(joined, rs) == string(community), true},
@@ -137,7 +144,7 @@ func TestRefreshKeepsChangesMadeDuringTheFetch(t *testing.T) {
 	// next list is the truth.
 	d.Apply(&client.GroupChange{Group: g1, Promoted: []client.JID{leaver}})
 	load(t, d, list)
-	if d.IsAdmin(leaver, "", rs) || !d.IsAdmin(demoted, "", rs) {
+	if d.IsAdmin(leaver, "", string(community), rs) || !d.IsAdmin(demoted, "", string(community), rs) {
 		t.Error("a change made outside a refresh was applied again on top of the next list")
 	}
 	if len(d.journal) != 0 {
@@ -190,8 +197,8 @@ func TestJoinLearnsTheGroup(t *testing.T) {
 	load(t, d, []client.Group{{JID: g2, Parent: community, Participants: []client.Participant{{JID: member}}}})
 	d.Join(client.Group{JID: g1, Parent: community, Participants: []client.Participant{{JID: admin, IsAdmin: true},
 		{JID: member}}})
-	if d.Community(g1, rs) != string(community) || !d.IsAdmin(admin, "", rs) || !d.Present(g1, client.MemberOf(member)) {
-		t.Errorf("joined group: community %q, admin %v, member %v", d.Community(g1, rs), d.IsAdmin(admin, "", rs),
+	if d.Community(g1, rs) != string(community) || !d.IsAdmin(admin, "", string(community), rs) || !d.Present(g1, client.MemberOf(member)) {
+		t.Errorf("joined group: community %q, admin %v, member %v", d.Community(g1, rs), d.IsAdmin(admin, "", string(community), rs),
 			d.Present(g1, client.MemberOf(member)))
 	}
 	d.Join(client.Group{JID: g2})
