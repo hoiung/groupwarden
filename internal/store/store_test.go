@@ -358,26 +358,53 @@ func TestInboxDecidedThrough(t *testing.T) {
 }
 
 // TestOpenMakesTheDatabaseOwnerOnly: groupwarden.db is owner-only whatever
-// umask the caller has (a store command run by hand gets 022).
+// umask the caller has (a store command run by hand gets 022), and so is a
+// database an older run left 0644 with a -wal that still holds pages (an
+// unclean stop).
 func TestOpenMakesTheDatabaseOwnerOnly(t *testing.T) {
 	old := syscall.Umask(0o022)
 	t.Cleanup(func() { syscall.Umask(old) })
 	path := filepath.Join(t.TempDir(), "groupwarden.db")
+	left := filepath.Join(t.TempDir(), "groupwarden.db")
 	s, err := Open(context.Background(), path, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
-	for _, f := range []string{path, path + "-wal", path + "-shm"} {
-		st, err := os.Stat(f)
-		if os.IsNotExist(err) && f != path {
-			continue
-		}
+	// Copied while s is open, before its WAL is checkpointed.
+	for _, suffix := range []string{"", "-wal"} {
+		b, err := os.ReadFile(path + suffix)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if mode := st.Mode().Perm(); mode != 0o600 {
-			t.Errorf("%s: mode %o, want 600", f, mode)
+		if len(b) == 0 {
+			t.Fatalf("%s%s is empty: the test needs a WAL that still holds pages", path, suffix)
+		}
+		if err := os.WriteFile(left+suffix, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{path, left} {
+		s, err := Open(context.Background(), p, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{p, p + "-wal", p + "-shm"} {
+			st, err := os.Stat(f)
+			if os.IsNotExist(err) && f != p && p == path {
+				continue
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode := st.Mode().Perm(); mode != 0o600 {
+				t.Errorf("%s: mode %o, want 600", f, mode)
+			}
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
 		}
 	}
 }
