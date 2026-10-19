@@ -260,6 +260,21 @@ func TestCommandFromOtherChatIgnored(t *testing.T) {
 	}
 }
 
+// TestAddressedCommandRunsWhenTheBotsNameIsUnknown: while Telegram cannot
+// say the bot's own @name, a command addressed with one still runs (as it did
+// before the bot knew its name), and the failed lookup is logged.
+func TestAddressedCommandRunsWhenTheBotsNameIsUnknown(t *testing.T) {
+	h := newHarness(t, "")
+	h.srv.FailAlways("getMe", telegramtest.Reply{Code: 500, Description: "Internal Server Error"})
+	h.command(telegramtest.ChatID, adminUser, "/pause@groupwarden_test_bot", 0)
+	if paused, _ := h.k.Store.PausedFor(h.k.Ctx, store.ScopeAll); !paused {
+		t.Fatal("/pause@groupwarden_test_bot did nothing while getMe failed")
+	}
+	if !strings.Contains(h.logs.String(), "read the bot's own @name") {
+		t.Fatalf("the failed getMe was not logged: %s", h.logs.String())
+	}
+}
+
 // TestButtonIdempotent: presses are keyed report + button; a repeat (by
 // anyone) is answered with the first press and does nothing again.
 func TestButtonIdempotent(t *testing.T) {
