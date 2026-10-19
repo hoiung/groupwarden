@@ -48,6 +48,9 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	if err := CheckLinuxFS(dir); err != nil {
 		return nil, err
 	}
+	if err := OwnerOnly(path); err != nil {
+		return nil, err
+	}
 	// Write transactions take the write lock when they begin, so one that
 	// reads first can never fail to upgrade while `run` and a store command
 	// (ban add, member forget) write at the same time.
