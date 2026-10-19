@@ -271,8 +271,13 @@ func moderatedCommunity(jid client.JID, g *dirGroup, rs *rules.Ruleset) string {
 }
 
 // IsAdmin reports whether a member (by either address) is a current admin
-// of any moderated group or community under rs.
-func (d *Directory) IsAdmin(member, alt client.JID, rs *rules.Ruleset) bool {
+// in community under rs: of the community itself or of a group that counts
+// towards it. An admin elsewhere (a friend's group switched on with /enable,
+// or another community) is not one here.
+func (d *Directory) IsAdmin(member, alt client.JID, community string, rs *rules.Ruleset) bool {
+	if community == "" {
+		return false
+	}
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	m, a := member.Bare(), alt.Bare()
@@ -280,7 +285,7 @@ func (d *Directory) IsAdmin(member, alt client.JID, rs *rules.Ruleset) bool {
 		if !(g.admins[m] || (a != "" && g.admins[a])) {
 			continue
 		}
-		if moderatedCommunity(jid, g, rs) != "" {
+		if moderatedCommunity(jid, g, rs) == community {
 			return true
 		}
 	}
