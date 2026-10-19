@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,6 +89,7 @@ type waClient interface {
 	GetJoinedGroups(ctx context.Context) ([]*types.GroupInfo, error)
 	GetGroupInfo(ctx context.Context, jid types.JID) (*types.GroupInfo, error)
 	GetSubGroups(ctx context.Context, community types.JID) ([]*types.GroupLinkTarget, error)
+	GetLinkedGroupsParticipants(ctx context.Context, community types.JID) ([]types.JID, error)
 	GetGroupRequestParticipants(ctx context.Context, jid types.JID) ([]types.GroupParticipantRequest, error)
 	UpdateGroupRequestParticipants(ctx context.Context, jid types.JID, changes []types.JID, action wm.ParticipantRequestChange) ([]types.GroupParticipant, error)
 	JoinGroupWithLink(ctx context.Context, code string) (types.JID, error)
@@ -173,6 +175,10 @@ func Open(ctx context.Context, opts Options) (*Adapter, error) {
 		return nil, err
 	}
 	path := filepath.Join(opts.DataDir, "whatsmeow.db")
+	// The device keys: owner-only, whoever runs this (`pair` by hand too).
+	if err := gwstore.OwnerOnly(path); err != nil {
+		return nil, fmt.Errorf("open WhatsApp session store: %w", err)
+	}
 	container, err := sqlstore.New(ctx, "sqlite", sessionDSN(path), newLogger(opts.Log).Sub("store"))
 	if err != nil {
 		return nil, fmt.Errorf("open WhatsApp session store: %w", err)
@@ -503,14 +509,25 @@ func (a *Adapter) isMember(ctx context.Context, g types.JID) (bool, error) {
 		return false, fmt.Errorf("check membership after join: %w", err)
 	}
 	phone, lid := a.cli.ownIDs()
+	self := func(id types.JID) bool {
+		return !id.IsEmpty() && (id.User == phone.User && id.Server == phone.Server || id.User == lid.User && id.Server == lid.Server)
+	}
 	for _, p := range info.Participants {
-		for _, id := range []types.JID{p.JID, p.PhoneNumber, p.LID} {
-			if !id.IsEmpty() && (id.User == phone.User && id.Server == phone.Server || id.User == lid.User && id.Server == lid.Server) {
-				return true, nil
-			}
+		if self(p.JID) || self(p.PhoneNumber) || self(p.LID) {
+			return true, nil
 		}
 	}
-	return false, nil
+	if !info.IsParent {
+		return false, nil
+	}
+	// A community lists only its admins: a member is in its groups. When that
+	// cannot be read, the join is reported as pending, as before.
+	members, err := a.cli.GetLinkedGroupsParticipants(ctx, g)
+	if err != nil {
+		a.log.Warn("read a community's members after a join", "err", err)
+		return false, nil
+	}
+	return slices.ContainsFunc(members, self), nil
 }
 
 // JoinLinkedGroup sends WhatsApp's "join_linked_group" request to the
