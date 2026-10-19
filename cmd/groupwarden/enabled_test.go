@@ -68,8 +68,10 @@ func TestRunLoadsTheEnabledList(t *testing.T) {
 			t.Fatalf("run did not start:\n%s", stderr)
 		}
 	}
-	if !strings.Contains(stderr.String(), want) {
-		t.Fatalf("run did not load the /enable list (want %s):\n%s", want, stderr)
+	// Loaded before the line that comes just before the inbox worker starts,
+	// so no event is decided without the list.
+	if out := stderr.String(); !strings.Contains(out, want) || strings.Index(out, want) > strings.Index(out, started) {
+		t.Fatalf("run did not load the /enable list before it started (want %s before %s):\n%s", want, started, out)
 	}
 	te.cancel()
 	select {
