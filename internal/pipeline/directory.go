@@ -230,6 +230,17 @@ func (d *Directory) IsSelf(j client.JID) bool {
 	return b == d.self.LID || b == d.self.Phone
 }
 
+// Parent is the WhatsApp Community a group the bot is in belongs to ("" when
+// none, or the group is not in the directory).
+func (d *Directory) Parent(group client.JID) client.JID {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if g := d.groups[group]; g != nil {
+		return g.parent
+	}
+	return ""
+}
+
 // Community returns the configured community group belongs to under rs
 // ("" = not moderated).
 func (d *Directory) Community(group client.JID, rs *rules.Ruleset) string {
