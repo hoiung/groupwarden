@@ -34,9 +34,9 @@ const secondCommunity client.JID = "99999000000444@g.us"
 // aclSection names superUser super admin, commAdmin community admin of
 // otherCommunity and commAdmin2 community admin of secondCommunity, so each
 // admin is decided on their own list. superUser and commAdmin's community each
-// sit between two other entries of their list and commAdmin2's community is
-// its only entry, so a gate that reads only its first entry, only its last or
-// all but its first is caught.
+// sit between two other entries, so reading only a list's first or last entry
+// is caught; commAdmin2's community and TestACLReload's one super admin are
+// their list's only entry, so dropping a list's first entry is caught too.
 var aclSection = "acl:\n  super_admins: [" + strconv.FormatInt(firstSuper, 10) + ", " + strconv.FormatInt(superUser, 10) +
 	", " + strconv.FormatInt(lastSuper, 10) + "]\n  admins:\n    - user: " + strconv.FormatInt(commAdmin, 10) +
 	"\n      assigned: [\"" + string(modtest.G2) + "\", \"" + string(otherCommunity) + "\", \"" + string(modtest.GB) +
