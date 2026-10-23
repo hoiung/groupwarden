@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/go-telegram/bot/models"
+
+	"github.com/hoiung/groupwarden/internal/config"
 )
 
 // Handle passes one update to the chat as the update poller would.
@@ -22,6 +24,25 @@ var Split = split
 
 // CommandList is the pinned command list (and the reply to an unknown command).
 var CommandList = commandList
+
+// ActionNeeds is the role each command and button needs under acl:.
+var ActionNeeds = actionNeeds
+
+// AdminCommandNames lists the admin commands, without the "/".
+func AdminCommandNames() []string {
+	out := make([]string, 0, len(adminCommands))
+	for _, c := range adminCommands {
+		out = append(out, c.name)
+	}
+	return out
+}
+
+// Decide is the role function: whether userID may do action under acl, the
+// role it found and the role the action needs.
+func (c *Chat) Decide(ctx context.Context, acl *config.ACL, userID int64, action string) (allowed bool, role, needs Role) {
+	d := c.decide(ctx, acl, userID, action)
+	return d.allowed, d.role, d.needs
+}
 
 // SetupLoop runs the loop that keeps the menu and pinned list in place;
 // SetPinRetry shortens its wait after a refused pin.
