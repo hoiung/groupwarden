@@ -20,10 +20,11 @@ import (
 // The acl: people (Telegram user IDs). None is a Telegram admin of the chat;
 // adminUser is one, and is in no list.
 const (
-	extraSuper int64 = 510 // super admin listed first; no test acts as them
+	firstSuper int64 = 510 // super admin listed before superUser; no test acts as them
 	superUser  int64 = 511 // super admin
 	commAdmin  int64 = 512 // community admin of otherCommunity
 	commAdmin2 int64 = 513 // community admin of secondCommunity
+	lastSuper  int64 = 514 // super admin listed after superUser; no test acts as them
 )
 
 // secondCommunity is a community the config file does not moderate and the bot
@@ -32,13 +33,14 @@ const secondCommunity client.JID = "99999000000444@g.us"
 
 // aclSection names superUser super admin, commAdmin community admin of
 // otherCommunity and commAdmin2 community admin of secondCommunity, so each
-// admin is decided on their own list. superUser and commAdmin's community are
-// each the second entry of their list and commAdmin2's the only one, so a gate
-// that reads one end of a list is caught.
-var aclSection = "acl:\n  super_admins: [" + strconv.FormatInt(extraSuper, 10) + ", " + strconv.FormatInt(superUser, 10) +
-	"]\n  admins:\n    - user: " + strconv.FormatInt(commAdmin, 10) +
-	"\n      assigned: [\"" + string(modtest.G2) + "\", \"" + string(otherCommunity) + "\"]\n    - user: " +
-	strconv.FormatInt(commAdmin2, 10) + "\n      assigned: [\"" + string(secondCommunity) + "\"]\n"
+// admin is decided on their own list. superUser and commAdmin's community each
+// sit between two other entries of their list and commAdmin2's community is
+// its only entry, so a gate that reads only its first entry, only its last or
+// all but its first is caught.
+var aclSection = "acl:\n  super_admins: [" + strconv.FormatInt(firstSuper, 10) + ", " + strconv.FormatInt(superUser, 10) +
+	", " + strconv.FormatInt(lastSuper, 10) + "]\n  admins:\n    - user: " + strconv.FormatInt(commAdmin, 10) +
+	"\n      assigned: [\"" + string(modtest.G2) + "\", \"" + string(otherCommunity) + "\", \"" + string(modtest.GB) +
+	"\"]\n    - user: " + strconv.FormatInt(commAdmin2, 10) + "\n      assigned: [\"" + string(secondCommunity) + "\"]\n"
 
 // aclSubject is one person the acl: tests act as.
 type aclSubject struct {
