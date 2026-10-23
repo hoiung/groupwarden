@@ -14,6 +14,7 @@ import (
 	"github.com/go-telegram/bot/models"
 
 	"github.com/hoiung/groupwarden/internal/alert"
+	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/store"
 )
@@ -40,16 +41,25 @@ var adminCommands = []adminCommand{
 }
 
 // commandList is the list as text: the pinned message, and the reply to a
-// command the bot does not know.
-func commandList() string {
+// command the bot does not know. With an acl: section it says who may use
+// what (actionNeeds), one text for everyone.
+func commandList(acl *config.ACL) string {
 	var b strings.Builder
-	b.WriteString("groupwarden commands (admins of this chat only; type / to pick one):")
+	if acl == nil {
+		b.WriteString("groupwarden commands (admins of this chat only; type / to pick one):")
+	} else {
+		b.WriteString("groupwarden commands (type / to pick one):")
+	}
 	for _, cmd := range adminCommands {
 		b.WriteString("\n/" + cmd.name)
 		if cmd.args != "" {
 			b.WriteString(" " + cmd.args)
 		}
 		b.WriteString(" — " + cmd.does)
+	}
+	if acl != nil {
+		b.WriteString("\nEveryone in this chat can use /ban and /unban. Community admins can also use /status, and " +
+			"/enable and /disable for their own communities and groups. The super admin can use every command.")
 	}
 	return b.String()
 }
@@ -81,10 +91,13 @@ const (
 var errPinRefused = errors.New("telegram refused to pin the command list")
 
 // setupLoop keeps the command menu and the pinned list in place: at start,
-// when the chat moves to a new ID, and every pinRetry while the pin is
-// refused. A request that failed otherwise (Telegram unreachable) is tried
-// again after idlePoll.
+// when the chat moves to a new ID, after every config load (the list's text
+// follows the acl: section), and every pinRetry while the pin is refused. A
+// request that failed otherwise (Telegram unreachable) is tried again after
+// idlePoll.
 func (c *Chat) setupLoop(ctx context.Context) {
+	stop := c.Config.Notify(c.setupWake)
+	defer stop()
 	for {
 		var wait time.Duration
 		err := c.Setup(ctx)
@@ -117,7 +130,8 @@ func (c *Chat) setupLoop(ctx context.Context) {
 	}
 }
 
-// wakeSetup asks setupLoop to run again (the chat moved).
+// wakeSetup asks setupLoop to run again (the chat moved; a config load pokes
+// setupWake through the holder).
 func (c *Chat) wakeSetup() { poke(c.setupWake) }
 
 // Setup sets the command menu for the admin chat and makes sure the command
@@ -168,7 +182,7 @@ func (c *Chat) setMenu(ctx context.Context, chatID int64) error {
 // one only when that message is gone or the chat moved. An admin who deletes
 // the list gets it back the next time the list changes.
 func (c *Chat) pinList(ctx context.Context, chatID int64) error {
-	text := commandList()
+	text := commandList(c.Config.Current().Config.ACL)
 	sum := sha256.Sum256([]byte(text))
 	hash := hex.EncodeToString(sum[:8])
 	st, err := c.Store.Status(ctx)
