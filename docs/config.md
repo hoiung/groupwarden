@@ -46,6 +46,9 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 | `rules.list` (`name`, `action`, `confirmed`, `on`, `when`) | `internal/rules/compile.go` `compileRules`, `decide.go` |
 | `communities.<id>` (`name`, `groups`, `mode`, `disable_rules`, `word_lists`) | `internal/rules/compile.go` `compileCommunities`; `internal/pipeline/directory.go`. The admin chat's `/enable` adds to these without editing the file: the bot keeps that list in `groupwarden.db` and every load merges it in (`internal/config/enabled.go`), a community with the global settings, a single group as a set of one under its ID, named with the group's WhatsApp name (the name `/status` shows); an entry the file already lists keeps the file's settings, and `/disable` cannot switch off what the file lists. The merged list leaves the config version as the file's (`internal/config/config.go` `parseEnabled`), so `check` prints the version the bot posts. A group ID in `groups` is a number ending in `@g.us`, or an older group's `<number>-<number>@g.us` (`compile.go` `groupID`) |
 | `communities.<id>.retention` | `internal/config/config.go` `RetentionFor` |
+| `acl.super_admins` | `internal/telegram/roles.go` `decide`, the one role check for every command and button (a super admin may do everything); `internal/telegram/menu.go` `commandList` (with the section, the pinned list and the reply to any other command say who may use what); `internal/config/config.go` `ACL.check` (one role per person). See [Admin-chat access](#admin-chat-access-acl) |
+| `acl.admins[].user` | `internal/telegram/roles.go` `decide` (a community admin: `/status`, `/enable` and `/disable` for their own, and what a member may do); `internal/config/config.go` `ACL.check` (listed once) |
+| `acl.admins[].assigned` | `internal/telegram/roles.go` `decide` puts it on the `Actor`; `internal/app/enabled.go` `mayTarget` (`Enable`, `Disable`: a community admin's target must be one of these, or a group inside one, before anything is recorded or joined) |
 
 ## Writing words and rules
 
@@ -58,3 +61,40 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 - A rule with `action: delete_remove_ban` acts only when its community is in `enforce` mode and the rule has `confirmed: true`; until then it reports what it would have done.
 - A rule with `action: log` never acts and posts no report of its own: its matches are counted in the daily summary (one line per rule and community). The copy of such a match keeps its text and describes its attachment (type, name, size) without downloading it.
 - `on: push_name` matches the sender's display name on its own; it is never combined with the message.
+
+## Admin-chat access (acl)
+
+Without an `acl:` section, every Telegram admin of the admin chat can use every command and button, and nobody else can use any. With one, the file alone decides who may do what, by Telegram user ID: being a Telegram admin of the chat gives no extra power in the bot, and anyone else in the chat is a member.
+
+```yaml
+acl:
+  super_admins: [111111111]
+  admins:
+    - user: 222222222
+      assigned: ["99999000000999@g.us"]
+```
+
+- **super admin** (`super_admins`, at least one): every command and button.
+- **community admin** (`admins`): `/status`, and `/enable` and `/disable` for the communities and groups in their `assigned` list (a group inside an assigned community counts as theirs), plus everything a member can do.
+- **member** (anyone else in the chat): `/ban`, `/unban` and the buttons that act on one report.
+
+| Action | Member | Community admin | Super admin |
+|---|---|---|---|
+| `/ban`, `/unban`, [Ban], [Undo], [Add to ban list] | yes | yes | yes |
+| [No], [Show attachment] (they change nothing) | yes | yes | yes |
+| `/status` | no | yes | yes |
+| `/enable`, `/disable` | no | only an `assigned` entry, or a group inside an assigned community | yes, anything |
+| `/pause`, `/resume`, `/reload`, [Resume] | no | no | yes |
+| [Done] (the bot-phone reminder) | no | no | yes |
+| any other command (the reply is the command list) | yes | yes | yes |
+
+A refused command or button gets a reply naming who may use it and changes nothing. An edit to the section takes effect at the next config sync or `/reload`, with no restart. `groupwarden check` refuses a section with no super admin, a user ID that is not a positive whole number, an `assigned` entry that is not a community or group ID, or one person listed twice (as two community admins, or as a super admin and a community admin); the last good config keeps running.
+
+Finding a Telegram user ID: Telegram's apps do not show it. The bot's journal shows it as `user` on the line it writes when it refuses a command: without `acl:`, have the person (not a Telegram admin of the chat) send `/status` (`command from a non-admin ignored`); with `acl:`, a member's `/status` (`command refused`). The Bot API's `getChatAdministrators` for the admin chat lists every Telegram admin's `user.id`.
+
+Finding a community or group ID for `assigned`:
+
+- a WhatsApp community the config file lists: its key under `communities:`;
+- a group in a set the file lists: its ID under that set's `groups:` (a set's own key is a name, not an `assigned` entry);
+- one switched on with `/enable`: `groupwarden ledger summary` once the bot has acted there, or `groupwarden groups` with the service stopped (it takes the data directory's lock);
+- a new community: the super admin sends `/enable` with its invite link first, then its ID goes into `assigned`.
