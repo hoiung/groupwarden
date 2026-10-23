@@ -472,6 +472,50 @@ func TestBadReloadKeepsLastGood(t *testing.T) {
 	}
 }
 
+// TestHolderNotify: a Notify channel is poked after a reload and an /enable
+// list swap, not after a rejected reload, never blocks a swap when a wake is
+// already pending, and is left alone once stopped.
+func TestHolderNotify(t *testing.T) {
+	_, path, good := reloadFixture(t)
+	h, rejected, err := Boot(path)
+	if err != nil || rejected != nil {
+		t.Fatalf("boot: %v %v", err, rejected)
+	}
+	ch := make(chan struct{}, 1)
+	stop := h.Notify(ch)
+	woken := func() bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}
+	if _, err := h.Reload(); err != nil || !woken() {
+		t.Fatalf("reload: %v, woken false", err)
+	}
+	if _, err := h.SetEnabled([]Enabled{{ID: communityB, Name: "public chat"}}); err != nil || !woken() {
+		t.Fatalf("SetEnabled: %v, woken false", err)
+	}
+	writeConfig(t, path, good+"deafness_alert_hours: 999\n")
+	if _, err := h.Reload(); err == nil || woken() {
+		t.Fatalf("a rejected reload: %v, or it woke the channel", err)
+	}
+	writeConfig(t, path, good)
+	for i := 0; i < 2; i++ { // the second swap finds a wake pending
+		if _, err := h.Reload(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !woken() || woken() {
+		t.Fatal("two swaps with nobody reading: want one pending wake")
+	}
+	stop()
+	if _, err := h.Reload(); err != nil || woken() {
+		t.Fatalf("after stop: %v, or the channel was woken", err)
+	}
+}
+
 func TestBootUsesLastGoodOnDisk(t *testing.T) {
 	dir, path, good := reloadFixture(t)
 	h, _, err := Boot(path)
