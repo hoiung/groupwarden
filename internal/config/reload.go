@@ -50,11 +50,44 @@ type Holder struct {
 	cur     atomic.Pointer[Loaded]
 	mu      sync.Mutex // one reload at a time
 	enabled []Enabled  // the /enable list every reload merges in
+
+	subsMu sync.Mutex
+	subs   map[chan struct{}]struct{} // poked after every swap (Notify)
 }
 
 // Current is the config in use. Read it once per decision: a reload swaps
 // the pointer, never the contents.
 func (h *Holder) Current() *Loaded { return h.cur.Load() }
+
+// Notify sends on ch, without waiting, after every config swap (Reload and
+// SetEnabled), until stop is called. A send that would block is dropped, so
+// ch should be buffered: one pending wake stands for any number of swaps.
+func (h *Holder) Notify(ch chan struct{}) (stop func()) {
+	h.subsMu.Lock()
+	defer h.subsMu.Unlock()
+	if h.subs == nil {
+		h.subs = map[chan struct{}]struct{}{}
+	}
+	h.subs[ch] = struct{}{}
+	return func() {
+		h.subsMu.Lock()
+		defer h.subsMu.Unlock()
+		delete(h.subs, ch)
+	}
+}
+
+// swap puts l in use and tells every Notify channel.
+func (h *Holder) swap(l *Loaded) {
+	h.cur.Store(l)
+	h.subsMu.Lock()
+	defer h.subsMu.Unlock()
+	for ch := range h.subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
 
 // NewHolder holds an already loaded config (tests and one-shot commands).
 func NewHolder(path string, l *Loaded) *Holder {
@@ -117,7 +150,7 @@ func (h *Holder) Reload() (*Loaded, error) {
 	if err := saveLastGood(l); err != nil {
 		return nil, &Rejected{Reason: err, Running: h.Current().Hash}
 	}
-	h.cur.Store(l)
+	h.swap(l)
 	return l, nil
 }
 
@@ -133,7 +166,7 @@ func (h *Holder) SetEnabled(list []Enabled) (*Loaded, error) {
 		return nil, &Rejected{Reason: err, Running: cur.Hash}
 	}
 	h.enabled = append([]Enabled(nil), list...)
-	h.cur.Store(l)
+	h.swap(l)
 	return l, nil
 }
 
