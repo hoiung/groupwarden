@@ -134,9 +134,29 @@
       "description": "Each configured community: a WhatsApp Community ID (a number ending in @g.us), or a name with a groups: list of standalone groups.",
       "type": "object", "default": {},
       "additionalProperties": {"$ref": "#/$defs/community"}
+    },
+    "acl": {
+      "description": "Who may use which admin-chat commands and buttons, by Telegram user ID. Without it every Telegram admin of the chat can do everything; with it Telegram admin status grants nothing and anyone else in the chat is a member (/ban, /unban and the report buttons).",
+      "type": "object", "additionalProperties": false, "required": ["super_admins"],
+      "properties": {
+        "super_admins": {"description": "Telegram user IDs that may use every command and button.", "type": "array", "minItems": 1, "items": {"$ref": "#/$defs/telegram_user"}},
+        "admins": {
+          "description": "Community admins: /status, and /enable and /disable for the communities and groups in their assigned list (a group inside an assigned community included).",
+          "type": "array", "default": [],
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["user"],
+            "properties": {
+              "user": {"$ref": "#/$defs/telegram_user"},
+              "assigned": {"description": "Community or group IDs.", "type": "array", "default": [], "items": {"$ref": "#/$defs/group_id"}}
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
+    "telegram_user": {"description": "A Telegram user ID (a positive whole number).", "type": "integer", "minimum": 1},
+    "group_id": {"description": "A number ending in @g.us; an older group's ID is two numbers joined by a dash.", "type": "string", "pattern": "^[0-9]+(-[0-9]+)?@g\\.us$"},
     "words": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "names": {"type": ["string", "array"], "minLength": 1, "minItems": 1, "items": {"type": "string", "minLength": 1}},
     "condition": {
@@ -162,7 +182,7 @@
       "type": "object", "additionalProperties": false,
       "properties": {
         "name": {"description": "A label for reports.", "type": "string"},
-        "groups": {"description": "Group IDs: a number ending in @g.us; an older group's ID is two numbers joined by a dash.", "type": "array", "minItems": 1, "items": {"type": "string", "pattern": "^[0-9]+(-[0-9]+)?@g\\.us$"}},
+        "groups": {"description": "Group IDs: a number ending in @g.us; an older group's ID is two numbers joined by a dash.", "type": "array", "minItems": 1, "items": {"$ref": "#/$defs/group_id"}},
         "mode": {"enum": ["shadow", "enforce"]},
         "disable_rules": {"type": "array", "items": {"type": "string"}},
         "word_lists": {
