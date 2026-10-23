@@ -62,6 +62,9 @@ func (c controls) Enable(ctx context.Context, link string, by telegram.Actor) (s
 	if err != nil {
 		return "", err
 	}
+	if !mayTarget(by, g.JID, parent) {
+		return c.refuseTarget("enable", g.JID, by), nil
+	}
 	what := linkTarget(g)
 	cur := c.a.Config.Current()
 	var parts []string
@@ -122,9 +125,12 @@ func (c controls) Enable(ctx context.Context, link string, by telegram.Actor) (s
 // or the group deleted). The bot stays in the group; what the config file
 // lists stays on.
 func (c controls) Disable(ctx context.Context, linkOrName string, by telegram.Actor) (string, error) {
-	g, onNow, err := c.disableTarget(ctx, linkOrName)
+	g, parent, onNow, err := c.disableTarget(ctx, linkOrName)
 	if err != nil {
 		return "", err
+	}
+	if !mayTarget(by, g.JID, parent) {
+		return c.refuseTarget("disable", g.JID, by), nil
 	}
 	what := linkTarget(g)
 	removed, err := c.a.Store.Disable(ctx, string(g.JID))
@@ -167,12 +173,15 @@ func (c controls) Disable(ctx context.Context, linkOrName string, by telegram.Ac
 
 // disableTarget finds what /disable names: the /enable entry /status shows
 // under that name, else the community or group an invite link points to.
-// onNow says which configured community it counts towards under a ruleset
-// ("" = not moderated).
-func (c controls) disableTarget(ctx context.Context, linkOrName string) (client.Group, func(*rules.Ruleset) string, error) {
+// parent is the WhatsApp community a group belongs to ("" for a community, a
+// config entry, or a group whose community the bot has not learned). onNow
+// says which configured community it counts towards under a ruleset ("" =
+// not moderated).
+func (c controls) disableTarget(ctx context.Context, linkOrName string) (client.Group, client.JID,
+	func(*rules.Ruleset) string, error) {
 	list, err := c.a.Store.EnabledList(ctx)
 	if err != nil {
-		return client.Group{}, nil, err
+		return client.Group{}, "", nil, err
 	}
 	cur := c.a.Config.Current()
 	name := strings.TrimSpace(linkOrName)
@@ -186,7 +195,11 @@ func (c controls) disableTarget(ctx context.Context, linkOrName string) (client.
 	case len(named) == 1:
 		e := named[0]
 		g := client.Group{JID: client.JID(e.ID), Name: e.Name, IsCommunity: e.Kind == store.KindCommunity}
-		return g, func(rs *rules.Ruleset) string {
+		var parent client.JID
+		if !g.IsCommunity {
+			parent = c.a.Directory.Parent(g.JID)
+		}
+		return g, parent, func(rs *rules.Ruleset) string {
 			if g.IsCommunity {
 				return pipeline.GroupCommunity(g.JID, "", true, rs)
 			}
@@ -195,7 +208,7 @@ func (c controls) disableTarget(ctx context.Context, linkOrName string) (client.
 			return c.a.Directory.Community(g.JID, rs)
 		}, nil
 	case len(named) > 1:
-		return client.Group{}, nil, fmt.Errorf("%d entries switched on with /enable are named \"%s\": send /disable with "+
+		return client.Group{}, "", nil, fmt.Errorf("%d entries switched on with /enable are named \"%s\": send /disable with "+
 			"the invite link of the one to switch off (an entry whose group was deleted moderates nothing)", len(named), name)
 	}
 	// What the config file lists, by the name /status shows (the file's, also
@@ -204,7 +217,7 @@ func (c controls) disableTarget(ctx context.Context, linkOrName string) (client.
 	for _, id := range cur.Rules.Communities() {
 		if label := pipeline.CommunityLabel(cur.Config, id); cur.FromFile(id) && strings.EqualFold(label, name) {
 			g := client.Group{JID: client.JID(id), Name: label, IsCommunity: len(cur.Config.Communities[id].Groups) == 0}
-			return g, func(rs *rules.Ruleset) string {
+			return g, "", func(rs *rules.Ruleset) string {
 				if _, ok := rs.ModeFor(id); ok {
 					return id
 				}
@@ -213,14 +226,40 @@ func (c controls) disableTarget(ctx context.Context, linkOrName string) (client.
 		}
 	}
 	if _, err := client.InviteCode(linkOrName); err != nil {
-		return client.Group{}, nil, fmt.Errorf("%w, nor the name of something switched on with /enable (/status lists them)", err)
+		return client.Group{}, "", nil, fmt.Errorf("%w, nor the name of something switched on with /enable (/status lists them)", err)
 	}
 	_, g, parent, err := c.lookUp(ctx, linkOrName)
 	if err != nil {
-		return client.Group{}, nil, fmt.Errorf("%w: when its link no longer works, send /disable with the name /status "+
+		return client.Group{}, "", nil, fmt.Errorf("%w: when its link no longer works, send /disable with the name /status "+
 			"shows for it", err)
 	}
-	return g, func(rs *rules.Ruleset) string { return pipeline.GroupCommunity(g.JID, parent, g.IsCommunity, rs) }, nil
+	return g, parent, func(rs *rules.Ruleset) string { return pipeline.GroupCommunity(g.JID, parent, g.IsCommunity, rs) }, nil
+}
+
+// notAssigned is the reply to a community admin's /enable or /disable of
+// something not theirs.
+const notAssigned = "You can switch on or off only the communities and groups assigned to you."
+
+// mayTarget reports whether by may switch target (a community or group, in
+// community parent when it is a group of one) on or off. A community admin
+// may only when target or parent is in their assigned list; the super admin,
+// and anyone without an acl: section (no role), may always. Any other role
+// never reaches here (the gate refuses it) and is refused.
+func mayTarget(by telegram.Actor, target, parent client.JID) bool {
+	switch by.Role {
+	case "", telegram.RoleSuper:
+		return true
+	case telegram.RoleAdmin:
+		return slices.Contains(by.Assigned, string(target)) || (parent != "" && slices.Contains(by.Assigned, string(parent)))
+	}
+	return false
+}
+
+// refuseTarget logs and answers a refused /enable or /disable.
+func (c controls) refuseTarget(command string, target client.JID, by telegram.Actor) string {
+	c.a.Log.Warn("refused: not an assigned community or group", "command", command, "target", mask.IDs(string(target)),
+		"role", string(by.Role), "by", by.String())
+	return notAssigned
 }
 
 // andList joins words as "a", "a and b", "a, b and c".
