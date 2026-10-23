@@ -50,7 +50,7 @@ func (h *harness) setStatus(key, value string) {
 func TestCommandListPinnedAtStart(t *testing.T) {
 	h := newHarness(t, "")
 	h.setup()
-	list := telegram.CommandList()
+	list := telegram.CommandList(nil)
 	for _, cmd := range wantCommands {
 		if !strings.Contains(list, "\n"+cmd+" — ") {
 			t.Fatalf("the list has no line for %s:\n%s", cmd, list)
@@ -104,7 +104,7 @@ func TestCommandListEditedInPlace(t *testing.T) {
 	h.setup()
 	edits := h.srv.Requests("editMessageText")
 	if len(edits) != 1 || edits[0].Params["message_id"] != strconv.Itoa(first.MessageID) ||
-		edits[0].Params["text"] != telegram.CommandList() {
+		edits[0].Params["text"] != telegram.CommandList(nil) {
 		t.Fatalf("edits %+v, want message %d edited to the current list", edits, first.MessageID)
 	}
 	if n, p := len(h.srv.Requests("sendMessage")), len(h.srv.Requests("pinChatMessage")); n != 1 || p != 1 {
@@ -174,7 +174,7 @@ func TestCommandListReplacedWhenGone(t *testing.T) {
 		}
 		var listPosts []telegramtest.Request
 		for _, p := range h.srv.Requests("sendMessage") {
-			if p.Params["text"] == telegram.CommandList() {
+			if p.Params["text"] == telegram.CommandList(nil) {
 				listPosts = append(listPosts, p)
 			}
 		}
@@ -218,12 +218,12 @@ func TestCommandMenuScopedToAdminChat(t *testing.T) {
 		name, args, _ := strings.Cut(wantCommands[i], " ")
 		if "/"+c.Command != name || c.Description == "" || len(c.Description) > 256 ||
 			(args != "" && !strings.HasPrefix(c.Description, args+": ")) ||
-			!strings.Contains(telegram.CommandList(), "/"+c.Command) || !strings.Contains(c.Description, says[c.Command]) {
+			!strings.Contains(telegram.CommandList(nil), "/"+c.Command) || !strings.Contains(c.Description, says[c.Command]) {
 			t.Fatalf("menu entry %d = %+v, want %s", i, c, wantCommands[i])
 		}
 		// A listed command is one the bot runs, not answered with the list.
 		h.command(telegramtest.ChatID, adminUser, "/"+c.Command, 0)
-		if h.lastReply() == telegram.CommandList() {
+		if h.lastReply() == telegram.CommandList(nil) {
 			t.Fatalf("/%s is listed but the bot does not know it", c.Command)
 		}
 	}
@@ -248,7 +248,7 @@ func TestPinRefusedReportedOnce(t *testing.T) {
 	if len(reps) != 1 || reps[0].Priority || !strings.Contains(reps[0].Text, `"Pin messages" admin right`) {
 		t.Fatalf("reports %+v, want one routine report naming the right", reps)
 	}
-	if posts := h.srv.Requests("sendMessage"); len(posts) != 1 || posts[0].Params["text"] != telegram.CommandList() {
+	if posts := h.srv.Requests("sendMessage"); len(posts) != 1 || posts[0].Params["text"] != telegram.CommandList(nil) {
 		t.Fatalf("posts %+v, want the list posted", posts)
 	}
 	if !strings.Contains(h.logs.String(), "refused to pin the command list") {
