@@ -81,6 +81,8 @@ Copy to `groupwarden.new` and then move it over: copying straight onto the binar
 
 If the newer version changed the database, the older binary refuses to start ("groupwarden.db is at schema version N but this binary knows only M"). During an upgrade the install then ends `ROLLED BACK, but the previous binary is not healthy either`, naming the backup it took before the restart: [restore](#restore-a-backup) that one (it holds everything up to the upgrade), or install the newer version again once its problem is fixed. A rollback by hand cannot cross such a change: `deploy/install.sh --version <the previous tag or commit>` puts the newer binary back and ends `ROLLED BACK to the previous binary and units; it is healthy. The new version was not installed.`, and copying `groupwarden.previous` leaves a bot that does not start. Install a newer version with the problem fixed instead.
 
+A binary older than the `acl:` section (Issue #6) refuses a config that has one, and refuses its last good copy too (`internal/config/reload.go` `LoadRunning`), so it does not start. Before rolling back past it, remove `acl:` from the config repo and wait for `config v<hash> loaded` in the admin chat.
+
 ## Bot number banned
 
 The bot exits (78) and every group is unmoderated until a new number is paired. Your human admins and the human community owner still run the community; that is why every group needs at least 2 human admins.
