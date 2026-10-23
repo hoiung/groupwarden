@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/rules"
@@ -110,6 +111,20 @@ type Community struct {
 	Retention    *RetentionOverride  `json:"retention,omitempty"`
 }
 
+// ACL is who may use which admin-chat commands and buttons, by Telegram user
+// ID. A nil ACL (no acl: section) leaves the chat to its Telegram admins.
+type ACL struct {
+	SuperAdmins []int64    `json:"super_admins"`
+	Admins      []ACLAdmin `json:"admins"`
+}
+
+// ACLAdmin is a community admin and the community and group IDs assigned to
+// them.
+type ACLAdmin struct {
+	User     int64    `json:"user"`
+	Assigned []string `json:"assigned"`
+}
+
 // Config is a loaded config with every default filled in.
 type Config struct {
 	DataDir                string               `json:"data_dir"`
@@ -137,6 +152,8 @@ type Config struct {
 	AllowedDomains         []string             `json:"allowed_domains"`
 	Rules                  RulesSection         `json:"rules"`
 	Communities            map[string]Community `json:"communities"`
+	// ACL is omitted when nil, so a file without acl: keeps its version.
+	ACL *ACL `json:"acl,omitempty"`
 
 	// Dir is the directory the config file was read from (not a key).
 	Dir string `json:"-"`
@@ -240,7 +257,7 @@ func build(raw []byte, dir string, enabled []Enabled) (*Loaded, error) {
 			*p = filepath.Join(dir, *p)
 		}
 	}
-	if probs := cfg.checkRetention(t); len(probs) > 0 {
+	if probs := append(cfg.checkRetention(t), cfg.ACL.check(t)...); len(probs) > 0 {
 		return nil, probs.sorted()
 	}
 	rs, err := rules.Compile(cfg.Spec())
@@ -307,6 +324,38 @@ func (c *Config) checkRetention(t *tree) Problems {
 	check(c.Retention, []string{"retention"}, "")
 	for _, id := range sortedKeys(c.Communities) {
 		check(c.RetentionFor(id), []string{"communities", id, "retention"}, "communities."+id+": ")
+	}
+	return probs
+}
+
+// check refuses a person listed twice, as two community admins or as a super
+// admin and a community admin: their role would be ambiguous (a rule the
+// schema cannot express).
+func (a *ACL) check(t *tree) Problems {
+	if a == nil {
+		return nil
+	}
+	super := map[int64]bool{}
+	for _, id := range a.SuperAdmins {
+		super[id] = true
+	}
+	var probs Problems
+	admins := map[int64]bool{}
+	for i, adm := range a.Admins {
+		path := []string{"acl", "admins", strconv.Itoa(i), "user"}
+		var why string
+		switch {
+		case super[adm.User]:
+			why = "is also in acl.super_admins"
+		case admins[adm.User]:
+			why = "is listed twice in acl.admins"
+		}
+		admins[adm.User] = true
+		if why != "" {
+			pos := t.where(path)
+			probs = append(probs, Problem{Line: pos.line, Column: pos.col, Msg: fmt.Sprintf(
+				"%s %s: one person has one role", dotted(path), why)})
+		}
 	}
 	return probs
 }
