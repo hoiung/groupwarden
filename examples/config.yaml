@@ -22,6 +22,15 @@ backup:
 # time zone (HH:MM, 24-hour).
 daily_check_time: "12:00"
 
+# Who may use which admin-chat commands and buttons, by Telegram user ID
+# (docs/config.md "Admin-chat access"). Without it every Telegram admin of the
+# chat can do everything. Left commented: these IDs are not yours.
+# acl:
+#   super_admins: [111111111]
+#   admins:
+#     - user: 222222222
+#       assigned: ["99999000000999@g.us"]
+
 # shadow: report what would happen. enforce: act. A rule only acts when its
 # community is in enforce mode AND the rule says confirmed: true.
 mode: shadow
