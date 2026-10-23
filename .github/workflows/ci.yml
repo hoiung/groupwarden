@@ -14,12 +14,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # A master commit (2026-10-09): release v0.8.1 cannot read Go 1.27.2's
+  # A master commit (2026-10-09): release v0.8.1 cannot read Go 1.27.3's
   # export data. Move back to a release once one can.
   STATICCHECK_VERSION: v0.7.0-0.dev.0.20261009230814-452d5bb86b45
   # A master commit (2026-10-12) on golang.org/x/tools v0.52.0: release
   # v2.29.0 is built on v0.49.0, which reads export data only up to
-  # version 4, and Go 1.27.2 writes version 5. Move back to a release
+  # version 4, and Go 1.27.3 writes version 5. Move back to a release
   # built on x/tools v0.50.0 or later.
   GOSEC_VERSION: v2.29.1-0.20261012130337-71577268350e
   GOVULNCHECK_VERSION: v1.8.0
