@@ -20,14 +20,21 @@ import (
 // The acl: people (Telegram user IDs). Neither is a Telegram admin of the
 // chat; adminUser is one, and is in neither list.
 const (
-	superUser int64 = 511 // super admin
-	commAdmin int64 = 512 // community admin of otherCommunity
+	superUser  int64 = 511 // super admin
+	commAdmin  int64 = 512 // community admin of otherCommunity
+	commAdmin2 int64 = 513 // community admin of secondCommunity
 )
 
-// aclSection names superUser super admin and commAdmin community admin of
-// otherCommunity.
+// secondCommunity is a community the config file does not moderate, so a
+// group in it can be switched on with /enable.
+const secondCommunity client.JID = "99999000000111@g.us"
+
+// aclSection names superUser super admin, commAdmin community admin of
+// otherCommunity and commAdmin2 community admin of secondCommunity, so each
+// admin is decided on their own list.
 var aclSection = "acl:\n  super_admins: [" + strconv.FormatInt(superUser, 10) + "]\n  admins:\n    - user: " +
-	strconv.FormatInt(commAdmin, 10) + "\n      assigned: [\"" + string(otherCommunity) + "\"]\n"
+	strconv.FormatInt(commAdmin, 10) + "\n      assigned: [\"" + string(otherCommunity) + "\"]\n    - user: " +
+	strconv.FormatInt(commAdmin2, 10) + "\n      assigned: [\"" + string(secondCommunity) + "\"]\n"
 
 // aclSubject is one person the acl: tests act as.
 type aclSubject struct {
@@ -291,13 +298,15 @@ func TestButtonRoles(t *testing.T) {
 	}
 }
 
-// enableHarness is an acl: harness whose invite links point at the assigned
-// community, a group in it, and a group outside it.
+// enableHarness is an acl: harness whose invite links point at commAdmin's
+// community, a group in it, a group in commAdmin2's community, and a group in
+// no community.
 func enableHarness(t *testing.T) *harness {
 	h := newHarness(t, aclSection)
 	h.k.Fake.Invites = map[string]client.Group{
 		"CoMm1":  {JID: otherCommunity, Name: "our community", IsCommunity: true},
 		"GrOuP1": {JID: otherGroup, Name: "public chat", Parent: otherCommunity},
+		"ElSeW1": {JID: otherGroup, Name: "public chat", Parent: secondCommunity},
 		"AlOnE1": {JID: otherGroup, Name: "public chat"},
 	}
 	return h
@@ -308,7 +317,8 @@ func enableHarness(t *testing.T) *harness {
 const notAssigned = "You can switch on or off only the communities and groups assigned to you."
 
 // TestEnableAssignedOnly: a community admin's /enable records and joins only
-// what is assigned to them (or a group in it); the super admin's anything.
+// what is assigned to them (or a group in it), never a group in another
+// admin's community; the super admin's anything.
 func TestEnableAssignedOnly(t *testing.T) {
 	for _, c := range []struct {
 		name, code string
@@ -318,6 +328,9 @@ func TestEnableAssignedOnly(t *testing.T) {
 		{"own_community", "CoMm1", commAdmin, "community " + string(otherCommunity)},
 		{"group_in_own_community", "GrOuP1", commAdmin, "group " + string(otherGroup)},
 		{"other", "AlOnE1", commAdmin, ""},
+		{"group_in_other_community", "ElSeW1", commAdmin, ""},
+		{"second_admin_own", "ElSeW1", commAdmin2, "group " + string(otherGroup)},
+		{"second_admin_other", "CoMm1", commAdmin2, ""},
 		{"super_other", "AlOnE1", superUser, "group " + string(otherGroup)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -338,22 +351,25 @@ func TestEnableAssignedOnly(t *testing.T) {
 }
 
 // TestDisableAssignedOnly: a community admin's /disable, by link or by the
-// name /status shows, removes only what is in their community.
+// name /status shows, removes only what is in their community, not a group in
+// another admin's community.
 func TestDisableAssignedOnly(t *testing.T) {
 	for _, c := range []struct {
 		name, code, disable string
-		learned             bool // the bot is in the group and knows its community
+		learned             client.JID // the community the bot learned the group is in ("" = not learned)
 		removed             bool
 	}{
-		{"own_link", "GrOuP1", "https://chat.whatsapp.com/GrOuP1", false, true},
-		{"own_name", "GrOuP1", "public chat", true, true},
-		{"other_link", "AlOnE1", "https://chat.whatsapp.com/AlOnE1", false, false},
-		{"other_name", "AlOnE1", "public chat", false, false},
+		{"own_link", "GrOuP1", "https://chat.whatsapp.com/GrOuP1", "", true},
+		{"own_name", "GrOuP1", "public chat", otherCommunity, true},
+		{"other_link", "AlOnE1", "https://chat.whatsapp.com/AlOnE1", "", false},
+		{"other_name", "AlOnE1", "public chat", "", false},
+		{"other_community_link", "ElSeW1", "https://chat.whatsapp.com/ElSeW1", "", false},
+		{"other_community_name", "ElSeW1", "public chat", secondCommunity, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			h := enableHarness(t)
-			if c.learned {
-				h.k.Dir.Join(client.Group{JID: otherGroup, Name: "public chat", Parent: otherCommunity})
+			if c.learned != "" {
+				h.k.Dir.Join(client.Group{JID: otherGroup, Name: "public chat", Parent: c.learned})
 			}
 			h.command(telegramtest.ChatID, superUser, "/enable https://chat.whatsapp.com/"+c.code, 0)
 			if len(h.enabled()) != 1 {
