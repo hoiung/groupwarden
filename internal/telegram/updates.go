@@ -11,6 +11,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/store"
@@ -72,14 +73,22 @@ func (c *Chat) message(ctx context.Context, m *models.Message) {
 			return
 		}
 	}
-	if !c.isAdmin(ctx, m.From.ID) {
+	acl := c.Config.Current().Config.ACL
+	d := c.decide(ctx, acl, m.From.ID, commandAction(cmd))
+	switch {
+	case !d.allowed && acl == nil:
 		c.Log.Warn("command from a non-admin ignored", "user", m.From.ID, "command", cmd)
 		c.reply(ctx, m.ID, 0, "Only admins of this chat can use groupwarden commands.")
 		return
+	case !d.allowed:
+		c.Log.Warn("command refused", "user", m.From.ID, "command", cmd, "role", string(d.role), "needs", string(d.needs))
+		c.reply(ctx, m.ID, 0, commandRefusal(cmd, d.needs))
+		return
 	}
 	by := actorOf(*m.From)
+	by.Role, by.Assigned = d.role, d.assigned
 	c.Log.Info("admin command", "command", cmd, "by", by.String())
-	text, reportID := c.command(ctx, cmd, args, m, by)
+	text, reportID := c.command(ctx, cmd, args, m, by, acl)
 	c.reply(ctx, m.ID, reportID, text)
 }
 
@@ -117,8 +126,8 @@ func (c *Chat) ownName(ctx context.Context) string {
 }
 
 // command runs one admin command and returns the reply and the report it is
-// about (0 when none).
-func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message, by Actor) (string, int64) {
+// about (0 when none). acl is the section the gate decided under.
+func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message, by Actor, acl *config.ACL) (string, int64) {
 	call := func(f func() (string, error)) string {
 		text, err := f()
 		if err != nil {
@@ -166,7 +175,7 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 		}
 		return c.act(ctx, id, ledger.ButtonUndo, by, false), id
 	}
-	return commandList(), 0
+	return commandList(acl), 0
 }
 
 // press handles a button press on a report.
@@ -177,10 +186,16 @@ func (c *Chat) press(ctx context.Context, q *models.CallbackQuery) {
 		c.answer(ctx, q.ID, "This chat is not the groupwarden admin chat.")
 		return
 	}
-	if !c.isAdmin(ctx, q.From.ID) {
-		c.Log.Warn("button press from a non-admin refused", "user", q.From.ID, "data", q.Data)
-		c.answer(ctx, q.ID, "Only admins of this chat can press these buttons.")
-		return
+	// Without acl: the check comes first, as it always has; with it, the
+	// decision needs the button, so it follows the parse.
+	acl := c.Config.Current().Config.ACL
+	var d access
+	if acl == nil {
+		if d = c.decide(ctx, nil, q.From.ID, ""); !d.allowed {
+			c.Log.Warn("button press from a non-admin refused", "user", q.From.ID, "data", q.Data)
+			c.answer(ctx, q.ID, "Only admins of this chat can press these buttons.")
+			return
+		}
 	}
 	code, rawID, _ := strings.Cut(q.Data, ":")
 	button, known := buttonNames[code]
@@ -190,7 +205,16 @@ func (c *Chat) press(ctx context.Context, q *models.CallbackQuery) {
 		c.answer(ctx, q.ID, "Unknown button.")
 		return
 	}
+	if acl != nil {
+		if d = c.decide(ctx, acl, q.From.ID, "btn-"+code); !d.allowed {
+			c.Log.Warn("button press refused", "user", q.From.ID, "report", id, "button", button, "role", string(d.role),
+				"needs", string(d.needs))
+			c.answer(ctx, q.ID, buttonRefusal(button, d.needs))
+			return
+		}
+	}
 	by := actorOf(q.From)
+	by.Role, by.Assigned = d.role, d.assigned
 	c.Log.Info("admin pressed a button", "report", id, "button", button, "by", by.String())
 	text := c.act(ctx, id, button, by, true)
 	c.answer(ctx, q.ID, text)
