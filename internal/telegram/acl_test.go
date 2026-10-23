@@ -17,23 +17,27 @@ import (
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
 
-// The acl: people (Telegram user IDs). Neither is a Telegram admin of the
-// chat; adminUser is one, and is in neither list.
+// The acl: people (Telegram user IDs). None is a Telegram admin of the chat;
+// adminUser is one, and is in no list.
 const (
+	extraSuper int64 = 510 // super admin listed first; no test acts as them
 	superUser  int64 = 511 // super admin
 	commAdmin  int64 = 512 // community admin of otherCommunity
 	commAdmin2 int64 = 513 // community admin of secondCommunity
 )
 
-// secondCommunity is a community the config file does not moderate, so a
-// group in it can be switched on with /enable.
-const secondCommunity client.JID = "99999000000111@g.us"
+// secondCommunity is a community the config file does not moderate and the bot
+// is not in, so it and a group in it can be switched on with /enable.
+const secondCommunity client.JID = "99999000000444@g.us"
 
 // aclSection names superUser super admin, commAdmin community admin of
 // otherCommunity and commAdmin2 community admin of secondCommunity, so each
-// admin is decided on their own list.
-var aclSection = "acl:\n  super_admins: [" + strconv.FormatInt(superUser, 10) + "]\n  admins:\n    - user: " +
-	strconv.FormatInt(commAdmin, 10) + "\n      assigned: [\"" + string(otherCommunity) + "\"]\n    - user: " +
+// admin is decided on their own list. superUser and commAdmin's community are
+// each the second entry of their list and commAdmin2's the only one, so a gate
+// that reads one end of a list is caught.
+var aclSection = "acl:\n  super_admins: [" + strconv.FormatInt(extraSuper, 10) + ", " + strconv.FormatInt(superUser, 10) +
+	"]\n  admins:\n    - user: " + strconv.FormatInt(commAdmin, 10) +
+	"\n      assigned: [\"" + string(modtest.G2) + "\", \"" + string(otherCommunity) + "\"]\n    - user: " +
 	strconv.FormatInt(commAdmin2, 10) + "\n      assigned: [\"" + string(secondCommunity) + "\"]\n"
 
 // aclSubject is one person the acl: tests act as.
@@ -299,12 +303,13 @@ func TestButtonRoles(t *testing.T) {
 }
 
 // enableHarness is an acl: harness whose invite links point at commAdmin's
-// community, a group in it, a group in commAdmin2's community, and a group in
-// no community.
+// community, a group in it, commAdmin2's community, a group in it, and a group
+// in no community.
 func enableHarness(t *testing.T) *harness {
 	h := newHarness(t, aclSection)
 	h.k.Fake.Invites = map[string]client.Group{
 		"CoMm1":  {JID: otherCommunity, Name: "our community", IsCommunity: true},
+		"CoMm2":  {JID: secondCommunity, Name: "their community", IsCommunity: true},
 		"GrOuP1": {JID: otherGroup, Name: "public chat", Parent: otherCommunity},
 		"ElSeW1": {JID: otherGroup, Name: "public chat", Parent: secondCommunity},
 		"AlOnE1": {JID: otherGroup, Name: "public chat"},
@@ -330,6 +335,7 @@ func TestEnableAssignedOnly(t *testing.T) {
 		{"other", "AlOnE1", commAdmin, ""},
 		{"group_in_other_community", "ElSeW1", commAdmin, ""},
 		{"second_admin_own", "ElSeW1", commAdmin2, "group " + string(otherGroup)},
+		{"second_admin_community", "CoMm2", commAdmin2, "community " + string(secondCommunity)},
 		{"second_admin_other", "CoMm1", commAdmin2, ""},
 		{"super_other", "AlOnE1", superUser, "group " + string(otherGroup)},
 	} {
