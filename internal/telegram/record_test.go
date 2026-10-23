@@ -186,7 +186,7 @@ func TestPostNotRepeatedWhileItsRecordFails(t *testing.T) {
 			}},
 		{name: "command list post", table: "status", when: "NEW.key = '" + store.StatusTelegramPin + "'", run: setup,
 			setup: func(*testing.T, *harness) {},
-			posts: func(h *harness) int { return requests(h, "sendMessage", telegram.CommandList()) },
+			posts: func(h *harness) int { return requests(h, "sendMessage", telegram.CommandList(nil)) },
 			recorded: func(t *testing.T, h *harness) {
 				if statusOf(t, h, store.StatusTelegramPinState) != "pinned" {
 					t.Fatal("the posted list was never recorded and pinned")
