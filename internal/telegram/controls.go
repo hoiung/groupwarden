@@ -38,10 +38,14 @@ type Controls interface {
 	Status(ctx context.Context) (string, error)
 }
 
-// Actor is the admin who pressed a button or sent a command.
+// Actor is the admin who pressed a button or sent a command. Role and
+// Assigned are what the gate decided under acl: (unset without it); /enable
+// and /disable limit a community admin to Assigned.
 type Actor struct {
-	ID   int64
-	Name string
+	ID       int64
+	Name     string
+	Role     Role
+	Assigned []string
 }
 
 // String is how the ledger and the logs name the actor.
