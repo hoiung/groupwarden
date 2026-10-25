@@ -30,7 +30,7 @@ var messageName = (&waE2E.Message{}).ProtoReflect().Descriptor().FullName()
 // metadata.
 var keyFields = map[protoreflect.Name]bool{
 	"senderKeyDistributionMessage": true, "fastRatchetKeySenderKeyDistributionMessage": true,
-	"messageContextInfo": true,
+	"groupRootKeyShare": true, "messageContextInfo": true,
 }
 
 // noTextFields are content with no text the bot reads (a sticker, a pin, an
