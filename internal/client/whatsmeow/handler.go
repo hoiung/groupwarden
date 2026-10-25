@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	wm "go.mau.fi/whatsmeow"
@@ -191,7 +192,9 @@ func groupChange(e *events.GroupInfo) *client.GroupChange {
 }
 
 // convertMessage turns a group message into a client event, or nil when it
-// carries nothing a sender wrote (receipts, reactions, deletes, votes).
+// carries nothing a sender wrote (receipts, reactions, deletes, votes, a
+// sender key). A message the bot reads nothing from is logged with its shape
+// (a warning unless it is a known kind without text, such as a sticker).
 func (a *Adapter) convertMessage(e *events.Message) client.Event {
 	info := e.Info
 	if !info.IsGroup || info.Chat.Server != types.GroupServer || info.IsFromMe || e.Message == nil {
@@ -203,6 +206,18 @@ func (a *Adapter) convertMessage(e *events.Message) client.Event {
 		FromMetaAI: info.Sender.IsBot() || info.SenderAlt.IsBot(),
 	}
 	content := unwrap(e.Message)
+	raw := e.RawMessage
+	if raw == nil {
+		raw = e.Message
+	}
+	// A part that only hands over the sender's key comes first, under the
+	// post's own ID: kept, it would take the ID and the post after it would be
+	// dropped as a repeat of it.
+	if sh := (shape{fields: setFields(content), unknown: unknownFields(content)}); sh.only(keyFields) {
+		a.log.Debug("a message part with no content: the sender's key or delivery data", "chat", mask.IDs(info.Chat.String()),
+			"id", info.ID, "fields", sh.fields)
+		return nil
+	}
 	switch {
 	case content.GetEncCommentMessage() != nil:
 		dec, err := a.decrypt(a.cli.DecryptComment, e)
@@ -232,6 +247,22 @@ func (a *Adapter) convertMessage(e *events.Message) client.Event {
 	}
 	x := extract(content)
 	m.Fields, m.Mentions, m.Media = x.fields, x.mentions, x.media
+	unread := len(x.fields) == 0 && x.media == nil
+	if !unread && !a.log.Enabled(context.Background(), slog.LevelDebug) {
+		return m
+	}
+	sh := shapeOf(raw, content)
+	read := make([]string, len(x.fields))
+	for i, f := range x.fields {
+		read[i] = f.Name
+	}
+	attrs := []any{"chat", mask.IDs(string(m.Chat)), "id", m.ID, "wrappers", sh.wrappers, "fields", sh.fields,
+		"unknown", sh.unknown, "read", read, "media", x.media != nil, "edit", m.IsEdit, "comment", m.IsComment}
+	if unread && !sh.only(keyFields, noTextFields) {
+		a.log.Warn("a group message had no content the bot can read", attrs...)
+	} else {
+		a.log.Debug("group message", attrs...)
+	}
 	return m
 }
 
