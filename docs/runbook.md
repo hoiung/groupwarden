@@ -7,7 +7,23 @@ What to do when groupwarden asks for a human. Paths are the node layout in [depl
 - **The daily check**: every day at `daily_check_time` (12:00 by default, the node's local time) the bot posts "Daily check, Tuesday 6 October 2026: groupwarden is alive and working." (with that day's date) in the admin chat, or names what is not working. See [No daily check](#no-daily-check).
 - **The admin chat**: every alert lands there. `/status` shows the connection, pauses, the config version, the last config sync and backup, the ban list and queue sizes, and coverage per community.
 - **`sudo -u groupwarden groupwarden healthcheck --config CFG`**: exit 0 only when the bot is running, connected, hearing messages, has its config and has reached the admin chat; otherwise one line says which part is not.
-- **`journalctl -u groupwarden.service`** (and `-u groupwarden-sync.service`, `-u groupwarden-backup.service`, `-u groupwarden-backup-failed.service`): structured JSON logs. Phone numbers and IDs are masked and message text is only logged at debug level.
+- **`journalctl -u groupwarden.service`** (and `-u groupwarden-sync.service`, `-u groupwarden-backup.service`, `-u groupwarden-backup-failed.service`): structured JSON logs. Phone numbers and IDs are masked and message text is never logged.
+- **"a group message had no content the bot can read"** (a warning, at any level): the bot read no words from a group message, so its rules never saw them. The line names the message's form (`wrappers`, `fields`, and `unknown` field numbers the bot's WhatsApp library does not know), never its text. Report it with that line; until it is fixed, posts of that form are not checked.
+
+## Debug logging
+
+`groupwarden run` logs at info. To see the form of every group message while you reproduce a problem, run it at debug, then switch back:
+
+```bash
+sudo mkdir -p /etc/systemd/system/groupwarden.service.d
+printf '[Service]\nEnvironment=GROUPWARDEN_LOG_LEVEL=debug\n' | sudo tee /etc/systemd/system/groupwarden.service.d/debug.conf
+sudo systemctl daemon-reload && sudo systemctl restart groupwarden.service
+# back to info:
+sudo rm /etc/systemd/system/groupwarden.service.d/debug.conf
+sudo systemctl daemon-reload && sudo systemctl restart groupwarden.service
+```
+
+In Docker, pass `-e GROUPWARDEN_LOG_LEVEL=debug`. `--log-level` does the same for one command; a value other than `debug`, `info`, `warn` or `error` is refused (exit 2). At debug each group message gets a `"group message"` line with its form and the names of the fields read (`read`); a part that only hands over the sender's key is logged and not stored, and a repeat delivery that is dropped is logged too. The WhatsApp library's own traffic log is written as well: push names and group subjects appear in it (IDs masked), message text does not.
 
 ## No daily check
 
