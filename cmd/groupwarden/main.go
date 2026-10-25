@@ -140,7 +140,8 @@ Store commands (work beside run):
   fatal-exit-code             print the exit code that means "a human must act"
 
 Every command except fatal-exit-code and corpus add takes --config <file> (default: $GROUPWARDEN_CONFIG).
-Commands that log take --log-level debug|info|warn|error (default: $GROUPWARDEN_LOG_LEVEL, else info).
+--log-level debug|info|warn|error (default: $GROUPWARDEN_LOG_LEVEL, else info) sets the level of the commands
+that log; any other value is refused by every command.
 `
 
 func (e *env) run(args []string) int {
