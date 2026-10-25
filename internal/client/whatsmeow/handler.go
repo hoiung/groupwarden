@@ -214,7 +214,7 @@ func (a *Adapter) convertMessage(e *events.Message) client.Event {
 	// post's own ID: kept, it would take the ID and the post after it would be
 	// dropped as a repeat of it.
 	if sh := (shape{fields: setFields(content), unknown: unknownFields(content)}); sh.only(keyFields) {
-		a.log.Debug("a message part with no content: the sender's key or delivery data", "chat", mask.IDs(info.Chat.String()),
+		a.log.Debug("a message part with no sender content, not stored", "chat", mask.IDs(info.Chat.String()),
 			"id", info.ID, "fields", sh.fields)
 		return nil
 	}
