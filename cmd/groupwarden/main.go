@@ -141,7 +141,7 @@ Store commands (work beside run):
 
 Every command except fatal-exit-code and corpus add takes --config <file> (default: $GROUPWARDEN_CONFIG).
 --log-level debug|info|warn|error (default: $GROUPWARDEN_LOG_LEVEL, else info) sets the level of the commands
-that log; any other value is refused by every command.
+that log; any other value is refused (exit 2) by every command that takes flags.
 `
 
 func (e *env) run(args []string) int {
