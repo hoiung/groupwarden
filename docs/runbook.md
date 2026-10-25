@@ -8,7 +8,7 @@ What to do when groupwarden asks for a human. Paths are the node layout in [depl
 - **The admin chat**: every alert lands there. `/status` shows the connection, pauses, the config version, the last config sync and backup, the ban list and queue sizes, and coverage per community.
 - **`sudo -u groupwarden groupwarden healthcheck --config CFG`**: exit 0 only when the bot is running, connected, hearing messages, has its config and has reached the admin chat; otherwise one line says which part is not.
 - **`journalctl -u groupwarden.service`** (and `-u groupwarden-sync.service`, `-u groupwarden-backup.service`, `-u groupwarden-backup-failed.service`): structured JSON logs. Phone numbers and IDs are masked and message text is never logged.
-- **"a group message had no content the bot can read"** (a warning, at any level): the bot read no words from a group message, so its rules never saw them. The line names the message's form (`wrappers`, `fields`, and `unknown` field numbers the bot's WhatsApp library does not know), never its text. Report it with that line; until it is fixed, posts of that form are not checked.
+- **"a group message had no content the bot can read"** (a warning, written at every level but `error`): the bot read no words from a group message, so its rules never saw them. The line names the message's form (`wrappers`, `fields`, and `unknown` field numbers the bot's WhatsApp library does not know), never its text. Report it with that line; until it is fixed, posts of that form are not checked.
 
 ## Debug logging
 
