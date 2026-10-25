@@ -69,6 +69,9 @@ func TestKeyPartDoesNotHideThePost(t *testing.T) {
 	bundled := keyPart()
 	bundled.GroupMentionedMessage = &waE2E.FutureProofMessage{Message: &waE2E.Message{
 		ExtendedTextMessage: &waE2E.ExtendedTextMessage{Text: ps(stockPitch)}}}
+	// A newer client's delivery data carries a field this library does not know.
+	newerKey := keyPart()
+	withUnknown(newerKey.MessageContextInfo, 4243, "synthetic delivery data")
 	cases := []struct {
 		name  string
 		parts []*waE2E.Message
@@ -77,6 +80,7 @@ func TestKeyPartDoesNotHideThePost(t *testing.T) {
 		{"fast-ratchet-key-then-post", []*waE2E.Message{fastKey, invitePost()}},
 		{"post-then-key", []*waE2E.Message{invitePost(), keyPart()}},
 		{"key-bundled-with-group-mention", []*waE2E.Message{bundled}},
+		{"key-with-newer-delivery-field-then-post", []*waE2E.Message{newerKey, invitePost()}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -247,7 +251,7 @@ func TestKeyPartLoggedAtDebug(t *testing.T) {
 		t.Fatal("handler refused the key part")
 	}
 	lines := logLines(t, buf)
-	if len(sink.events()) != 0 || len(lines) != 1 || lines[0]["msg"] != "a message part with no content: the sender's key or delivery data" ||
+	if len(sink.events()) != 0 || len(lines) != 1 || lines[0]["msg"] != "a message part with no sender content, not stored" ||
 		lines[0]["id"] != "3EB0SYNTH0004" || !reflect.DeepEqual(strs(lines[0]["fields"]), []string{"senderKeyDistributionMessage", "messageContextInfo"}) {
 		t.Fatalf("stored %d events, log lines %v", len(sink.events()), lines)
 	}
