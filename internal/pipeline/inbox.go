@@ -4,9 +4,11 @@ package pipeline
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/hoiung/groupwarden/internal/client"
+	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -18,6 +20,8 @@ const persistTimeout = 10 * time.Second
 type Inbox struct {
 	st   *store.Store
 	wake chan struct{}
+	// Log, when set, records each delivery dropped as a repeat (debug).
+	Log *slog.Logger
 }
 
 // NewInbox returns an inbox over st.
@@ -34,8 +38,12 @@ func (in *Inbox) Persist(ev client.Event) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
 	defer cancel()
-	if _, err := in.st.InboxPut(ctx, ev.DedupeKey(), kind, payload); err != nil {
+	inserted, err := in.st.InboxPut(ctx, ev.DedupeKey(), kind, payload)
+	if err != nil {
 		return err
+	}
+	if !inserted && in.Log != nil {
+		in.Log.Debug("dropped a delivery already queued or decided", "key", mask.IDs(ev.DedupeKey()))
 	}
 	select {
 	case in.wake <- struct{}{}:
