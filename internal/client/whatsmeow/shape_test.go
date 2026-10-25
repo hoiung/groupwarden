@@ -81,6 +81,7 @@ func TestKeyPartDoesNotHideThePost(t *testing.T) {
 		{"post-then-key", []*waE2E.Message{invitePost(), keyPart()}},
 		{"key-bundled-with-group-mention", []*waE2E.Message{bundled}},
 		{"key-with-newer-delivery-field-then-post", []*waE2E.Message{newerKey, invitePost()}},
+		{"root-key-share-then-post", []*waE2E.Message{{GroupRootKeyShare: &waE2E.GroupRootKeyShare{}}, invitePost()}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -201,6 +202,12 @@ func TestUnreadableMessageWarns(t *testing.T) {
 			SpoilerMessage:        &waE2E.FutureProofMessage{Message: &waE2E.Message{Conversation: ps(hiddenWords)}}},
 			true, true, []string{"groupMentionedMessage", "spoilerMessage"}, nil, []string{"groupMentionedMessage"}},
 		{"sticker", &waE2E.Message{StickerMessage: &waE2E.StickerMessage{}}, false, true, nil, nil, nil},
+		// The commonest posts without text: an attachment with no caption, and
+		// an album header whose pictures come as messages of their own.
+		{"image-no-caption", &waE2E.Message{ImageMessage: &waE2E.ImageMessage{Mimetype: ps("image/jpeg")}}, false, true, nil, nil, nil},
+		{"voice-note", &waE2E.Message{AudioMessage: &waE2E.AudioMessage{Mimetype: ps("audio/ogg"), PTT: proto.Bool(true)}},
+			false, true, nil, nil, nil},
+		{"album-header", &waE2E.Message{AlbumMessage: &waE2E.AlbumMessage{ExpectedImageCount: proto.Uint32(2)}}, false, true, nil, nil, nil},
 		{"key-only", keyPart(), false, false, nil, nil, nil},
 	}
 	for _, c := range cases {
