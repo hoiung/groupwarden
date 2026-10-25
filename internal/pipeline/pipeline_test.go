@@ -71,6 +71,8 @@ func TestDuplicateDeliveryDeduped(t *testing.T) {
 	s := open(t, filepath.Join(t.TempDir(), "g.db"), t0)
 	rec := &recorder{}
 	w := worker(s, rec)
+	var logged bytes.Buffer
+	w.Inbox.Log = slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	m := msg("ID1", "hello", t0)
 	for i := 0; i < 3; i++ {
 		if err := w.Inbox.Persist(m); err != nil {
@@ -99,6 +101,10 @@ func TestDuplicateDeliveryDeduped(t *testing.T) {
 	}
 	if n, _ := s.InboxLen(ctx); n != 1 {
 		t.Fatalf("second message not queued: %d rows", n)
+	}
+	// Each dropped repeat (two while queued, one after the decision) is logged.
+	if n := strings.Count(logged.String(), `"msg":"dropped a delivery already queued or decided"`); n != 3 {
+		t.Fatalf("%d drop lines, want 3: %s", n, logged.String())
 	}
 }
 
