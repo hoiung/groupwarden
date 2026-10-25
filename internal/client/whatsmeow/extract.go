@@ -53,10 +53,15 @@ func shapeOf(raw, content *waE2E.Message) shape {
 	return shape{wrappers: wrapperPath(raw), fields: setFields(content), unknown: unknownFields(content)}
 }
 
-// only reports whether every set field is in allowed and none is unknown.
+// only reports whether every set field is in allowed and no unknown field
+// can hold content. A field this library version does not know inside a key
+// or delivery field is not content: WhatsApp adds such fields often, and the
+// key part must still be recognised.
 func (s shape) only(allowed ...map[protoreflect.Name]bool) bool {
-	if len(s.unknown) > 0 {
-		return false
+	for _, u := range s.unknown {
+		if field, _, nested := strings.Cut(u, "."); !nested || !keyFields[protoreflect.Name(field)] {
+			return false
+		}
 	}
 next:
 	for _, f := range s.fields {
