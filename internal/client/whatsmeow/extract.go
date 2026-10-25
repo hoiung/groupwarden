@@ -1,9 +1,13 @@
 package whatsmeow
 
 import (
+	"cmp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
@@ -16,6 +20,145 @@ const maxUnwrap = 8
 // futureProofName is the wrapper type WhatsApp uses for ephemeral, view-once,
 // document-with-caption, edited and similar envelopes.
 var futureProofName = (&waE2E.FutureProofMessage{}).ProtoReflect().Descriptor().FullName()
+
+// messageName is the type every envelope holds its content in.
+var messageName = (&waE2E.Message{}).ProtoReflect().Descriptor().FullName()
+
+// keyFields carry nothing a sender wrote: the sender key a member's device
+// hands the bot before its first post to a group (and again whenever it
+// starts a new key), in a part of its own with the post's ID, and delivery
+// metadata.
+var keyFields = map[protoreflect.Name]bool{
+	"senderKeyDistributionMessage": true, "fastRatchetKeySenderKeyDistributionMessage": true,
+	"messageContextInfo": true,
+}
+
+// noTextFields are content with no text the bot reads (a sticker, a pin, an
+// RSVP, an album header whose pictures come as messages of their own), so
+// reading nothing from them is expected.
+var noTextFields = map[protoreflect.Name]bool{
+	"stickerMessage": true, "locationMessage": true, "liveLocationMessage": true, "keepInChatMessage": true,
+	"pinInChatMessage": true, "encEventResponseMessage": true, "requestPhoneNumberMessage": true,
+	"callLogMesssage": true, "albumMessage": true, "messageHistoryNotice": true, "messageHistoryBundle": true,
+}
+
+// shape is a message's form for the logs, never its text.
+type shape struct {
+	wrappers []string // the envelopes around the content, outermost first
+	fields   []string // the content message's set fields
+	unknown  []string // field numbers this library version does not know: "N", or "<field>.N" one level down
+}
+
+func shapeOf(raw, content *waE2E.Message) shape {
+	return shape{wrappers: wrapperPath(raw), fields: setFields(content), unknown: unknownFields(content)}
+}
+
+// only reports whether every set field is in allowed and none is unknown.
+func (s shape) only(allowed ...map[protoreflect.Name]bool) bool {
+	if len(s.unknown) > 0 {
+		return false
+	}
+next:
+	for _, f := range s.fields {
+		for _, a := range allowed {
+			if a[protoreflect.Name(f)] {
+				continue next
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// rangeOrdered calls fn for each set field of m in field-number order
+// (Range's own order is unspecified), until fn returns false.
+func rangeOrdered(m protoreflect.Message, fn func(protoreflect.FieldDescriptor, protoreflect.Value) bool) {
+	type field struct {
+		fd protoreflect.FieldDescriptor
+		v  protoreflect.Value
+	}
+	var set []field
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		set = append(set, field{fd, v})
+		return true
+	})
+	slices.SortFunc(set, func(a, b field) int { return cmp.Compare(a.fd.Number(), b.fd.Number()) })
+	for _, f := range set {
+		if !fn(f.fd, f.v) {
+			return
+		}
+	}
+}
+
+// wrapperPath names the envelopes from m to its content, outermost first.
+func wrapperPath(m *waE2E.Message) []string {
+	var path []string
+	for i := 0; i < maxUnwrap && m != nil; i++ {
+		var next *waE2E.Message
+		rangeOrdered(m.ProtoReflect(), func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+			if fd.Kind() != protoreflect.MessageKind || fd.IsList() || fd.IsMap() {
+				return true
+			}
+			f := v.Message().Descriptor().Fields().ByName("message")
+			if f == nil || f.Kind() != protoreflect.MessageKind || f.Message().FullName() != messageName || !v.Message().Has(f) {
+				return true
+			}
+			if inner, ok := v.Message().Get(f).Message().Interface().(*waE2E.Message); ok {
+				path, next = append(path, string(fd.Name())), inner
+				return false
+			}
+			return true
+		})
+		m = next
+	}
+	return path
+}
+
+func setFields(m *waE2E.Message) []string {
+	var out []string
+	rangeOrdered(m.ProtoReflect(), func(fd protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		out = append(out, string(fd.Name()))
+		return true
+	})
+	return out
+}
+
+// unknownFields lists the field numbers of m, and of each message set in it,
+// that the pinned library's protobufs do not define.
+func unknownFields(m *waE2E.Message) []string {
+	out := unknownNumbers("", m.ProtoReflect(), nil)
+	rangeOrdered(m.ProtoReflect(), func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		if fd.Kind() == protoreflect.MessageKind && !fd.IsList() && !fd.IsMap() {
+			out = unknownNumbers(string(fd.Name())+".", v.Message(), out)
+		}
+		return true
+	})
+	return out
+}
+
+func unknownNumbers(prefix string, m protoreflect.Message, out []string) []string {
+	b := m.GetUnknown()
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n >= 0 {
+			b = b[n:]
+			n = protowire.ConsumeFieldValue(num, typ, b)
+		}
+		if n < 0 {
+			return appendOnce(out, prefix+"malformed")
+		}
+		b = b[n:]
+		out = appendOnce(out, prefix+strconv.Itoa(int(num)))
+	}
+	return out
+}
+
+func appendOnce(out []string, s string) []string {
+	if slices.Contains(out, s) {
+		return out
+	}
+	return append(out, s)
+}
 
 // unwrap peels envelope messages (ephemeral, view-once, document with
 // caption, edited, device-sent, ...) until the content message is reached.
@@ -40,8 +183,8 @@ func futureProofInner(m *waE2E.Message) *waE2E.Message {
 	var inner *waE2E.Message
 	set := 0
 	m.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-		if fd.Name() == "messageContextInfo" {
-			return true // delivery metadata, not content
+		if keyFields[fd.Name()] {
+			return true // a sender key or delivery metadata, not content
 		}
 		set++
 		if fd.Kind() == protoreflect.MessageKind && fd.Message().FullName() == futureProofName {
