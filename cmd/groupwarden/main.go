@@ -140,6 +140,7 @@ Store commands (work beside run):
   fatal-exit-code             print the exit code that means "a human must act"
 
 Every command except fatal-exit-code and corpus add takes --config <file> (default: $GROUPWARDEN_CONFIG).
+Commands that log take --log-level debug|info|warn|error (default: $GROUPWARDEN_LOG_LEVEL, else info).
 `
 
 func (e *env) run(args []string) int {
@@ -184,8 +185,14 @@ func (e *env) run(args []string) int {
 	public := fs.Bool("public", false, "corpus add: full redaction, for the public tests/corpus")
 	repo := fs.String("repo", "", "sync-config: the staging clone of the private config repo")
 	identity := fs.String("identity", "", "restore: the file holding the age private key the backups are encrypted to")
+	logLevel := fs.String("log-level", e.getenv("GROUPWARDEN_LOG_LEVEL"), "debug, info, warn or error (default info)")
 	args, err := parseInterspersed(fs, rest)
 	if err != nil {
+		return exitUsage
+	}
+	level, err := parseLogLevel(*logLevel)
+	if err != nil {
+		fmt.Fprintln(e.stderr, err)
 		return exitUsage
 	}
 	if cmd == "corpus add" {
@@ -201,7 +208,7 @@ func (e *env) run(args []string) int {
 	case "corpus test":
 		return e.corpusTest(*cfgPath, *corpusDir)
 	}
-	log := mask.JSONLogger(e.stderr, nil)
+	log := mask.JSONLogger(e.stderr, level)
 	ctx, stop := e.signals()
 	defer stop()
 	switch cmd {
@@ -285,6 +292,21 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 		positional = append(positional, args[0])
 		args = args[1:]
 	}
+}
+
+// parseLogLevel reads --log-level ("" is info).
+func parseLogLevel(s string) (slog.Level, error) {
+	switch s {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("invalid --log-level or GROUPWARDEN_LOG_LEVEL %q: use debug, info, warn or error", s)
 }
 
 func deviceOf(path string) (uint64, error) {
