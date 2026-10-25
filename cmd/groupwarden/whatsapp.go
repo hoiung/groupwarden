@@ -53,7 +53,9 @@ func (e *env) withWhatsApp(ctx context.Context, command string, cfg *config.Conf
 		return exitFail
 	}
 	defer a.Close()
-	w := &whatsApp{adapter: a, store: st, inbox: pipeline.NewInbox(st), alerter: alerter, log: log}
+	inbox := pipeline.NewInbox(st)
+	inbox.Log = log
+	w := &whatsApp{adapter: a, store: st, inbox: inbox, alerter: alerter, log: log}
 	if err := fn(ctx, w); err != nil {
 		var fe *app.FatalError
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
