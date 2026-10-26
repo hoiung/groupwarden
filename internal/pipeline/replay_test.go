@@ -7,6 +7,7 @@ import (
 
 	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/modtest"
+	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
 )
 
@@ -45,5 +46,42 @@ func TestTooOldSpamReportedOnly(t *testing.T) {
 	k.Fire()
 	if k.Fake.Count("Revoke "+string(modtest.G1)+" "+string(modtest.Spammer)+" NEW1") != 1 || !k.Banned(modtest.SpammerM, "") {
 		t.Fatalf("calls %v", k.Fake.Calls())
+	}
+}
+
+// TestKeywordOnlyPostCounted: a post with a keyword that no rule acts on is
+// left alone and counted for the daily summary, per community and word
+// list; a post in a group that is not moderated is not counted.
+func TestKeywordOnlyPostCounted(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Deliver(k.Msg("KW1", modtest.G1, modtest.Member, "anyone know a good bitcoin wallet?"))
+	k.Deliver(k.Msg("KW2", modtest.G2, modtest.Member, "crypto talk on Sunday"))
+	k.Deliver(k.Msg("KW3", modtest.GB, modtest.Member, "bitcoin is up"))
+	k.Deliver(k.Msg("KW4", "99999000000333@g.us", modtest.Member, "bitcoin bitcoin"))
+	k.Fire()
+	if n := len(k.Fake.Calls()); n != 0 {
+		t.Fatalf("a keyword-only post acted: %v", k.Fake.Calls())
+	}
+	counters, err := k.Store.Counters(k.Ctx, k.Clock.Now().UTC().Format("2006-01-02"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{
+		pipeline.CounterKeywordOnly + string(modtest.Community) + "|crypto": 2,
+		pipeline.CounterKeywordOnly + modtest.SetB + "|crypto":              1,
+	}
+	got := map[string]int{}
+	for name, n := range counters {
+		if strings.HasPrefix(name, pipeline.CounterKeywordOnly) {
+			got[name] = n
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("keyword-only counters %v, want %v", got, want)
+	}
+	for name, n := range want {
+		if got[name] != n {
+			t.Errorf("%s = %d, want %d", name, got[name], n)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -851,5 +852,61 @@ func TestLogRuleCombinations(t *testing.T) {
 		if d := rs.Decide(Input{Community: communityA, Fields: body(text)}); (d.Rule == "nested") != want {
 			t.Errorf("nested %q: decision %+v, want a match %v", text, d, want)
 		}
+	}
+}
+
+// TestCompileRefuses: each malformed setting or rule is refused with a
+// message naming it, at its path in the config.
+func TestCompileRefuses(t *testing.T) {
+	pair := Node{Words: Names{"crypto", "stocks"}} // two ways to match
+	var wide []Node
+	for i := 0; i < 11; i++ { // 2^11 ways, over the limit
+		wide = append(wide, pair)
+	}
+	rule := func(action Action, when Node) func(*Spec) {
+		return func(s *Spec) { s.Rules = []RuleSpec{{Name: "x", Action: action, Confirmed: true, When: when}} }
+	}
+	for _, c := range []struct {
+		name string
+		edit func(*Spec)
+		want string
+		path []string
+	}{
+		{"allowed domain", func(s *Spec) { s.AllowedDomains = []string{"example.com", "not a domain"} },
+			`allowed_domains: "not a domain" is not a domain name like "example.com"`, []string{"allowed_domains", "1"}},
+		{"leet list", func(s *Spec) { s.LeetWordLists = []string{"crypto", "nope"} },
+			`leet_word_lists: "nope" is not a word list`, []string{"leet_word_lists", "1"}},
+		{"action", rule("shout", Node{Words: Names{"crypto"}}), `rule "x": action must be log or delete_remove_ban`, nil},
+		{"two kinds in one condition", rule(Log, Node{Words: Names{"crypto"}, Has: Names{AnyLink}}),
+			`rule "x": each condition must be exactly one of all, any, words or has`, nil},
+		{"no kind", rule(Log, Node{}), `rule "x": each condition must be exactly one of all, any, words or has`, nil},
+		{"empty all", rule(Log, Node{All: []Node{}}), `rule "x": all needs at least one condition`, nil},
+		{"empty any", rule(Log, Node{Any: []Node{}}), `rule "x": any needs at least one condition`, nil},
+		{"empty words", rule(Log, Node{Words: Names{}}), `rule "x": words and has need at least one name`, nil},
+		{"unknown list", rule(Log, Node{Words: Names{"nope"}}), `rule "x": "nope" is not a word list`, nil},
+		{"unknown condition", rule(Log, Node{Has: Names{"magic"}}), `rule "x": "magic" is not a built-in condition`, nil},
+		{"too many ways", rule(DeleteRemoveBan, Node{All: append(wide, Node{Has: Names{AnyLink}})}),
+			`rule "x" has more than 1024 ways to match; split it into smaller rules`, nil},
+	} {
+		s := testSpec()
+		c.edit(&s)
+		_, err := Compile(s)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v; want %q", c.name, err, c.want)
+			continue
+		}
+		if c.path == nil {
+			continue
+		}
+		var es Errors
+		if !errors.As(err, &es) || !slices.Equal(es[0].Path, c.path) {
+			t.Errorf("%s: path %v; want %v", c.name, es, c.path)
+		}
+	}
+	// Ten such pairs (1,024 ways) are still accepted.
+	s := testSpec()
+	rule(DeleteRemoveBan, Node{All: append(wide[:10:10], Node{Has: Names{AnyLink}})})(&s)
+	if _, err := Compile(s); err != nil {
+		t.Fatalf("1,024 ways: %v", err)
 	}
 }
