@@ -1379,6 +1379,29 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("bans %+v, want the number's ban resolved on their LID", bans)
 		}
 	})
+	// /ban <number> for a number the ban command already banned (keyed by the
+	// number) adds no second ban, but resolves that one on the LID WhatsApp
+	// gives, so a post they send under their LID alone before the sweep is
+	// deleted.
+	t.Run("already-banned-by-cli-resolved", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		recentJoiner(h)
+		h.cliBan()
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if reply := h.lastReply(); !strings.Contains(reply, "already banned everywhere") {
+			t.Fatalf("reply %q, want the already-banned reply", reply)
+		}
+		if bans := h.bans(); len(bans) != 1 || bans[0].Member != string(modtest.Spammer) ||
+			bans[0].Phone != string(modtest.SpammerPhone) {
+			t.Fatalf("bans %+v, want the one ban resolved on their LID", bans)
+		}
+		h.post("P2", modtest.G1, modtest.Spammer, "")
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, rows %v, want P2 deleted", h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
+		}
+	})
 	// When WhatsApp has no LID for the number, or cannot be asked, the ban
 	// goes ahead by the number alone: the first is an Info line, the second
 	// a Warn.
@@ -1430,6 +1453,11 @@ func TestBanRecentJoiner(t *testing.T) {
 			h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
 			if held, err := h.k.Store.HeldBan(h.k.Ctx, []string{string(modtest.Spammer)}, ""); err != nil || !held {
 				t.Fatalf("held %v (%v) after /ban <number>, want the held ban kept", held, err)
+			}
+			// The record of S1 gives their LID, so the number's ban is resolved
+			// on it at once; the held ban is kept all the same.
+			if bans := h.bans(); len(bans) != 1 || bans[0].Member != string(modtest.Spammer) {
+				t.Fatalf("bans %+v, want the number's ban resolved on their LID", bans)
 			}
 			if err := h.k.Store.ClearPause(h.k.Ctx, tc.source); err != nil {
 				t.Fatal(err)
