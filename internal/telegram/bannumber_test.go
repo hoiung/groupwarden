@@ -656,6 +656,63 @@ func TestBanDeletesPosts(t *testing.T) {
 			}
 		}
 	})
+	// A banned member's later post that a log rule or a watch-only rule
+	// matches is reported as before and deleted too.
+	t.Run("post-after-ban-rule-match-deleted", func(t *testing.T) {
+		cfg := strings.Replace(modtest.Config, "communities:\n",
+			"    - name: note\n      action: log\n      when:\n        words: crypto\ncommunities:\n", 1)
+		if cfg == modtest.Config {
+			t.Fatal("the kit config has no communities key")
+		}
+		h := newHarnessKit(t, modtest.NewConfig(t, cfg))
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		for id, text := range map[string]string{"L1": "crypto news today", "W1": "crypto: inbox me"} {
+			m := h.k.Msg(id, modtest.G1, modtest.Spammer, text)
+			m.SenderAlt = modtest.SpammerPhone
+			h.k.Deliver(m)
+		}
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "L1") || !h.revoked(modtest.G1, "W1") {
+			t.Fatalf("calls %v, want the log-rule match L1 and the watch-only match W1 deleted", h.k.Fake.Calls())
+		}
+		shadow := false
+		for _, r := range h.k.Rows(modtest.SpammerM) {
+			shadow = shadow || r.Action == store.ActRevoke && r.MsgID == "W1" && r.Mode == store.ModeShadow
+		}
+		if !shadow {
+			t.Fatalf("rows %v, want the watch-only match's own shadow row kept", rowsOf(h, modtest.SpammerM))
+		}
+	})
+	// Under a pause that holds removals and bans, a spam post's ban is held;
+	// the member's next post is still deleted, as the executor counts a held
+	// ban for deletes.
+	t.Run("post-after-held-ban-deleted", func(t *testing.T) {
+		h := newHarness(t, "")
+		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
+			Reason: "too many removals", Since: h.k.Clock.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Deliver(h.k.Spam("S1", modtest.G1))
+		h.post("P2", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Fire()
+		if h.k.Banned(modtest.SpammerM, "") || !h.revoked(modtest.G1, "S1") || !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, want the ban held and S1 and P2 deleted", h.k.Fake.Calls())
+		}
+	})
+	// The paused reply says the same about a community in shadow mode.
+	t.Run("shadow-community-paused-reply", func(t *testing.T) {
+		cfg := strings.Replace(modtest.Config, "    name: set b\n", "    name: set b\n    mode: shadow\n", 1)
+		h := newHarnessKit(t, modtest.NewConfig(t, cfg))
+		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
+			Reason: "too many removals", Since: h.k.Clock.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if got := h.lastReply(); !strings.Contains(got, "removing them waits for the pause to end, except in a community "+
+			"in shadow mode, where the sweep only reports them. To undo") {
+			t.Fatalf("reply %q", got)
+		}
+	})
 	// A post by a banned member who is a current admin is left alone, as
 	// every action against an admin is.
 	t.Run("post-by-banned-admin-kept", func(t *testing.T) {
