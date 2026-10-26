@@ -499,6 +499,41 @@ func TestMemberForgetKeepsActiveBan(t *testing.T) {
 	}
 }
 
+// TestMemberForgetByPhoneFindsLIDRecords: `member forget <phone>` reaches the
+// records the bot keeps under the person's LID alone (someone who joined
+// since the group list was last read), through the record of a post that
+// paired the two, with no WhatsApp session store to ask.
+func TestMemberForgetByPhoneFindsLIDRecords(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	seenPost(t, st, "k1", "M1", spammerLID, spammerPhone)
+	if err := st.Write(ctx, func(tx *sql.Tx) error {
+		_, err := ledger.Write(ctx, tx, ledger.Plan{Trigger: "M2", Target: client.Member{LID: spammerLID}, ConfigHash: "h",
+			Evidence: &store.Evidence{Chat: cmdGroup, Community: cmdCommunity, Sender: spammerLID, MsgID: "M2",
+				TargetID: "M2", MsgTime: time.Now(), Fields: `[]`, Normalised: `[]`},
+			Intents: []ledger.Intent{{Action: store.ActRevoke, Chat: cmdGroup, Community: cmdCommunity}}}, time.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.sub("member", "forget", spammerPhone); code != 0 {
+		t.Fatalf("exit %d: %s", code, te.errb)
+	}
+	// A shadow row: one still queued in the outbox is kept until it is sent.
+	if rows, err := st.LedgerForTargets(ctx, []string{spammerLID}); err != nil || len(rows) != 0 {
+		t.Fatalf("%d action-log rows under the LID left (%v)", len(rows), err)
+	}
+	if evs, err := st.EvidenceFor(ctx, []string{spammerLID}); err != nil || len(evs) != 0 {
+		t.Fatalf("%d evidence rows under the LID left (%v)", len(evs), err)
+	}
+}
+
 // TestMemberForgetClearsInboxAndWhatsmeowRows: forgetting also deletes the
 // person's queued messages and their WhatsApp contact and LID rows, and
 // nobody else's.
