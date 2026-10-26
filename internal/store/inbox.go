@@ -142,10 +142,11 @@ type Post struct {
 // senders (matched on either address the post's row keeps) in any of chats
 // that no enforced delete is queued for, was sent for or was given up on
 // (whichever address that delete's row names), oldest first. A delete
-// WhatsApp refused (it answered with an error, or said the bot is not an
-// admin there) or one too old to send is never tried again; one the executor
-// dropped before sending it (an unban got there first, the member was an
-// admin then, the rule no longer counts it) is planned again.
+// WhatsApp refused (the executor gave up after maxAttempts errors, or
+// WhatsApp said the bot is not an admin there) or one too old to send is
+// never tried again; one the executor dropped before WhatsApp refused it (an
+// unban got there first, the member was an admin then, the rules no longer
+// match), even after an error or a rate limit, is planned again.
 // Post.Sender is the address the group knew the author by. Rows with no
 // sender (written before store migration 12, or not a post of their own) are
 // never listed.
@@ -155,8 +156,9 @@ WHERE s.sender != '' AND (s.sender IN (SELECT value FROM json_each(?1)) OR s.sen
 	AND s.chat IN (SELECT value FROM json_each(?2))
 	AND s.msg_id != '' AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.action = 'revoke' AND l.chat = s.chat
 		AND l.msg_id = s.msg_id AND l.mode = 'enforce' AND (l.status IN ('intended', 'requested')
-			OR (l.status = 'failed' AND (l.attempts > 0 OR instr(l.reason, ?3) = 1 OR instr(l.reason, ?4) = 1))))
-ORDER BY s.server_time, s.chat, s.msg_id`, jsonList(nonEmpty(senders)), jsonList(chats), ReasonTooOld, ReasonNotAdmin)
+			OR (l.status = 'failed' AND (instr(l.reason, ?3) = 1 OR instr(l.reason, ?4) = 1 OR instr(l.reason, ?5) = 1))))
+ORDER BY s.server_time, s.chat, s.msg_id`, jsonList(nonEmpty(senders)), jsonList(chats), ReasonTooOld, ReasonNotAdmin,
+		ReasonGaveUp)
 	return scanPosts(rows, err)
 }
 

@@ -75,12 +75,13 @@ type LedgerRow struct {
 }
 
 // The reasons that start a failed delete a later ban never plans again
-// (PostsBy), with one WhatsApp answered with an error (attempts counted): the
-// message was too old for an admin delete, or WhatsApp said the bot is not an
-// admin there.
+// (PostsBy): the message was too old for an admin delete, WhatsApp said the
+// bot is not an admin there, or the executor gave up after maxAttempts
+// errors. Every other failed delete was dropped before WhatsApp refused it.
 const (
 	ReasonTooOld   = "the message is older than act_on_replay_max_age"
 	ReasonNotAdmin = "the bot is not an admin in this group: "
+	ReasonGaveUp   = "gave up after repeated errors: "
 )
 
 // Key is the row's unique key. A delete's names its message too: one ban

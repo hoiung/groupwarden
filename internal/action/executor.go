@@ -658,7 +658,7 @@ func (x *Executor) failed(ctx context.Context, row store.LedgerRow, err error) e
 	case row.Attempts+1 >= maxAttempts:
 		x.Log.Error("action failed", "action", string(row.Action), "chat", mask.IDs(row.Chat), "err", msg)
 		_, err := x.settle(ctx, row, func(tx *sql.Tx, now time.Time) (bool, error) {
-			return store.FinishIn(ctx, tx, row.ID, store.Failed, msg, 0, time.Time{}, now)
+			return store.FinishIn(ctx, tx, row.ID, store.Failed, store.ReasonGaveUp+msg, 0, time.Time{}, now)
 		}, x.notDone(row, fmt.Sprintf("it failed %d times (%s)", maxAttempts, msg)))
 		return err
 	}
