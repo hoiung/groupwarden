@@ -133,8 +133,97 @@ type Banned struct {
 	Shadow           bool // the community is in shadow mode: recorded only
 	// Paused is the pause in force when the ban was written ("": none): the
 	// ban applies at once, but the removals (and, under store.ScopeAll, the
-	// delete) wait for it to end.
+	// deletes) wait for it to end.
 	Paused store.Scope
+	// Posts is what the ban did about the member's other posts.
+	Posts Posts
+}
+
+// Posts counts what a ban did about the banned member's posts the bot still
+// has a record of (postDeletes).
+type Posts struct {
+	Deleting int // deletes queued (a full pause holds them until it ends)
+	Refused  int // older than act_on_replay_max_age: recorded failed, never sent
+	Shadow   int // in a community in shadow mode, or the ban is not enforced: recorded only
+	Spared   int // in a community where the member is a current admin: left alone
+}
+
+// postsTooOld is why a post older than act_on_replay_max_age is not deleted.
+func postsTooOld(maxAge time.Duration) string {
+	return "the message is older than act_on_replay_max_age (" + maxAge.String() + ")"
+}
+
+// postDeletes plans the delete of every post of m the bot still has a record
+// of (store.PostsBy) in the groups the ban scopes reach (each scope's
+// community, or every configured one for store.BanEverywhere), except the
+// post skipMsg in skipChat (a reported post, deleted on its own). A post
+// older than act_on_replay_max_age is recorded failed and never sent; one in
+// a community in shadow mode, or for a ban that is not enforced, is recorded
+// only; one in a community where m is a current admin is left alone (the
+// executor would refuse each delete with a report of its own). It reads
+// through tx, so a delete queued meanwhile is never planned twice.
+func (a *Admin) postDeletes(ctx context.Context, tx *sql.Tx, m client.Member, scopes []string, enforce bool,
+	skipChat client.JID, skipMsg string) ([]ledger.Intent, Posts, error) {
+	var n Posts
+	cur := a.Config.Current()
+	rs := cur.Rules
+	var communities []string
+	for _, s := range scopes {
+		if s == store.BanEverywhere {
+			communities = rs.Communities()
+			break
+		}
+		if _, ok := rs.ModeFor(s); ok && !slices.Contains(communities, s) {
+			communities = append(communities, s)
+		}
+	}
+	communityOf := map[string]string{}
+	var chats []string
+	for _, c := range communities {
+		for _, g := range a.Directory.Groups(c, rs) {
+			communityOf[string(g)] = c
+			chats = append(chats, string(g))
+		}
+	}
+	if len(chats) == 0 || len(m.IDs()) == 0 {
+		return nil, n, nil
+	}
+	posts, err := store.PostsBy(ctx, tx, m.IDs(), chats)
+	if err != nil {
+		return nil, n, err
+	}
+	maxAge := time.Duration(cur.Config.ActOnReplayMaxAge)
+	now := a.Store.Now()
+	admin := map[string]bool{}
+	var out []ledger.Intent
+	for _, p := range posts {
+		if client.JID(p.Chat) == skipChat && p.MsgID == skipMsg {
+			continue
+		}
+		c := communityOf[p.Chat]
+		isAdmin, known := admin[c]
+		if !known {
+			isAdmin = a.Directory.IsAdmin(m.LID, m.Phone, c, rs)
+			admin[c] = isAdmin
+		}
+		if isAdmin {
+			n.Spared++
+			continue
+		}
+		in := ledger.Intent{Action: store.ActRevoke, Chat: client.JID(p.Chat), Community: c, Enforce: enforce && enforced(rs, c),
+			Address: client.JID(p.Sender), MsgID: p.MsgID, MsgTime: p.ServerTime}
+		switch {
+		case !in.Enforce:
+			n.Shadow++
+		case now.Sub(p.ServerTime) > maxAge:
+			in.Refused = postsTooOld(maxAge)
+			n.Refused++
+		default:
+			n.Deleting++
+		}
+		out = append(out, in)
+	}
+	return out, n, nil
 }
 
 // Ban acts on a watch-only ("would have acted") report: it deletes the
@@ -172,7 +261,7 @@ func (a *Admin) Ban(ctx context.Context, reportID int64, actor string) (Banned, 
 			Address: client.JID(ev.Sender), MsgID: ev.TargetID, MsgTime: sent}
 	}
 	out, err := a.banPlan(ctx, ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonBan), Target: m, Rule: ev.Rule,
-		Reason: "banned in the admin chat by " + actor}, r.Community, client.JID(ev.Chat), del, actor)
+		Reason: "banned in the admin chat by " + actor}, r.Community, client.JID(ev.Chat), del, ev.TargetID, actor)
 	out.TooOld = tooOld
 	return out, err
 }
@@ -193,13 +282,15 @@ func (a *Admin) AddToBanList(ctx context.Context, reportID int64, actor string) 
 		return Banned{}, err
 	}
 	return a.banPlan(ctx, ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonAddToBanList), Target: m,
-		Reason: "added to the ban list in the admin chat by " + actor}, r.Community, "", nil, actor)
+		Reason: "added to the ban list in the admin chat by " + actor}, r.Community, "", nil, "", actor)
 }
 
 // banPlan completes p with the removals and the ban for community (plus the
-// delete, when given) and writes it.
+// delete of the reported post reported in inChat, when given) and the
+// deletes of the member's other posts the bot still has a record of, and
+// writes it.
 func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, inChat client.JID, del *ledger.Intent,
-	actor string) (Banned, error) {
+	reported, actor string) (Banned, error) {
 	cur := a.Config.Current()
 	rs := cur.Rules
 	mode, configured := rs.ModeFor(community)
@@ -214,16 +305,23 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 	}
 	if del != nil {
 		del.Enforce = enforce
-		p.Intents = append(p.Intents, *del)
 	}
-	p.Intents = append(p.Intents, removals...)
 	p.ConfigHash, p.Actor = cur.Hash, client.JID(actor)
 	p.Ban, p.BanEnforce, p.BanCommunity = BanScopes(rs, community), enforce, community
 	var w ledger.Written
 	var paused store.Scope
+	var posts Posts
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
-		var err error
 		paused = pausedScope(ctx, tx, a.Store)
+		deletes, n, err := a.postDeletes(ctx, tx, p.Target, p.Ban, enforce, inChat, reported)
+		if err != nil {
+			return err
+		}
+		posts, p.Intents = n, nil
+		if del != nil {
+			p.Intents = append(p.Intents, *del)
+		}
+		p.Intents = append(append(p.Intents, deletes...), removals...)
 		w, err = ledger.Write(ctx, tx, p, a.Store.Now())
 		return err
 	}); err != nil {
@@ -233,9 +331,128 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 		a.Enforcer.wake()
 	}
 	a.Log.Info("admin ban", "trigger", p.Trigger, "target", mask.IDs(p.Target.Key()), "delete", del != nil,
-		"removals", len(removals), "queued", w.Queued, "enforce", enforce, "by", actor)
+		"removals", len(removals), "posts_deleting", posts.Deleting, "posts_refused", posts.Refused,
+		"posts_shadow", posts.Shadow, "posts_spared", posts.Spared, "queued", w.Queued, "enforce", enforce, "by", actor)
 	return Banned{Member: p.Target, Deleting: del != nil && enforce, Removals: len(removals), Shadow: !enforce,
-		Paused: paused}, nil
+		Paused: paused, Posts: posts}, nil
+}
+
+// NumberBanned is what /ban <number> did.
+type NumberBanned struct {
+	// Member is the number, with the LID the directory knows for it.
+	Member client.Member
+	// Already: the number is banned already, so nothing changed. Self: it is
+	// the bot's own number. PerCommunity: bans.scope is per_community, so a
+	// ban needs its community (`groupwarden ban add --community`). Neither
+	// of those two changes anything either.
+	Already, Self, PerCommunity bool
+	Posts                       Posts
+	// Paused is the pause in force when the ban was written ("": none).
+	Paused store.Scope
+}
+
+// BanNumber is /ban <number>: it bans a phone number in the admin chat,
+// stored as `groupwarden ban add <phone>` stores it (keyed by the phone JID
+// until the sweep resolves its LID, in the scope bans.scope gives, with
+// every action in enforce), its ledger rows triggered store.AdminBanTrigger
+// and naming the admin, and deletes the number's posts the bot still has a
+// record of. Removing them from the groups is the sweep's, which the caller
+// asks for. A number already banned changes nothing.
+func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (NumberBanned, error) {
+	cur := a.Config.Current()
+	target := client.Member{Phone: phone}
+	m := a.Directory.Complete(target)
+	out := NumberBanned{Member: m}
+	switch {
+	case a.Directory.IsSelf(phone):
+		return NumberBanned{Member: m, Self: true}, nil
+	case cur.Rules.BanScope() == rules.PerCommunity:
+		return NumberBanned{Member: m, PerCommunity: true}, nil
+	}
+	now := a.Store.Now()
+	p := ledger.Plan{Trigger: store.AdminBanTrigger + strconv.FormatInt(now.UnixMilli(), 10), Target: target,
+		ConfigHash: cur.Hash, Actor: client.JID(actor), Reason: "banned in the admin chat by " + actor,
+		Ban: []string{store.BanEverywhere}, BanEnforce: true, BanCommunity: store.BanEverywhere}
+	var w ledger.Written
+	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
+		// Only a ban everywhere is the one this would add; a community's own
+		// ban (from a per_community config before) does not stop it.
+		bans, err := store.BansForIn(ctx, tx, m.IDs())
+		if err != nil {
+			return err
+		}
+		if out.Already = slices.ContainsFunc(bans, func(b store.Ban) bool { return b.Scope == store.BanEverywhere }); out.Already {
+			return nil
+		}
+		out.Paused = pausedScope(ctx, tx, a.Store)
+		if p.Intents, out.Posts, err = a.postDeletes(ctx, tx, m, p.Ban, true, "", ""); err != nil {
+			return err
+		}
+		w, err = ledger.Write(ctx, tx, p, now)
+		return err
+	}); err != nil {
+		return NumberBanned{}, err
+	}
+	if out.Already {
+		a.Log.Info("admin ban by number: already banned; nothing changed", "target", mask.IDs(m.Key()), "by", actor)
+		return out, nil
+	}
+	if w.Queued > 0 {
+		a.Enforcer.wake()
+	}
+	a.Log.Info("admin ban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "posts_deleting", out.Posts.Deleting,
+		"posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow, "posts_spared", out.Posts.Spared,
+		"queued", w.Queued, "by", actor)
+	return out, nil
+}
+
+// NumberUnbanned is what /unban <number> did.
+type NumberUnbanned struct {
+	// Member is the number, with the LID the directory and the ban list know.
+	Member client.Member
+	// Lifted counts the ban list entries lifted (a ban a pause holds is
+	// dropped too, and not counted); NotBanned: there was neither, so
+	// nothing changed.
+	Lifted    int
+	NotBanned bool
+}
+
+// UnbanNumber is /unban <number>: it lifts every ban of a phone number,
+// whether the ban is still keyed by the phone JID or already resolved to a
+// LID, and every ban a pause holds for it, with an unban row triggered
+// store.AdminUnbanTrigger and naming the admin. Nobody is added back to a
+// group: an admin re-invites them by hand.
+func (a *Admin) UnbanNumber(ctx context.Context, phone client.JID, actor string) (NumberUnbanned, error) {
+	m, err := a.member(ctx, string(phone))
+	if err != nil {
+		return NumberUnbanned{}, err
+	}
+	out := NumberUnbanned{Member: m}
+	now := a.Store.Now()
+	p := ledger.Plan{Trigger: store.AdminUnbanTrigger + strconv.FormatInt(now.UnixMilli(), 10), Target: m,
+		ConfigHash: a.Config.Current().Hash, Actor: client.JID(actor), Reason: "unbanned in the admin chat by " + actor,
+		Lift: true, BanCommunity: store.BanEverywhere}
+	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
+		bans, err := store.BansForIn(ctx, tx, m.IDs())
+		if err != nil {
+			return err
+		}
+		held, err := store.HeldBanIn(ctx, tx, m.IDs(), "")
+		if err != nil {
+			return err
+		}
+		out.Lifted, out.NotBanned = len(bans), len(bans) == 0 && !held
+		if out.NotBanned {
+			return nil
+		}
+		_, err = ledger.Write(ctx, tx, p, now)
+		return err
+	}); err != nil {
+		return NumberUnbanned{}, err
+	}
+	a.Log.Info("admin unban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "bans_lifted", out.Lifted,
+		"not_banned", out.NotBanned, "by", actor)
+	return out, nil
 }
 
 // report reads a report or says it is gone.

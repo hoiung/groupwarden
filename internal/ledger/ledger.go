@@ -60,12 +60,18 @@ type Intent struct {
 	// server time of the message an action targets (age re-check).
 	MsgID   string
 	MsgTime time.Time
+	// Refused, when set, is why the action cannot be done (a post older than
+	// act_on_replay_max_age): the row is written failed with it, recorded
+	// and never queued.
+	Refused string
 }
 
 // Plan is everything one decision writes, in one transaction.
 type Plan struct {
 	// Trigger identifies what caused it: a message ID, "join:<hash>",
-	// "sweep:<run>", "cli:<time>" or a report and button.
+	// "sweep:<run>", "cli:<time>", a report and button, or an admin-chat
+	// command naming a phone number (store.AdminBanTrigger,
+	// store.AdminUnbanTrigger).
 	Trigger    string
 	Target     client.Member
 	Rule       string
@@ -242,6 +248,9 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 	for _, in := range p.Intents {
 		r := row(in.Action, string(in.Chat), in.Community, in.Enforce)
 		r.Address, r.MsgID, r.MsgTime = string(in.Address), in.MsgID, in.MsgTime
+		if in.Refused != "" {
+			r.Status, r.Reason = store.Failed, in.Refused
+		}
 		if _, err := add(r); err != nil {
 			return w, err
 		}
