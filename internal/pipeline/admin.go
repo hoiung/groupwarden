@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -32,6 +33,13 @@ type Admin struct {
 	Enforcer  *Enforcer
 	Log       *slog.Logger
 }
+
+// errGroupsNotLoaded refuses a ban until the group list has loaded: one
+// planned before then finds no group to delete the member's posts in or to
+// check them as an admin of, and once they are banned no later ban plans
+// those deletes. The press (or command) can be tried again.
+var errGroupsNotLoaded = errors.New("the bot has not loaded its group list yet (it is still connecting to WhatsApp); " +
+	"try again in a minute")
 
 // adminTrigger is a press's ledger trigger.
 func adminTrigger(reportID int64, button string) string {
@@ -291,6 +299,9 @@ func (a *Admin) AddToBanList(ctx context.Context, reportID int64, actor string) 
 // writes it.
 func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, inChat client.JID, del *ledger.Intent,
 	reported, actor string) (Banned, error) {
+	if !a.Directory.IsLoaded() {
+		return Banned{}, errGroupsNotLoaded
+	}
 	cur := a.Config.Current()
 	rs := cur.Rules
 	mode, configured := rs.ModeFor(community)
@@ -360,6 +371,9 @@ type NumberBanned struct {
 // record of. Removing them from the groups is the sweep's, which the caller
 // asks for. A number already banned changes nothing.
 func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (NumberBanned, error) {
+	if !a.Directory.IsLoaded() {
+		return NumberBanned{}, errGroupsNotLoaded
+	}
 	cur := a.Config.Current()
 	target := client.Member{Phone: phone}
 	m := a.Directory.Complete(target)
