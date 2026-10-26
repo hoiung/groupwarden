@@ -51,7 +51,7 @@ The bot pins this list in the admin chat, and typing `/` there shows it:
 | `/ban` as a reply to a "would have acted" report | delete that post, remove and ban its sender |
 | `/unban <number>`, `/unban <report number>` | unban that phone number, or the person in that report, everywhere (nobody is added back to a group) |
 
-Every `/ban` (and [Ban], [Add to ban list]) sweeps at once, so the person is removed from every group the bot finds them in, and deletes their posts the bot still has a record of (the last 72 hours; one older than `act_on_replay_max_age` cannot be deleted, and the reply counts it). [docs/config.md](docs/config.md#banning-from-the-admin-chat) has the details, and who may use what.
+Every `/ban` (and [Ban] and [Add to ban list] in a community in enforce mode) sweeps at once, so the person is removed from every group the bot finds them in, and deletes their posts the bot still has a record of (the last 72 hours; one older than `act_on_replay_max_age` cannot be deleted, and the reply counts it). [docs/config.md](docs/config.md#banning-from-the-admin-chat) has the details, and who may use what.
 
 ## Run it
 
