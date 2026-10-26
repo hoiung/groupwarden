@@ -1,8 +1,8 @@
 // Package reconcile runs the periodic sweep over every configured community:
 // it finds where the bot stands in each group (joining linked groups by
-// itself where it can) and tells the admins what changed, then removes
-// banned members the bot finds in the groups it moderates, rejects their
-// join requests and resolves phone-only bans to LIDs, backing off when
+// itself where it can) and tells the admins what changed, resolves
+// phone-only bans to LIDs, then removes banned members the bot finds in the
+// groups it moderates and rejects their join requests, backing off when
 // WhatsApp says the bot is going too fast.
 package reconcile
 
@@ -73,12 +73,22 @@ func (s *Sweep) Run(ctx context.Context, runID string) (Result, error) {
 	}
 	// Bans still keyed by a phone number get their LID first, so a banned
 	// member the directory knows by LID only (they joined since the group list
-	// was last read) is found in this sweep, not the next one.
-	if err := s.call(ctx, &res, func() error { return s.Enforcer.ResolveBans(ctx) }); err != nil {
-		if ctx.Err() != nil {
+	// was last read) is found in this sweep, not the next one. A rate limit
+	// does not hold up the groups: the lookup is tried again after them,
+	// backing off there if WhatsApp still says so.
+	lookUpAgain := false
+	if err := s.Enforcer.ResolveBans(ctx); err != nil {
+		switch {
+		case ctx.Err() != nil:
 			return res, ctx.Err()
+		case errors.Is(err, client.ErrRateLimited):
+			res.RateLimited++
+			lookUpAgain = true
+			s.Log.Warn("sweep: ban LID lookup rate limited; checking the groups first, then looking up again")
+		default:
+			res.Errors++
+			s.Log.Error("sweep: ban LID lookup failed", "err", mask.IDs(err.Error()))
 		}
-		s.Log.Error("sweep: ban LID lookup failed", "err", mask.IDs(err.Error()))
 	}
 	rs := s.Config.Current().Rules
 	for _, g := range s.Directory.Moderated(rs) {
@@ -104,6 +114,14 @@ func (s *Sweep) Run(ctx context.Context, runID string) (Result, error) {
 				continue
 			}
 			s.Log.Error("sweep: join-request check failed", "group", mask.IDs(string(g)), "err", mask.IDs(err.Error()))
+		}
+	}
+	if lookUpAgain {
+		if err := s.call(ctx, &res, func() error { return s.Enforcer.ResolveBans(ctx) }); err != nil {
+			if ctx.Err() != nil {
+				return res, ctx.Err()
+			}
+			s.Log.Error("sweep: ban LID lookup failed", "err", mask.IDs(err.Error()))
 		}
 	}
 	return res, ctx.Err()
