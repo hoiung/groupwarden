@@ -239,7 +239,9 @@ func seenOf(ev client.Event) store.Seen {
 	case *client.Message:
 		s := store.Seen{Chat: string(e.Chat), MsgID: e.ID, ServerTime: e.Time}
 		if e.ID == e.TargetID {
-			s.Sender = client.MemberOf(e.Sender, e.SenderAlt).Key()
+			// As the group addressed them (a delete names that address, as
+			// the moderator's does), and their other address to find it by.
+			s.Sender, s.SenderAlt = string(e.Sender), string(e.SenderAlt)
 		}
 		return s
 	case *client.Undecryptable:
