@@ -152,8 +152,9 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 // in enforce mode, unless a rule's own plan already deletes it: a post sent
 // after the ban and before the sweep removes them, or after they rejoined and
 // before their removal, whether or not a log rule or a watch-only rule matched
-// it. A ban a pause holds counts too, as it does for the executor's deletes.
-// The removal is the sweep's or the join's. No report: the admins were told
+// it. A ban a pause holds does not count until it is applied: the pause may
+// be the breaker's, held because a rule may be misfiring, and the ban may
+// still fail. The removal is the sweep's or the join's. No report: the admins were told
 // of the ban or the rejoin; the ledger row and a log line record the delete.
 func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Message, item Item, community string,
 	cur *config.Loaded) error {
@@ -164,11 +165,7 @@ func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Messa
 	if member.Key() == "" {
 		return nil
 	}
-	_, banned, err := store.FindBan(ctx, tx, member.IDs(), community)
-	if err == nil && !banned {
-		banned, err = store.HeldBanIn(ctx, tx, member.IDs(), community)
-	}
-	if err != nil || !banned {
+	if _, banned, err := store.FindBan(ctx, tx, member.IDs(), community); err != nil || !banned {
 		return err
 	}
 	if m.Directory.IsAdmin(member.LID, member.Phone, community, cur.Rules) {
