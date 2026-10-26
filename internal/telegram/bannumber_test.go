@@ -933,6 +933,32 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("calls %v: the ban applied after the pause ended, though they were unbanned", h.k.Fake.Calls())
 		}
 	})
+	// /ban <number> then /unban <number> in the same pause: the ban by number
+	// and the held ban by LID are one ban, lifted and counted once.
+	t.Run("ban-then-unban-in-pause-counts-once", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceAdmin, Scope: store.ScopeAll, Reason: "paused",
+			Since: h.k.Clock.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Deliver(h.k.Spam("S1", modtest.G1))
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		if reply := h.lastReply(); !strings.Contains(reply, "is unbanned everywhere (1 ban(s) lifted)") {
+			t.Fatalf("reply %q, want one ban lifted", reply)
+		}
+		if held, err := h.k.Store.HeldBan(h.k.Ctx, []string{string(modtest.Spammer)}, ""); err != nil || held {
+			t.Fatalf("held %v (%v) after /unban, want none", held, err)
+		}
+		if err := h.k.Store.ClearPause(h.k.Ctx, store.SourceAdmin); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Fire()
+		if h.k.Banned(modtest.SpammerM, "") || h.k.Fake.Count("Remove "+string(modtest.G1)+" "+string(modtest.Spammer)) != 0 {
+			t.Fatalf("calls %v: banned or removed after /unban", h.k.Fake.Calls())
+		}
+	})
 	// /ban <number> while a pause holds their ban leaves that held ban to
 	// apply: the number's ban puts no LID on the ban list, so settling the
 	// held ban would leave their queued delete and removal "not banned".
