@@ -191,6 +191,17 @@ func TestBanByNumber(t *testing.T) {
 			t.Fatalf("reply %q, bans %+v", got, h.bans())
 		}
 	})
+	// A current admin's number is refused, as [Ban] refuses one: an admin
+	// must decide.
+	t.Run("current-admin", func(t *testing.T) {
+		h := newHarness(t, "")
+		admin := "+" + strings.TrimSuffix(string(modtest.AdminPhone), "@s.whatsapp.net")
+		h.command(telegramtest.ChatID, adminUser, "/ban "+admin, 0)
+		if got := h.lastReply(); !strings.HasPrefix(got, "Not banned: phone…0456 is a current admin") ||
+			len(h.bans()) != 0 || h.ledgerRows() != 0 {
+			t.Fatalf("reply %q, bans %+v, %d ledger rows", got, h.bans(), h.ledgerRows())
+		}
+	})
 }
 
 // TestUnbanByNumber (AC 5.2): /unban <number> lifts the bans of a phone
@@ -392,6 +403,47 @@ func TestBanDeletesPosts(t *testing.T) {
 		if !strings.Contains(h.lastReply(), "Their posts on record: 2 being deleted") || !h.revoked(modtest.G1, "P1") ||
 			!h.revoked(modtest.GB, "P3") {
 			t.Fatalf("reply %q, calls %v, want every community's", h.lastReply(), h.k.Fake.Calls())
+		}
+	})
+	// In a group that addresses members by phone number, the delete names
+	// the phone number, as the moderator's own delete of that post would.
+	t.Run("phone-addressed-group", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.SpammerPhone, modtest.Spammer)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.k.Fire()
+		if c := "Revoke " + string(modtest.G1) + " " + string(modtest.SpammerPhone) + " P1"; h.k.Fake.Count(c) != 1 ||
+			h.k.Fake.Count("Revoke") != 1 {
+			t.Fatalf("calls %v, want %q", h.k.Fake.Calls(), c)
+		}
+	})
+	// A post is found by either address its row keeps: here the group knew
+	// the author by a LID the ban does not name, with the banned number as
+	// their other address.
+	t.Run("found-by-other-address", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.Other1, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.k.Fire()
+		if c := "Revoke " + string(modtest.G1) + " " + string(modtest.Other1) + " P1"; h.k.Fake.Count(c) != 1 {
+			t.Fatalf("reply %q, calls %v, want %q", h.lastReply(), h.k.Fake.Calls(), c)
+		}
+	})
+	// A delete given up on (too old to send) is never tried again, even by a
+	// later ban after an /unban.
+	t.Run("refused-not-retried-after-unban", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("OLD", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Clock.Advance(47*time.Hour + time.Minute)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if got := h.lastReply(); !strings.Contains(got, "Their posts on record: 0 being deleted, 0 too old to delete.") {
+			t.Fatalf("reply %q", got)
+		}
+		h.k.Fire()
+		if rows := rowsOf(h, client.Member{Phone: modtest.SpammerPhone}); rows["revoke/failed"] != 1 || h.revoked(modtest.G1, "OLD") {
+			t.Fatalf("rows %v, calls %v, want the one failed delete and no send", rows, h.k.Fake.Calls())
 		}
 	})
 }
