@@ -361,7 +361,8 @@ type NumberBanned struct {
 	// Member is the number, with the LID the bot knows or found for it.
 	Member client.Member
 	// Already: the number is banned everywhere already, so no ban was added
-	// (its posts are still deleted and the caller still asks for a sweep).
+	// (its posts are still deleted, a ban of the number is still resolved on
+	// the LID known, and the caller still asks for a sweep).
 	// Self: it is the bot's own number. PerCommunity: bans.scope is
 	// per_community, so a ban needs its community (`groupwarden ban add
 	// --community`). Spared: it is a current admin of a community the bot
@@ -429,12 +430,14 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 		if p.Intents, out.Posts, err = a.postDeletes(ctx, tx, m, scopes, true, "", ""); err != nil {
 			return err
 		}
-		if w, err = ledger.Write(ctx, tx, p, now); err != nil || out.Already || m.LID == "" {
+		if w, err = ledger.Write(ctx, tx, p, now); err != nil || m.LID == "" {
 			return err
 		}
-		// Their LID is known, so the ban is resolved now, as the sweep would
-		// resolve it: a post they send under their LID alone before the sweep
-		// is then found as banned and deleted.
+		// Their LID is known, so a ban of the number (this one, or one already
+		// on the list, from the ban command) is resolved now, as the sweep
+		// would resolve it: a post they send under their LID alone before the
+		// sweep is then found as banned and deleted. A ban already resolved is
+		// left as it is.
 		return store.ResolveBanIn(ctx, tx, string(phone), string(m.LID))
 	}); err != nil {
 		return NumberBanned{}, err
@@ -443,7 +446,7 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 		a.Enforcer.wake()
 	}
 	a.Log.Info("admin ban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "already", out.Already,
-		"lid_resolved", !out.Already && m.LID != "", "posts_deleting", out.Posts.Deleting, "posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow,
+		"lid_known", m.LID != "", "posts_deleting", out.Posts.Deleting, "posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow,
 		"posts_spared", out.Posts.Spared, "queued", w.Queued, "by", actor)
 	return out, nil
 }
