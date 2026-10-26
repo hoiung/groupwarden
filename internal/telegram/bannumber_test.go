@@ -658,31 +658,40 @@ func TestBanDeletesPosts(t *testing.T) {
 	})
 	// A banned member's later post that a log rule or a watch-only rule
 	// matches is reported as before and deleted too.
-	t.Run("post-after-ban-rule-match-deleted", func(t *testing.T) {
-		cfg := strings.Replace(modtest.Config, "communities:\n",
-			"    - name: note\n      action: log\n      when:\n        words: crypto\ncommunities:\n", 1)
-		if cfg == modtest.Config {
-			t.Fatal("the kit config has no communities key")
-		}
-		h := newHarnessKit(t, modtest.NewConfig(t, cfg))
-		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
-		for id, text := range map[string]string{"L1": "crypto news today", "W1": "crypto: inbox me"} {
-			m := h.k.Msg(id, modtest.G1, modtest.Spammer, text)
-			m.SenderAlt = modtest.SpammerPhone
-			h.k.Deliver(m)
-		}
-		h.k.Fire()
-		if !h.revoked(modtest.G1, "L1") || !h.revoked(modtest.G1, "W1") {
-			t.Fatalf("calls %v, want the log-rule match L1 and the watch-only match W1 deleted", h.k.Fake.Calls())
-		}
-		shadow := false
-		for _, r := range h.k.Rows(modtest.SpammerM) {
-			shadow = shadow || r.Action == store.ActRevoke && r.MsgID == "W1" && r.Mode == store.ModeShadow
-		}
-		if !shadow {
-			t.Fatalf("rows %v, want the watch-only match's own shadow row kept", rowsOf(h, modtest.SpammerM))
-		}
-	})
+	// Both for a ban still keyed by the phone number and for one already
+	// resolved to the LID (whose delete names the same member as the
+	// watch-only match's shadow row).
+	for _, how := range []string{"by-number", "resolved"} {
+		t.Run("post-after-ban-rule-match-deleted/"+how, func(t *testing.T) {
+			cfg := strings.Replace(modtest.Config, "communities:\n",
+				"    - name: note\n      action: log\n      when:\n        words: crypto\ncommunities:\n", 1)
+			if cfg == modtest.Config {
+				t.Fatal("the kit config has no communities key")
+			}
+			h := newHarnessKit(t, modtest.NewConfig(t, cfg))
+			if how == "resolved" {
+				h.k.Ban(modtest.SpammerM)
+			} else {
+				h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+			}
+			for id, text := range map[string]string{"L1": "crypto news today", "W1": "crypto: inbox me"} {
+				m := h.k.Msg(id, modtest.G1, modtest.Spammer, text)
+				m.SenderAlt = modtest.SpammerPhone
+				h.k.Deliver(m)
+			}
+			h.k.Fire()
+			if !h.revoked(modtest.G1, "L1") || !h.revoked(modtest.G1, "W1") {
+				t.Fatalf("calls %v, want the log-rule match L1 and the watch-only match W1 deleted", h.k.Fake.Calls())
+			}
+			shadow := false
+			for _, r := range h.k.Rows(modtest.SpammerM) {
+				shadow = shadow || r.Action == store.ActRevoke && r.MsgID == "W1" && r.Mode == store.ModeShadow
+			}
+			if !shadow {
+				t.Fatalf("rows %v, want the watch-only match's own shadow row kept", rowsOf(h, modtest.SpammerM))
+			}
+		})
+	}
 	// Under a pause that holds removals and bans (the breaker's: a rule may be
 	// misfiring), a spam post's ban is held, not applied; the member's next
 	// post is kept, and applying the ban later does not delete it.
