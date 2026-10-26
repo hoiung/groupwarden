@@ -228,9 +228,8 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 	return exitOK
 }
 
-// banMember is m by every address the stores know (knownIDs) and the other
-// address the bot recorded beside the one given (store.OtherAddress), as
-// /unban <number> finds them.
+// banMember is m by every address the stores know (knownIDs), as /unban
+// <number> finds them.
 func (e *env) banMember(ctx context.Context, st *store.Store, cfg *config.Config, m client.Member) (client.Member, error) {
 	session, err := openSession(ctx, cfg, e.now)
 	if err != nil {
@@ -242,13 +241,6 @@ func (e *env) banMember(ctx context.Context, st *store.Store, cfg *config.Config
 	ids, err := knownIDs(ctx, st, session, m)
 	if err != nil {
 		return m, err
-	}
-	if (m.LID == "") != (m.Phone == "") {
-		other, err := st.OtherAddress(ctx, m.Key())
-		if err != nil {
-			return m, err
-		}
-		ids = append(ids, other)
 	}
 	sort.Strings(ids)
 	all := []client.JID{m.LID, m.Phone}
@@ -265,14 +257,26 @@ func dash(s string) string {
 	return s
 }
 
-// knownIDs gathers every address the stores know for m: the ban list and the
-// WhatsApp session store's LID-to-phone map.
+// knownIDs gathers every address the stores know for m: the other address
+// the bot recorded beside the one given (store.OtherAddress, as the bot's
+// own lookups do: someone who joined since the group list was last read is
+// known there by their LID alone), the ban list and the WhatsApp session
+// store's LID-to-phone map.
 func knownIDs(ctx context.Context, st *store.Store, session *store.Session, m client.Member) ([]string, error) {
 	ids := map[string]bool{}
 	for _, id := range m.IDs() {
 		ids[id] = true
 	}
-	bans, err := st.BansFor(ctx, m.IDs())
+	if (m.LID == "") != (m.Phone == "") {
+		other, err := st.OtherAddress(ctx, m.Key())
+		if err != nil {
+			return nil, err
+		}
+		if other != "" {
+			ids[other] = true
+		}
+	}
+	bans, err := st.BansFor(ctx, keys(ids))
 	if err != nil {
 		return nil, err
 	}
