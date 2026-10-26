@@ -553,7 +553,8 @@ func (x *Executor) banCommunities(ctx context.Context, row store.LedgerRow) (com
 // adminBanned reports whether row deletes a post whose author an admin
 // banned (from the admin chat or with the ban command) where the post is:
 // a ban list entry covering row's community whose ledger row an admin
-// ordered.
+// ordered. A ban whose ledger row is gone (purged past retention, or by
+// member forget) cannot show that, and counts as the bot's.
 func (x *Executor) adminBanned(ctx context.Context, row store.LedgerRow, member client.Member) (bool, error) {
 	if row.Action != store.ActRevoke {
 		return false, nil
@@ -567,6 +568,11 @@ func (x *Executor) adminBanned(ctx context.Context, row store.LedgerRow, member 
 			continue
 		}
 		r, err := x.Store.Ledger(ctx, b.LedgerID)
+		if errors.Is(err, sql.ErrNoRows) {
+			x.Log.Warn("a ban's ledger row is gone; not counted as an admin's ban", "ban", mask.IDs(b.Member),
+				"scope", mask.IDs(b.Scope), "ledger_id", b.LedgerID, "row", row.ID)
+			continue
+		}
 		if err != nil {
 			return false, err
 		}
