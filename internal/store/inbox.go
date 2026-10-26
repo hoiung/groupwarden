@@ -155,6 +155,21 @@ WHERE s.sender != '' AND (s.sender IN (SELECT value FROM json_each(?1)) OR s.sen
 		AND l.msg_id = s.msg_id AND l.mode = 'enforce' AND (l.status IN ('intended', 'requested')
 			OR (l.status = 'failed' AND instr(l.reason, ?3) != 1)))
 ORDER BY s.server_time, s.chat, s.msg_id`, jsonList(nonEmpty(senders)), jsonList(chats), ReasonNotBanned)
+	return scanPosts(rows, err)
+}
+
+// SeenBy lists every post of senders the seen table keeps (matched on either
+// address), oldest first, for `member show`.
+func (s *Store) SeenBy(ctx context.Context, senders []string) ([]Post, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT chat, msg_id, sender, server_time FROM seen
+WHERE sender != '' AND (sender IN (SELECT value FROM json_each(?1)) OR sender_alt IN (SELECT value FROM json_each(?1)))
+ORDER BY server_time, chat, msg_id`, jsonList(nonEmpty(senders)))
+	return scanPosts(rows, err)
+}
+
+// scanPosts reads the rows of a seen query that selects chat, msg_id, sender
+// and server_time.
+func scanPosts(rows *sql.Rows, err error) ([]Post, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read seen: %w", err)
 	}
