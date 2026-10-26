@@ -1162,6 +1162,29 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("calls %v, want P1 deleted", h.k.Fake.Calls())
 		}
 	})
+	// When WhatsApp has no LID for the number, or cannot be asked, the ban
+	// goes ahead by the number alone: the first is an Info line, the second
+	// a Warn.
+	for name, c := range map[string]struct {
+		fail  error
+		level string
+	}{"no-lid": {level: "INFO"}, "lookup-failed": {fail: errors.New("synthetic transport error"), level: "WARN"}} {
+		t.Run("ban-number-lookup-"+name, func(t *testing.T) {
+			h := newHarness(t, "")
+			recentJoiner(h)
+			if c.fail != nil {
+				h.k.Fake.FailNext("ResolvePhoneToLID", c.fail)
+			}
+			h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+			if reply := h.lastReply(); !strings.Contains(reply, "is banned everywhere") {
+				t.Fatalf("reply %q, want the number banned", reply)
+			}
+			lines := h.k.LogLines("admin command by number: no LID found for the number; using the number alone")
+			if len(lines) != 1 || !strings.Contains(lines[0], " level="+c.level+" ") {
+				t.Fatalf("log lines %q, want one at %s", lines, c.level)
+			}
+		})
+	}
 	// /ban <number> while a pause holds their ban leaves that held ban to
 	// apply: the number's ban puts no LID on the ban list, so settling the
 	// held ban would leave their queued delete and removal "not banned".
