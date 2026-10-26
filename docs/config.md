@@ -21,7 +21,7 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 | `secrets_file` | `cmd/groupwarden/storecmds.go` `check --secrets` (`config.ReadSecretsFile`); `cmd/groupwarden/whatsapp.go` `adminChatOptions` (`run` refuses to start without the admin chat's bot token and chat ID); `internal/configsync` `checkRelease` (must lie outside the config repo) |
 | `deploy_key_file` | `cmd/groupwarden/storecmds.go` `check --secrets`; `internal/configsync` `sshEnv` (the sync's `git pull`), `checkRelease` (must lie outside the config repo) |
 | `corpus_dir` | `internal/config/reload.go` `checkCorpus`. A relative path is read from the config file's directory, so `corpus_dir: corpus` in the private config repo moves with each synced copy |
-| `act_on_replay_max_age` | `internal/pipeline/worker.go` (replayed messages older than this are only reported); `internal/action/executor.go` `recheck` (a queued delete of an older message is dropped, and a priority report tells the admins to delete it by hand); `internal/pipeline/admin.go` `Ban` ([Ban] on a watch-only report deletes the message only while it is younger); an edit is aged by its original's server time in all three (`internal/pipeline/worker.go` `targetSent`) |
+| `act_on_replay_max_age` | `internal/pipeline/worker.go` (replayed messages older than this are only reported); `internal/action/executor.go` `recheck` (a queued delete of an older message is dropped, and a priority report tells the admins to delete it by hand); `internal/pipeline/admin.go` `Ban` ([Ban] on a watch-only report deletes the message only while it is younger); an edit is aged by its original's server time in all three (`internal/pipeline/worker.go` `targetSent`); `internal/pipeline/admin.go` `postDeletes` (every `/ban` deletes the member's other posts on record only while they are younger: an older one is recorded failed, counted in the reply and never sent) |
 | `deafness_alert_hours` | `internal/app/app.go` `SettingsFrom` → `monitor.go` |
 | `disconnect_alert_minutes` | `internal/app/app.go` `SettingsFrom` → `monitor.go` |
 | `config_sync_minutes` | `internal/app/app.go` `outsideTimers` / `watchedTimers` → `checkOverdue` (a priority alert when the sync has not run for twice this); `cmd/groupwarden/synccmd.go` `schedule` (`groupwarden schedule sync` prints the sync timer's `OnCalendar` value for the install script), `syncConfig` (the failure alert says when it tries again) |
@@ -31,13 +31,13 @@ On a node the config comes from the deployer's private config repo: `groupwarden
 | `retention.evidence_days`, `retention.action_log_months`, `retention.announcement_secret_days` | `internal/config/config.go` `checkRetention` (`announcement_secret_days` at least `evidence_days`; `action_log_months`, a month counted as 28 days, at least `evidence_days` plus `report.attachment_show_hours` and a day, so no report is purged while its text is still to be stripped or its attachment taken down), `RetentionFor`, `LongestRetention`; `internal/ledger/purge.go` `Purge` (evidence copies and files, action log, reports, message secrets once the group list has been read, so announcement groups are known); `internal/telegram/deliver.go` `stripDue` (the admin chat's reports lose the message text after `evidence_days`) |
 | `rate.per_minute`, `rate.burst` | `internal/action/executor.go` `takeToken` (the outbox token bucket) |
 | `breaker.max_actions`, `breaker.window_minutes` | `internal/action/executor.go` `breaker` |
-| `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check, the group-list refresh and the sweep: coverage and its reports, joining absent linked groups, banned members present, join requests, phone-only bans) |
+| `reconcile.interval_minutes` | `internal/app/app.go` `SettingsFrom` (linked-device check, the group-list refresh and the sweep: coverage and its reports, joining absent linked groups, banned members present, join requests, phone-only bans). Every ban from the admin chat (`/ban <number>`, `/ban` as a reply, [Ban], [Add to ban list]) asks for a sweep at once instead of waiting for the interval (`internal/app/controls.go` `BanNumber`, `sweepAfter`) |
 | `backup.target_dir` | `cmd/groupwarden/storecmds.go` `check --secrets` (must be on a different disk); `cmd/groupwarden/backupcmd.go` `backup` (the same check every night, then `internal/backup` `Run`); `groupwarden backup-dir` (the install script lets the backup unit write there) |
 | `backup.age_recipient` | `cmd/groupwarden/storecmds.go` `check --secrets` (parsed by `age`); `internal/backup` `Run` (each backup is encrypted to it) |
 | `backup.keep` | `internal/backup` `Run` → `prune` (keeps the newest this many backups; other files in the directory are never touched) |
 | `evidence.max_attachment_mb` | `internal/pipeline/moderator.go` `evidence` (an attachment that declares a size over it is recorded by type, name and size only); `internal/action/media.go` `fetchOne` (the download stops at it, whatever size the post declared, and a file over it is recorded the same way) |
 | `report.attachment_show_hours` | `internal/telegram/deliver.go` `takeDownDue` (an attachment posted to the admin chat is deleted after it), `takeDown` (the placeholder's text), `postAttachment` and `uploadFailed` (an attachment Telegram keeps refusing is given up after it, marked failed, and a reply under its report says so); `internal/telegram/updates.go` `show` (the reply says when the repost comes down, or why the attachment was not posted) |
-| `bans.scope` | `internal/rules/compile.go`, `decide.go` (`Decision.BanIn`) |
+| `bans.scope` | `internal/rules/compile.go`, `decide.go` (`Decision.BanIn`); `internal/pipeline/admin.go` `BanNumber` (`/ban <number>` bans everywhere under `all_communities`; under `per_community` it is refused, as `groupwarden ban add` without `--community` is) and `postDeletes` (a ban deletes posts in the groups its scope covers) |
 | `word_lists` | `internal/rules/compile.go` `addWords` |
 | `leet_word_lists` | `internal/rules/compile.go` |
 | `never_match` | `internal/rules/compile.go`; `internal/normalise` `Prepare` |
@@ -76,11 +76,11 @@ acl:
 
 - **super admin** (`super_admins`, at least one): every command and button.
 - **community admin** (`admins`): `/status`, and `/enable` and `/disable` for the communities and groups in their `assigned` list (a group inside an assigned community counts as theirs), plus everything a member can do.
-- **member** (anyone else in the chat): `/ban`, `/unban` and the buttons that act on one report.
+- **member** (anyone else in the chat): `/ban`, `/ban <number>`, `/unban`, `/unban <number>` and the buttons that act on one report.
 
 | Action | Member | Community admin | Super admin |
 |---|---|---|---|
-| `/ban`, `/unban`, [Ban], [Undo], [Add to ban list] | yes | yes | yes |
+| `/ban`, `/ban <number>`, `/unban`, `/unban <number>`, [Ban], [Undo], [Add to ban list] | yes | yes | yes |
 | [No], [Show attachment] (they change nothing) | yes | yes | yes |
 | `/status` | no | yes | yes |
 | `/enable`, `/disable` | no | only an `assigned` entry, or a group inside an assigned community | yes, anything |
@@ -98,3 +98,11 @@ Finding a community or group ID for `assigned`:
 - a group in a set the file lists: its ID under that set's `groups:` (a set's own key is a name, not an `assigned` entry);
 - one switched on with `/enable`: `groupwarden ledger summary` once the bot has acted there, or `groupwarden groups` with the service stopped (it takes the data directory's lock);
 - a new community: the super admin sends `/enable` with its invite link first, then its ID goes into `assigned`.
+
+## Banning from the admin chat
+
+- `/ban <number>` bans a phone number, for a spammer the bot posted no report about. Write it with its country code; `+`, spaces, dashes and brackets are fine (`+44 7700 900123`, `447700900123`, `+44 (7700) 900-123`). Once those are taken out it must be 8 to 15 digits and not start with 0, or the reply is the usage text. It is stored as `groupwarden ban add <phone>` stores it: keyed by the phone number until the sweep finds its LID, everywhere under `bans.scope: all_communities` (under `per_community` it is refused: use `groupwarden ban add --community`, or `/ban` as a reply to a report from that community). Its ledger rows name who sent it (trigger `tg:ban:<time>`). A number already banned gets a reply saying so and changes nothing.
+- `/ban` sent alone as a reply to a "would have acted" report acts on that report, as [Ban] does.
+- Every ban from the admin chat (both `/ban` forms, [Ban] and [Add to ban list]) asks for a sweep at once, so a banned member the bot finds in a group is removed without waiting for `reconcile.interval_minutes`.
+- Every ban from the admin chat also deletes the person's posts the bot still has a record of: each post it decided in the last 72 hours, in every group the ban covers. The deletes go through the outbox like any other (`rate`, `breaker`, the check just before each is sent, a `/pause`). A post older than `act_on_replay_max_age` cannot be deleted by an admin any more: it is recorded as failed, counted once in the reply and never sent. Posts in a community in shadow mode, or where the person is a current admin, are left as they are. The reply says how many posts are being deleted and how many could not be. Posts decided before this version (store migration 12) have no sender on record and are not found.
+- `/unban <number>` lifts every ban of a phone number, whether it is still keyed by the number or already resolved to a LID; its ledger row names who sent it (trigger `tg:unban:<time>`). A number of 8 or more digits is a phone number; `#N` or a shorter number is a report number (`/unban #12` undoes report 12, as [Undo] does). Unbanning adds nobody back to a group: re-invite them by hand.

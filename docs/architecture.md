@@ -30,11 +30,12 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                action, group and member, and for a delete the same message)
 
            internal/reconcile sweep (at connect, every reconcile interval,
-           when the bot joins a group, after each /enable and after a /disable
-           that removes an entry; the group list is read from WhatsApp first,
-           and a read that fails is tried again every 30 seconds; a sweep waits
-           until the list has loaded and, after a connect, until the worker has
-           decided everything WhatsApp held while the bot was offline):
+           when the bot joins a group, after each /enable, after a /disable
+           that removes an entry and after every ban from the admin chat; the
+           group list is read from WhatsApp first, and a read that fails is
+           tried again every 30 seconds; a sweep waits until the list has
+           loaded and, after a connect, until the worker has decided
+           everything WhatsApp held while the bot was offline):
                coverage per group (absent / not admin / covered) ► compared with
                what the admins were told ► changes reported; absent linked groups
                ► joined by the bot itself, else /enable asked for; a refused
@@ -79,7 +80,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | `internal/client` | The `Adapter` interface and message types; `whatsmeow/` is the only implementation. A member's device hands the bot its sender key in a part of its own, under the post's ID, before its first post to a group (and again whenever it starts a new key); the adapter stores only the part holding the post, so the key part cannot take the post's ID in the inbox. It turns the library's own reconnects off: when WhatsApp asks for a fresh login (stream error 515) or stops answering keepalives for longer than the library's limit, the adapter closes the connection and reports it lost, so the supervisor opens every connection. A connection is reported lost once, however it ends (a 515 is followed by the server's close), and the next one opens only once the last one is closed and any client version update is done. A call that got no answer (no connection, the connection lost before the answer, the media servers not reached or not done in time) is reported as not connected and tried again later; only an answer from WhatsApp is final, except that an attachment download with no answer while WhatsApp is connected is tried again after 2, 4, 8 and 16 minutes and then given up (the attachments queued after it go first) |
 | `internal/app` | Supervisor: connect, backoff, fatal states, health monitors, reload, lifecycle messages, overdue-timer and phone reminders, the daily check; the admin chat's controls; the data-dir lock (it names the holding process and command, so the config sync signals only `run`); `Build`, the one wiring of the bot's parts (`run` and the log test both use it); the health rule `healthcheck`, the heartbeat ping and the daily check share |
 | `internal/backup` | The nightly backup (snapshot, age encryption, keep the newest `backup.keep`, crash leftovers removed) and `restore` (refuses an existing database, a wrong key or a file that is not a groupwarden backup) |
-| `internal/pipeline` | Inbox worker (it decides nothing until the group directory has loaded once), the group directory (communities, members, admins: from WhatsApp's group list, kept current by membership, admin and join events, which a list read already on its way cannot undo), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] write |
+| `internal/pipeline` | Inbox worker (it decides nothing until the group directory has loaded once), the group directory (communities, members, admins: from WhatsApp's group list, kept current by membership, admin and join events, which a list read already on its way cannot undo), the moderator, ban enforcement on joins, what the admin chat's [Undo] / [Ban] / [Add to ban list] / `/ban <number>` / `/unban <number>` write (every ban also deletes the member's posts the bot still has a record of: `admin.go` `postDeletes`, from the `seen` table's `sender`) |
 | `internal/ledger` | Writes each decision's actions, ban, evidence and report in one transaction (an attachment is downloaded only when a report shows it; a decision whose rows all already existed keeps no copy); crash recovery; retention purge |
 | `internal/telegram` | The admin chat: report and alert delivery from the store (rate limit, priority, digests, attachments, text removed after the evidence window), buttons and commands from those the `acl:` section allows (`roles.go` `decide`; without the section, admins of that chat), the command list pinned there and set as its "/" menu |
 | `internal/alert` | Alert kinds and which of them are priority |
