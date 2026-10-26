@@ -75,6 +75,11 @@ next:
 	return true
 }
 
+// has reports whether a set field is in set.
+func (s shape) has(set map[protoreflect.Name]bool) bool {
+	return slices.ContainsFunc(s.fields, func(f string) bool { return set[protoreflect.Name(f)] })
+}
+
 // rangeOrdered calls fn for each set field of m in field-number order
 // (Range's own order is unspecified), until fn returns false.
 func rangeOrdered(m protoreflect.Message, fn func(protoreflect.FieldDescriptor, protoreflect.Value) bool) {
@@ -386,8 +391,10 @@ func extract(m *waE2E.Message) extracted {
 // on its other lines (a business's name and description, a URL, an e-mail, a
 // note: any can carry a pitch). Its structure (BEGIN, END, VERSION, the
 // structured name N), the binary photo or logo, and a full name the same as
-// the card's display name are left out.
+// the card's display name are left out. A long line folded onto the next
+// (a line break then a space or tab) is joined first.
 func vcard(card, displayName string) (numbers, text []string) {
+	card = vcardUnfold.Replace(card)
 	for _, line := range strings.Split(card, "\n") {
 		key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
 		if !ok {
@@ -413,6 +420,9 @@ func vcard(card, displayName string) (numbers, text []string) {
 	}
 	return numbers, text
 }
+
+// vcardUnfold joins a vCard's folded lines (RFC 6350 3.2).
+var vcardUnfold = strings.NewReplacer("\r\n ", "", "\r\n\t", "", "\n ", "", "\n\t", "")
 
 // vcardUnescape undoes a vCard value's escapes: "\n" is a line break, and a
 // comma, semicolon or backslash after a backslash stands for itself.
