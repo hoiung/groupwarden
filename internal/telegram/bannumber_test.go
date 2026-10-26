@@ -683,10 +683,10 @@ func TestBanDeletesPosts(t *testing.T) {
 			t.Fatalf("rows %v, want the watch-only match's own shadow row kept", rowsOf(h, modtest.SpammerM))
 		}
 	})
-	// Under a pause that holds removals and bans, a spam post's ban is held;
-	// the member's next post is still deleted, as the executor counts a held
-	// ban for deletes.
-	t.Run("post-after-held-ban-deleted", func(t *testing.T) {
+	// Under a pause that holds removals and bans (the breaker's: a rule may be
+	// misfiring), a spam post's ban is held, not applied; the member's next
+	// post is kept until the ban applies.
+	t.Run("post-after-held-ban-kept", func(t *testing.T) {
 		h := newHarness(t, "")
 		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
 			Reason: "too many removals", Since: h.k.Clock.Now()}); err != nil {
@@ -695,30 +695,44 @@ func TestBanDeletesPosts(t *testing.T) {
 		h.k.Deliver(h.k.Spam("S1", modtest.G1))
 		h.post("P2", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
 		h.k.Fire()
-		if h.k.Banned(modtest.SpammerM, "") || !h.revoked(modtest.G1, "S1") || !h.revoked(modtest.G1, "P2") {
-			t.Fatalf("calls %v, want the ban held and S1 and P2 deleted", h.k.Fake.Calls())
+		if h.k.Banned(modtest.SpammerM, "") || !h.revoked(modtest.G1, "S1") || h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, want the ban held, S1 deleted by its rule and P2 kept", h.k.Fake.Calls())
+		}
+		for _, r := range h.k.Rows(modtest.SpammerM) {
+			if r.Action == store.ActRevoke && r.MsgID == "P2" {
+				t.Fatalf("row %+v, want no delete planned for P2", r)
+			}
 		}
 	})
-	// A ban held while only the member's phone number was known still counts
-	// once their post arrives under their LID.
-	t.Run("post-after-held-ban-by-phone-deleted", func(t *testing.T) {
+	// An edit deletes the post it edits, named by the author as the group
+	// knows them, and once only: an edit of a post already being deleted
+	// adds nothing.
+	t.Run("post-after-ban-edit-deletes-original-once", func(t *testing.T) {
 		h := newHarness(t, "")
-		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
-			Reason: "too many removals", Since: h.k.Clock.Now()}); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
-			_, err := ledger.Write(h.k.Ctx, tx, ledger.Plan{Trigger: "H1", Target: client.Member{Phone: modtest.SpammerPhone},
-				ConfigHash: "h", Ban: []string{store.BanEverywhere}, BanEnforce: true, BanHeld: true,
-				BanCommunity: string(modtest.Community), Reason: "spam post"}, h.k.Clock.Now())
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.post("P0", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		e := h.k.Msg("E1", modtest.G1, modtest.Spammer, "hello again, see you at the meetup")
+		e.SenderAlt, e.IsEdit, e.TargetID = modtest.SpammerPhone, true, "P0"
+		h.k.Deliver(e)
 		h.k.Fire()
-		if h.k.Banned(modtest.SpammerM, "") || !h.revoked(modtest.G1, "P1") {
-			t.Fatalf("calls %v, want the ban still held and P1 deleted", h.k.Fake.Calls())
+		want := "Revoke " + string(modtest.G1) + " " + string(modtest.Spammer) + " P0"
+		if h.k.Fake.Count(want) != 1 || h.k.Fake.Count("Revoke") != 1 {
+			t.Fatalf("calls %v, want only %q", h.k.Fake.Calls(), want)
+		}
+	})
+	// A post older than act_on_replay_max_age (delivered late, after a
+	// reconnect) is past an admin's delete window: nothing is planned for it.
+	t.Run("old-replay-after-ban-kept", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		o := h.k.Msg("O1", modtest.G1, modtest.Spammer, "hello everyone, see you at the meetup")
+		o.SenderAlt, o.Time = modtest.SpammerPhone, h.k.Clock.Now().Add(-60*time.Hour)
+		h.k.Deliver(o)
+		h.k.Fire()
+		for _, r := range h.k.Rows(modtest.SpammerM) {
+			if r.Action == store.ActRevoke && r.MsgID == "O1" {
+				t.Fatalf("row %+v, want no delete planned for a post past act_on_replay_max_age", r)
+			}
 		}
 	})
 	// The paused reply says the same about a community in shadow mode.
