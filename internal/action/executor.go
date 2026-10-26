@@ -538,14 +538,13 @@ func (x *Executor) banCommunities(ctx context.Context, row store.LedgerRow) (com
 
 // banned reports whether the row's target is still banned: on the ban list
 // for the row's community, or (for a delete, which a remove-and-ban pause
-// does not hold) with a ban a pause holds, under either of their addresses
-// (a ban held while only their phone number was known names that).
+// does not hold) with a ban a pause holds.
 func (x *Executor) banned(ctx context.Context, row store.LedgerRow, member client.Member) (bool, error) {
 	_, banned, err := x.Store.FindBan(ctx, member.IDs(), row.Community)
 	if err != nil || banned || row.Action != store.ActRevoke {
 		return banned, err
 	}
-	return x.Store.HeldBan(ctx, member.IDs(), "")
+	return x.Store.HeldBan(ctx, []string{row.Target}, "")
 }
 
 // send makes the WhatsApp call and records its result.
