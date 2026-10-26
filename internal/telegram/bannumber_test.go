@@ -556,6 +556,31 @@ func TestBanDeletesPosts(t *testing.T) {
 			h.k.Fake.FailNext("Revoke", errs...)
 		})
 	})
+	// A delete that got one error (or a rate limit) and was then dropped by
+	// an /unban before its retry was never refused by WhatsApp: the next ban
+	// plans it again.
+	for name, err := range map[string]error{"error": errors.New("server error"), "rate-limit": client.ErrRateLimited} {
+		t.Run("one-"+name+"-then-unban-planned-again", func(t *testing.T) {
+			h := newHarness(t, "")
+			h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+			h.k.Fake.FailNext("Revoke", err)
+			h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+			h.k.Fire()
+			h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+			h.k.Clock.Advance(5 * time.Minute)
+			h.k.Fire()
+			h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+			if got := h.lastReply(); !strings.Contains(got, "Their posts on record: 1 being deleted, 0 too old to delete.") {
+				t.Fatalf("reply %q, rows %v", got, rowsOf(h, client.Member{Phone: modtest.SpammerPhone}))
+			}
+			h.k.Fire()
+			// The first try failed; the second ban's delete is sent and done.
+			rows := rowsOf(h, client.Member{Phone: modtest.SpammerPhone})
+			if h.k.Fake.Count("Revoke") != 2 || rows["revoke/requested"] != 1 {
+				t.Fatalf("calls %v, rows %v, want P1 deleted by the second ban", h.k.Fake.Calls(), rows)
+			}
+		})
+	}
 	// /ban <number> and then [Ban] on a report of the same post delete it
 	// once, though one names its author by phone number and the other by LID.
 	t.Run("number-then-button-deletes-once", func(t *testing.T) {
