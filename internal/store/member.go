@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
 
@@ -15,6 +16,35 @@ type Forgotten struct {
 	Files       []string // attachment files to delete (the caller removes them)
 	KeptBans    []Ban    // active bans are kept
 	HeldBans    int64    // bans a pause holds are kept too: they apply once the pause ends
+}
+
+// OtherAddress returns the member's other address as the bot last recorded
+// it beside addr (their phone JID for a LID, their LID for a phone JID; ""
+// when it has none): the sender and sender_alt of a post it decided (seen)
+// or reported (evidence), or the target of a ban row and the phone it keeps.
+// The group list pairs the two only for the members it lists: someone who
+// joined since it was last read is known by their LID alone, as a join names
+// no phone number.
+func (s *Store) OtherAddress(ctx context.Context, addr string) (string, error) {
+	if addr == "" {
+		return "", nil
+	}
+	var other string
+	err := s.db.QueryRowContext(ctx, `SELECT other FROM (
+	SELECT sender_alt AS other, decided_at AS at FROM seen WHERE sender = ?1 AND sender_alt != ''
+	UNION ALL SELECT sender, decided_at FROM seen WHERE sender_alt = ?1 AND sender != ''
+	UNION ALL SELECT sender_alt, created_at FROM evidence WHERE sender = ?1 AND sender_alt != ''
+	UNION ALL SELECT sender, created_at FROM evidence WHERE sender_alt = ?1
+	UNION ALL SELECT address, created_at FROM ledger WHERE action = 'ban' AND target = ?1 AND address NOT IN ('', ?1)
+	UNION ALL SELECT target, created_at FROM ledger WHERE action = 'ban' AND address = ?1 AND target != ?1)
+ORDER BY at DESC LIMIT 1`, addr).Scan(&other)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read other address: %w", err)
+	}
+	return other, nil
 }
 
 // ForgetMember deletes everything groupwarden.db holds about the member known
