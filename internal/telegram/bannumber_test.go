@@ -78,6 +78,21 @@ func (h *harness) post(id string, chat, sender, alt client.JID) {
 	h.k.Deliver(m)
 }
 
+// cliBan bans the kit spammer's phone number everywhere as `groupwarden ban
+// add <phone>` does: keyed by the number, with no sweep asked for.
+func (h *harness) cliBan() {
+	h.t.Helper()
+	p := ledger.Plan{Trigger: store.CLITrigger + "1", Target: client.Member{Phone: modtest.SpammerPhone}, Actor: "cli",
+		BanCommunity: store.BanEverywhere, Ban: []string{store.BanEverywhere}, BanEnforce: true,
+		Reason: "added with the ban command"}
+	if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
+		_, err := ledger.Write(h.k.Ctx, tx, p, h.k.Clock.Now())
+		return err
+	}); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
 // revoked reports whether the bot deleted message id in chat (sent once).
 func (h *harness) revoked(chat client.JID, id string) bool {
 	h.t.Helper()
@@ -385,15 +400,24 @@ func TestBanDeletesPosts(t *testing.T) {
 	// the relaxed rule keeps the post, also when the bot's own ban of the
 	// author is on the ban list (no pause held it), and when the admin's
 	// ban can no longer show who made it (its ledger row purged past
-	// retention): the queue goes on, with a Warn.
-	for name, c := range map[string]struct{ pause, adminBan, purge, deleted bool }{
-		"admin-banned":            {pause: true, adminBan: true, deleted: true},
-		"bot-only":                {pause: true},
-		"bot-ban-on-list":         {},
-		"admin-ban-ledger-purged": {pause: true, adminBan: true, purge: true},
+	// retention): the queue goes on, with a Warn. The admin's ban is found
+	// for someone who joined since the group list was last read too (the
+	// bot's row names their LID, the ban their number; the post they sent
+	// pairs the two), from the admin chat or the command line, which asks
+	// for no sweep.
+	for name, c := range map[string]struct{ pause, adminBan, cliBan, joiner, purge, deleted bool }{
+		"admin-banned":               {pause: true, adminBan: true, deleted: true},
+		"bot-only":                   {pause: true},
+		"bot-ban-on-list":            {},
+		"admin-ban-ledger-purged":    {pause: true, adminBan: true, purge: true},
+		"admin-banned-recent-joiner": {pause: true, adminBan: true, joiner: true, deleted: true},
+		"cli-banned-recent-joiner":   {pause: true, cliBan: true, joiner: true, deleted: true},
 	} {
 		t.Run("rule-relaxed-while-queued/"+name, func(t *testing.T) {
 			h := newHarness(t, "")
+			if c.joiner {
+				recentJoiner(h)
+			}
 			if c.pause {
 				if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceAdmin, Scope: store.ScopeAll,
 					Reason: "paused", Since: h.k.Clock.Now()}); err != nil {
@@ -403,6 +427,9 @@ func TestBanDeletesPosts(t *testing.T) {
 			h.k.Deliver(h.k.Spam("S1", modtest.G1))
 			if c.adminBan {
 				h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+			}
+			if c.cliBan {
+				h.cliBan()
 			}
 			if !c.pause {
 				if bans, err := h.k.Store.BansFor(h.k.Ctx, modtest.SpammerM.IDs()); err != nil || len(bans) == 0 {
@@ -1134,6 +1161,11 @@ func TestBanRecentJoiner(t *testing.T) {
 		if bans := h.bans(); len(bans) != 0 {
 			t.Fatalf("bans %+v after [Undo], want none (the number's ban lifted too)", bans)
 		}
+		// The reply counts the number's ban, found by the address the report
+		// does not name.
+		if a := h.answers(); len(a) == 0 || !strings.Contains(a[len(a)-1], "(1 ban(s) lifted") {
+			t.Fatalf("answers %q, want the number's ban counted as lifted", a)
+		}
 		if err := h.k.Store.ClearPause(h.k.Ctx, store.SourceBreaker); err != nil {
 			t.Fatal(err)
 		}
@@ -1160,6 +1192,101 @@ func TestBanRecentJoiner(t *testing.T) {
 		h.k.Fire()
 		if !h.revoked(modtest.G1, "P1") {
 			t.Fatalf("calls %v, want P1 deleted", h.k.Fake.Calls())
+		}
+	})
+	// A ban the bot made by their LID alone (their post came without their
+	// number) is found for /ban <number> through the LID WhatsApp gives:
+	// already banned, so no second ban.
+	t.Run("ban-number-already-banned-by-lid", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		recentJoiner(h)
+		m := h.k.Spam("S1", modtest.G1)
+		m.SenderAlt = ""
+		h.k.Deliver(m)
+		h.k.Fire()
+		if bans := h.bans(); len(bans) != 1 || bans[0].Phone != "" {
+			t.Fatalf("bans %+v, want the bot's one ban by LID alone", bans)
+		}
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if reply := h.lastReply(); !strings.Contains(reply, "already banned everywhere") || len(h.bans()) != 1 {
+			t.Fatalf("reply %q, bans %+v, want the already-banned reply and no second ban", reply, h.bans())
+		}
+	})
+	// A post they send after /ban <number> without their number is deleted
+	// on arrival: an earlier post of theirs paired the two addresses.
+	t.Run("post-without-number-after-ban-deleted", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.post("P2", modtest.G1, modtest.Spammer, "")
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") || !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, rows %v, want P1 and P2 deleted", h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
+		}
+	})
+	// [Ban] on a report about a post sent without their number bans them
+	// under both addresses: an earlier post of theirs paired the two.
+	t.Run("ban-button-carries-their-number", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Deliver(h.k.Msg("W1", modtest.G1, modtest.Spammer, "crypto: inbox me"))
+		h.k.Fire()
+		h.drain()
+		h.press(adminUser, "ban", h.only(ledger.KindWouldHaveActed).ID)
+		if bans := h.bans(); len(bans) != 1 || bans[0].LID != string(modtest.Spammer) ||
+			bans[0].Phone != string(modtest.SpammerPhone) {
+			t.Fatalf("bans %+v, want one ban naming their LID and their number", bans)
+		}
+	})
+	// Banned by number with the ban command (which asks for no sweep), they
+	// join a group again: the join names their LID alone, and the record of
+	// their earlier post gives the number, so they are removed at the join.
+	t.Run("rejoin-after-cli-ban-removed", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.cliBan()
+		h.k.Deliver(&client.GroupChange{Group: modtest.G2, Time: h.k.Clock.Now(), JoinReason: "invite",
+			Joined: []client.JID{modtest.Spammer}})
+		h.k.Fire()
+		if h.k.Fake.Count("Remove "+string(modtest.G2)+" "+string(modtest.Spammer)) != 1 {
+			t.Fatalf("calls %v, rows %v, want them removed from G2 at the join", h.k.Fake.Calls(),
+				rowsOf(h, modtest.SpammerM))
+		}
+	})
+	// Their request to join a group, after a ban by number with the ban
+	// command, names their LID alone: the record of their earlier post gives
+	// the number, so the sweep rejects it.
+	t.Run("join-request-after-cli-ban-rejected", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.cliBan()
+		h.k.Fake.Requests = map[client.JID][]client.JoinRequest{modtest.G2: {{JID: modtest.Spammer}}}
+		if _, err := h.app.Sweep.Run(h.k.Ctx, "r1"); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Fire()
+		if h.k.Fake.Count("RejectJoinRequests "+string(modtest.G2)+" "+string(modtest.Spammer)) != 1 {
+			t.Fatalf("calls %v, want their join request to G2 rejected", h.k.Fake.Calls())
+		}
+	})
+	// A human admin removes them after a ban by number with the ban command:
+	// the removal names their LID alone, and the record of their earlier
+	// post gives the number, so the bot does not offer to ban them again.
+	t.Run("human-removal-after-cli-ban-not-offered", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.cliBan()
+		h.k.Deliver(&client.GroupChange{Group: modtest.G1, Time: h.k.Clock.Now(), Actor: modtest.Admin,
+			Left: []client.JID{modtest.Spammer}})
+		h.drain()
+		if reps := h.k.Reports(ledger.KindHumanRemoval); len(reps) != 0 {
+			t.Fatalf("reports %+v, want no [Add to ban list] offer for someone already banned", reps)
 		}
 	})
 	// When WhatsApp has no LID for the number, or cannot be asked, the ban
