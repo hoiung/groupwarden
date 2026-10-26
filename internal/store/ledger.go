@@ -435,6 +435,14 @@ WHERE action = 'revoke' AND chat = ? AND msg_id = ? AND mode = 'enforce'
 // executor once no pause covers bans, and kept by every purge until then.
 const heldBan = `(action = 'ban' AND status = 'intended' AND mode = 'enforce')`
 
+// banRowOf matches a ban row by any of a member's addresses, the JSON list
+// ?1: the row's target, or the phone a ban row keeps in address. A held ban
+// names the member as its plan did (by LID when the post came from one), so
+// a lookup by the phone alone (/unban <number> for someone who joined since
+// the group list was last read) finds it too.
+const banRowOf = `(target IN (SELECT value FROM json_each(?1))
+	OR (address != '' AND address IN (SELECT value FROM json_each(?1))))`
+
 // BanRowOf returns the ledger row of target's ban in scope when the ban is in
 // force (its ban list entry) or, when orHeld, held by a pause (ok false when
 // neither). A ban meant to apply at once (an admin's) passes orHeld false: a
@@ -531,13 +539,13 @@ func (s *Store) FailHeldBan(ctx context.Context, id int64, reason string) error 
 	})
 }
 
-// SettleHeldBansIn marks requested every ban a pause holds for target that
-// scope covers: an admin's ban (ledger row id) put the member on the ban list
-// there at once. It runs in tx.
-func SettleHeldBansIn(ctx context.Context, tx *sql.Tx, target, scope string, id int64, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'requested', reason = reason || ?1, updated_at = ?2
-WHERE `+heldBan+` AND target = ?3 AND (?4 = '*' OR chat = ?4)`,
-		fmt.Sprintf(" (in force through ledger row %d)", id), now.UnixMilli(), target, scope)
+// SettleHeldBansIn marks requested every ban a pause holds for any of targets
+// (a member's addresses) that scope covers: an admin's ban (ledger row id)
+// put the member on the ban list there at once. It runs in tx.
+func SettleHeldBansIn(ctx context.Context, tx *sql.Tx, targets []string, scope string, id int64, now time.Time) error {
+	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'requested', reason = reason || ?2, updated_at = ?3
+WHERE `+heldBan+` AND `+banRowOf+` AND (?4 = '*' OR chat = ?4)`,
+		jsonList(targets), fmt.Sprintf(" (in force through ledger row %d)", id), now.UnixMilli(), scope)
 	if err != nil {
 		return fmt.Errorf("settle held bans: %w", err)
 	}
@@ -548,10 +556,10 @@ WHERE `+heldBan+` AND target = ?3 AND (?4 = '*' OR chat = ?4)`,
 // covers community (as RemoveBans; "" covers every scope): the member was
 // unbanned there before the ban was applied. It runs in tx.
 func DropHeldBans(ctx context.Context, tx *sql.Tx, targets []string, community, reason string, now time.Time) error {
-	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'overturned', reason = ?1, updated_at = ?2
-WHERE action = 'ban' AND status = 'intended' AND target IN (SELECT value FROM json_each(?3))
+	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'overturned', reason = ?2, updated_at = ?3
+WHERE action = 'ban' AND status = 'intended' AND `+banRowOf+`
 	AND (?4 = '' OR chat = '*' OR chat = ?4)`,
-		reason, now.UnixMilli(), jsonList(targets), community)
+		jsonList(targets), reason, now.UnixMilli(), community)
 	if err != nil {
 		return fmt.Errorf("drop held bans: %w", err)
 	}
@@ -568,7 +576,7 @@ func (s *Store) HeldBan(ctx context.Context, targets []string, community string)
 func HeldBanIn(ctx context.Context, q queryer, targets []string, community string) (bool, error) {
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+`
-	AND target IN (SELECT value FROM json_each(?1)) AND (?2 = '' OR chat = '*' OR chat = ?2)`,
+	AND `+banRowOf+` AND (?2 = '' OR chat = '*' OR chat = ?2)`,
 		jsonList(targets), community).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("read held bans: %w", err)
