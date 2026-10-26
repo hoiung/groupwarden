@@ -374,6 +374,35 @@ func TestBanCLIHeldBanByPhone(t *testing.T) {
 	}
 }
 
+// TestBanCLIRemoveByPhoneFindsLIDBan: `ban remove <phone>` lifts a ban list
+// entry that names the member by LID alone (an [Add to ban list] for someone
+// who joined since the group list was last read, written before the entry
+// carried the phone), found through the record of their post.
+func TestBanCLIRemoveByPhoneFindsLIDBan(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	seenPost(t, st, "k1", "M1", spammerLID, spammerPhone)
+	if err := st.Write(ctx, func(tx *sql.Tx) error {
+		_, err := ledger.Write(ctx, tx, ledger.Plan{Trigger: "A1", Target: client.Member{LID: spammerLID}, ConfigHash: "h",
+			Ban: []string{store.BanEverywhere}, BanEnforce: true, BanCommunity: cmdCommunity, Reason: "added"}, time.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.sub("ban", "remove", spammerPhone); code != 0 {
+		t.Fatalf("ban remove <phone> of a LID-only ban: exit %d %q %q", code, te.out, te.errb)
+	}
+	if bans, err := st.Bans(ctx); err != nil || len(bans) != 0 {
+		t.Fatalf("bans left %+v (%v)", bans, err)
+	}
+}
+
 type shown struct {
 	Addresses []string
 	Bans      []map[string]any
