@@ -74,7 +74,9 @@ func (s *Store) ForgetMember(ctx context.Context, ids []string) (Forgotten, erro
 			` AND id NOT IN (SELECT ledger_id FROM outbox) AND NOT `+heldBan, list); err != nil {
 			return err
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE target `+in+` AND `+heldBan,
+		// Counted as /unban <number> finds them: by target, or by the phone a
+		// held ban keeps (it is not deleted above, which matches the target).
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+` AND `+banRowOf,
 			list).Scan(&f.HeldBans); err != nil {
 			return fmt.Errorf("count held bans: %w", err)
 		}
