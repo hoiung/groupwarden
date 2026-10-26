@@ -647,9 +647,12 @@ func TestBanDeletesPosts(t *testing.T) {
 		if !h.revoked(modtest.G1, "P1") || h.revoked(modtest.GB, "P3") || h.revoked(modtest.GB, "P4") {
 			t.Fatalf("calls %v, want only P1 deleted", h.k.Fake.Calls())
 		}
+		// The ban's own rows for P3 are shadow rows; the later post P4 gets
+		// none (the executor would turn an enforced one into shadow before
+		// sending, so its mode alone would not show it was planned).
 		for _, r := range h.k.Rows(modtest.SpammerM) {
-			if r.Action == store.ActRevoke && r.Mode == store.ModeEnforce && r.MsgID != "P1" {
-				t.Fatalf("row %+v, want no enforced delete outside the enforce community", r)
+			if r.Action == store.ActRevoke && (r.MsgID == "P4" || r.MsgID == "P3" && r.Mode == store.ModeEnforce) {
+				t.Fatalf("row %+v, want no delete planned for P4 and only shadow rows for P3", r)
 			}
 		}
 	})
