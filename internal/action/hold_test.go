@@ -272,11 +272,44 @@ func TestUndoWhileRemovalInFlight(t *testing.T) {
 	if len(race) != 1 || !race[0].Priority || !strings.Contains(race[0].Text, "jobs") {
 		t.Fatalf("undo race reports %+v", race)
 	}
-	if n := k.Logged("action went out while [Undo] ran"); n != 1 {
+	if n := k.Logged("action went out while an unban ran"); n != 1 {
 		t.Fatalf("%d log lines for the race, want 1", n)
 	}
 	if k.Banned(modtest.SpammerM, "") {
 		t.Fatal("still banned after [Undo]")
+	}
+}
+
+// TestUnbanNumberWhileRemovalInFlight: /unban <number> committed while a
+// removal's WhatsApp call is in flight cancels it as [Undo] does: the row is
+// overturned (the call still recorded on it) and a priority report names the
+// group to re-invite them to.
+func TestUnbanNumberWhileRemovalInFlight(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Deliver(k.Spam("M1", modtest.G1))
+	admin := &pipeline.Admin{Store: k.Store, Config: k.Holder, Directory: k.Dir, Enforcer: k.Enforcer, Log: k.Log}
+	var unbanErr error
+	unbanned := false
+	k.Fake.OnCall = func(call string) {
+		if !unbanned && strings.HasPrefix(call, "Remove "+string(modtest.G2)+" ") {
+			unbanned = true
+			_, unbanErr = admin.UnbanNumber(k.Ctx, modtest.SpammerPhone, "admin")
+		}
+	}
+	k.Fire()
+	if !unbanned || unbanErr != nil {
+		t.Fatalf("unban ran %v: %v", unbanned, unbanErr)
+	}
+	r := status(t, k, modtest.SpammerM, store.ActRemove, modtest.G2)
+	if r.Status != store.Overturned || r.SentAt.IsZero() {
+		t.Fatalf("in-flight removal row %s, sent %v", r.Status, r.SentAt)
+	}
+	race := k.Reports(ledger.KindUndoRace)
+	if len(race) != 1 || !race[0].Priority || !strings.Contains(race[0].Text, "/unban") {
+		t.Fatalf("undo race reports %+v", race)
+	}
+	if k.Banned(modtest.SpammerM, "") {
+		t.Fatal("still banned after /unban <number>")
 	}
 }
 
