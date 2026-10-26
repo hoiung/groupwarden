@@ -162,9 +162,11 @@ func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Messa
 	if item.ReportOnly || ev.TargetID == "" || !enforced(cur.Rules, community) {
 		return nil
 	}
-	member := m.Directory.Complete(client.MemberOf(ev.Sender, ev.SenderAlt))
-	if member.Key() == "" {
-		return nil
+	// By every address the bot knows: a post sent without the number of
+	// someone banned by number is theirs too.
+	member, err := Identify(ctx, m.Directory, m.Store, tx, client.MemberOf(ev.Sender, ev.SenderAlt))
+	if err != nil || member.Key() == "" {
+		return err
 	}
 	ban, banned, err := store.FindBan(ctx, tx, member.IDs(), community)
 	if err != nil || !banned {
@@ -177,8 +179,8 @@ func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Messa
 	}
 	// The delete names the member as the ban does: a ban still keyed by the
 	// phone number (its LID not found yet) is matched here through the post's
-	// other address, which the executor's check before sending does not have
-	// for someone who joined since the group list was last read.
+	// other address, so the executor's check before sending finds it by the
+	// row's own target, whatever else the bot has recorded by then.
 	target := member
 	if ban.LID == "" {
 		target = client.MemberOf(client.JID(ban.Member))
