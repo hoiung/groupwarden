@@ -256,8 +256,9 @@ func (a *Adapter) convertMessage(e *events.Message) client.Event {
 	sh := shapeOf(raw, content)
 	// A key part with a field this library does not know (or one it does not
 	// read) is still a key part: kept, it would take the post's ID like the
-	// plain one above, so it is not stored either.
-	if unread && !m.IsEdit && !m.IsComment && carriesKey(content) {
+	// plain one above, so it is not stored either. One that carries a post
+	// with no text (a sticker, a location) is that post, and is kept.
+	if unread && !m.IsEdit && !m.IsComment && carriesKey(content) && !sh.has(noTextFields) {
 		a.log.Warn("a message part with a sender key and nothing else the bot can read, not stored",
 			"chat", mask.IDs(string(m.Chat)), "id", m.ID, "wrappers", sh.wrappers, "fields", sh.fields, "unknown", sh.unknown)
 		return nil
