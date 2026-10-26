@@ -329,6 +329,15 @@ WHERE id = ? AND status = 'intended'`, reason, now.UnixMilli(), id)
 // chat ("tg:<report>:<button>"): the report ID + button key of AC 3.1.
 const AdminTrigger = "tg:"
 
+// AdminBanTrigger and AdminUnbanTrigger prefix the trigger of a row an admin
+// ordered from the admin chat by phone number (/ban <number>, /unban
+// <number>), followed by the order's time in unix milliseconds: no report
+// names it. The row's actor names who sent the command.
+const (
+	AdminBanTrigger   = AdminTrigger + "ban:"
+	AdminUnbanTrigger = AdminTrigger + "unban:"
+)
+
 // Overturn marks each given row that is still intended or requested as
 // overturned (an admin pressed [Undo]) and drops it from the outbox, in tx.
 // It returns how many rows changed.
@@ -529,8 +538,13 @@ WHERE action = 'ban' AND status = 'intended' AND target IN (SELECT value FROM js
 // HeldBan reports whether a pause holds a ban for any of targets that covers
 // community (as FindBan; "" for any scope).
 func (s *Store) HeldBan(ctx context.Context, targets []string, community string) (bool, error) {
+	return HeldBanIn(ctx, s.db, targets, community)
+}
+
+// HeldBanIn is HeldBan read through q (a transaction).
+func HeldBanIn(ctx context.Context, q queryer, targets []string, community string) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+`
+	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+`
 	AND target IN (SELECT value FROM json_each(?1)) AND (?2 = '' OR chat = '*' OR chat = ?2)`,
 		jsonList(targets), community).Scan(&n)
 	if err != nil {

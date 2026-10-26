@@ -21,6 +21,10 @@ type Seen struct {
 	Chat       string
 	MsgID      string
 	ServerTime time.Time
+	// Sender is who wrote a post of its own (their LID, or their phone JID
+	// when no LID is known): "" for anything else (an edit, a membership
+	// change), so only posts are ever deleted by it (PostsBy).
+	Sender string
 }
 
 // InboxPut stores an event unless the same delivery is already queued or was
@@ -100,8 +104,9 @@ func (s *Store) Decide(ctx context.Context, row InboxRow, seen Seen, record func
 			return fmt.Errorf("inbox row %d was not deleted (affected %d): %v", row.ID, n, err)
 		}
 		_, err = tx.ExecContext(ctx, `
-INSERT INTO seen (dedupe_key, chat, msg_id, server_time, decided_at) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (dedupe_key) DO NOTHING`, row.Key, seen.Chat, seen.MsgID, seen.ServerTime.UnixMilli(), s.now().UnixMilli())
+INSERT INTO seen (dedupe_key, chat, msg_id, server_time, decided_at, sender) VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (dedupe_key) DO NOTHING`, row.Key, seen.Chat, seen.MsgID, seen.ServerTime.UnixMilli(), s.now().UnixMilli(),
+			seen.Sender)
 		if err != nil {
 			return fmt.Errorf("seen insert: %w", err)
 		}
@@ -121,6 +126,42 @@ func (s *Store) SeenTime(ctx context.Context, chat, msgID string) (time.Time, bo
 		return time.Time{}, false, fmt.Errorf("read seen: %w", err)
 	}
 	return time.UnixMilli(at), true, nil
+}
+
+// Post is a post the bot decided, as its seen row keeps it.
+type Post struct {
+	Chat       string
+	MsgID      string
+	Sender     string
+	ServerTime time.Time
+}
+
+// PostsBy lists, inside q (a transaction), the posts written by any of
+// senders in any of chats that no delete is queued for or was sent for
+// (whichever address that delete's row names), oldest first. Rows with no
+// sender (written before store migration 12, or not a post of their own) are
+// never listed.
+func PostsBy(ctx context.Context, q queryer, senders, chats []string) ([]Post, error) {
+	rows, err := q.QueryContext(ctx, `SELECT s.chat, s.msg_id, s.sender, s.server_time FROM seen s
+WHERE s.sender != '' AND s.sender IN (SELECT value FROM json_each(?1)) AND s.chat IN (SELECT value FROM json_each(?2))
+	AND s.msg_id != '' AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.action = 'revoke' AND l.chat = s.chat
+		AND l.msg_id = s.msg_id AND l.mode = 'enforce' AND l.status IN ('intended', 'requested'))
+ORDER BY s.server_time, s.chat, s.msg_id`, jsonList(nonEmpty(senders)), jsonList(chats))
+	if err != nil {
+		return nil, fmt.Errorf("read seen: %w", err)
+	}
+	defer rows.Close()
+	var out []Post
+	for rows.Next() {
+		var p Post
+		var at int64
+		if err := rows.Scan(&p.Chat, &p.MsgID, &p.Sender, &at); err != nil {
+			return nil, fmt.Errorf("read seen: %w", err)
+		}
+		p.ServerTime = time.UnixMilli(at)
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // PurgeSeen drops dedupe records decided before cutoff.

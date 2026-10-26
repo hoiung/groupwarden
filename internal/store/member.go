@@ -19,7 +19,8 @@ type Forgotten struct {
 
 // ForgetMember deletes everything groupwarden.db holds about the member known
 // by ids (LIDs and phone JIDs): evidence copies, action-log rows and queued
-// inbox rows, in one transaction. Active bans are kept (and returned, so the
+// inbox rows, and their address on the posts the bot decided, in one
+// transaction. Active bans are kept (and returned, so the
 // caller can say why), and every report about the member is queued for its
 // message text to be removed and any attachment post deleted.
 func (s *Store) ForgetMember(ctx context.Context, ids []string) (Forgotten, error) {
@@ -52,6 +53,11 @@ func (s *Store) ForgetMember(ctx context.Context, ids []string) (Forgotten, erro
 		}
 		if f.Inbox, err = execCount(ctx, tx, `DELETE FROM inbox WHERE kind IN ('message', 'undecryptable') AND (
 	json_extract(payload, '$.sender') `+in+` OR json_extract(payload, '$.sender_alt') `+in+`)`, list); err != nil {
+			return err
+		}
+		// The delivery records stay (a redelivery must still be ignored) but
+		// no longer name who sent the post.
+		if _, err := tx.ExecContext(ctx, `UPDATE seen SET sender = '' WHERE sender `+in, list); err != nil {
 			return err
 		}
 		reportIDs, err := idList(ctx, tx, `SELECT id FROM reports WHERE subject `+in, list)

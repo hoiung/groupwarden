@@ -238,6 +238,17 @@ CREATE TABLE enabled (
 	created_at INTEGER NOT NULL
 );
 `,
+	// 12: who sent each decided post (their LID, or their phone JID when no
+	// LID is known), so a ban from the admin chat can delete the posts the bot
+	// still has a record of; '' for rows written before this and for what is
+	// not a post of its own (an edit, a membership change). The row is kept as
+	// long as before (the worker's seenRetention). Deletes are looked up by
+	// message, whichever address their row names.
+	`
+ALTER TABLE seen ADD COLUMN sender TEXT NOT NULL DEFAULT '';
+CREATE INDEX seen_sender ON seen (sender) WHERE sender != '';
+CREATE INDEX ledger_revoke_msg ON ledger (chat, msg_id) WHERE action = 'revoke';
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every

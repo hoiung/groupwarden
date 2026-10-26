@@ -231,10 +231,17 @@ func (w *Worker) purge(ctx context.Context) {
 	}
 }
 
+// seenOf is ev's delivery record. A post of its own records its sender (an
+// edit does not: deleting its ID would not delete the post it edits, which
+// its own row names).
 func seenOf(ev client.Event) store.Seen {
 	switch e := ev.(type) {
 	case *client.Message:
-		return store.Seen{Chat: string(e.Chat), MsgID: e.ID, ServerTime: e.Time}
+		s := store.Seen{Chat: string(e.Chat), MsgID: e.ID, ServerTime: e.Time}
+		if e.ID == e.TargetID {
+			s.Sender = client.MemberOf(e.Sender, e.SenderAlt).Key()
+		}
+		return s
 	case *client.Undecryptable:
 		return store.Seen{Chat: string(e.Chat), MsgID: e.ID, ServerTime: e.Time}
 	case *client.GroupChange:
