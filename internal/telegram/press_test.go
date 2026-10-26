@@ -177,7 +177,7 @@ func TestPressOnAnOldMessage(t *testing.T) {
 		t.Fatalf("a press on an old message: answers %q", a)
 	}
 	replies := h.srv.Requests("sendMessage")
-	if got := replies[len(replies)-1].Params["reply_parameters"]; !strings.Contains(got, itoa(int64(h.head(r.ID)))) {
+	if got := replies[len(replies)-1].Params["reply_parameters"]; !strings.Contains(got, `"message_id":`+itoa(int64(h.head(r.ID)))) {
 		t.Fatalf("the reply is not under the report's post: %q", got)
 	}
 }
