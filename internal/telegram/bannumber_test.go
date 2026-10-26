@@ -10,6 +10,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/modtest"
+	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/store"
 	"github.com/hoiung/groupwarden/internal/telegram/telegramtest"
 )
@@ -510,6 +511,46 @@ func TestBanDeletesPosts(t *testing.T) {
 		h.k.Fire()
 		if !h.revoked(modtest.G1, "P1") {
 			t.Fatalf("calls %v, want P1 deleted by the second ban", h.k.Fake.Calls())
+		}
+	})
+}
+
+// TestBanWaitsForGroupList: a ban sent before the bot has read its group
+// list is refused (it would find no group to delete the member's posts in,
+// and once they are banned no later ban would plan those deletes); the press
+// is released, so the same ban works once the list is in.
+func TestBanWaitsForGroupList(t *testing.T) {
+	const notLoaded = "Could not do that: the bot has not loaded its group list yet"
+	t.Run("by-number", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		loaded := h.app.Admin.Directory
+		h.app.Admin.Directory = &pipeline.Directory{} // the group list not read yet
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if got := h.lastReply(); !strings.HasPrefix(got, notLoaded) || len(h.bans()) != 0 {
+			t.Fatalf("reply %q, bans %+v, want the refusal and no ban", got, h.bans())
+		}
+		h.app.Admin.Directory = loaded
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.k.Fire()
+		if len(h.bans()) != 1 || !h.revoked(modtest.G1, "P1") {
+			t.Fatalf("reply %q, calls %v, want the ban and P1 deleted", h.lastReply(), h.k.Fake.Calls())
+		}
+	})
+	t.Run("button", func(t *testing.T) {
+		h := newHarness(t, "")
+		r := watchOnly(t, h)
+		loaded := h.app.Admin.Directory
+		h.app.Admin.Directory = &pipeline.Directory{}
+		h.press(adminUser, "ban", r.ID)
+		if a := h.answers(); len(a) != 1 || !strings.HasPrefix(a[0], notLoaded) || h.k.Banned(modtest.SpammerM, "") {
+			t.Fatalf("answers %q, want the refusal and no ban", a)
+		}
+		h.app.Admin.Directory = loaded
+		h.press(adminUser, "ban", r.ID)
+		h.k.Fire()
+		if !h.k.Banned(modtest.SpammerM, "") || !h.revoked(modtest.G1, "W1") {
+			t.Fatalf("answers %q, calls %v, want the second press to ban and delete", h.answers(), h.k.Fake.Calls())
 		}
 	})
 }
