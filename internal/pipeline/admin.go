@@ -385,8 +385,10 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 	out := NumberBanned{Member: m}
 	switch {
 	case a.Directory.IsSelf(phone):
+		a.Log.Info("admin ban by number refused: the bot's own number", "by", actor)
 		return NumberBanned{Member: m, Self: true}, nil
 	case cur.Rules.BanScope() == rules.PerCommunity:
+		a.Log.Info("admin ban by number refused: bans.scope is per_community", "target", mask.IDs(m.Key()), "by", actor)
 		return NumberBanned{Member: m, PerCommunity: true}, nil
 	case slices.ContainsFunc(cur.Rules.Communities(), func(c string) bool {
 		return a.Directory.IsAdmin(m.LID, m.Phone, c, cur.Rules)
