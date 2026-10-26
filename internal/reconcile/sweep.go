@@ -84,7 +84,8 @@ func (s *Sweep) Run(ctx context.Context, runID string) (Result, error) {
 		case errors.Is(err, client.ErrRateLimited):
 			res.RateLimited++
 			lookUpAgain = true
-			s.Log.Warn("sweep: ban LID lookup rate limited; checking the groups first, then looking up again")
+			s.Log.Warn("sweep: ban LID lookup rate limited; checking the groups first, then looking up again",
+				"err", mask.IDs(err.Error()))
 		default:
 			res.Errors++
 			s.Log.Error("sweep: ban LID lookup failed", "err", mask.IDs(err.Error()))
