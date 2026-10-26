@@ -374,7 +374,14 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 	if mode != rules.Enforce {
 		return verdict{outcome: shadow, reason: row.Community + " is in shadow mode"}, nil
 	}
-	member := x.Directory.Complete(client.MemberOf(client.JID(row.Target), client.JID(row.Address)))
+	// The author by every address the bot knows: a ban keyed by the address
+	// the row does not name (an admin's ban by number of someone who joined
+	// since the group list was last read) is found too.
+	member, err := pipeline.Identify(ctx, x.Directory, x.Store, nil,
+		client.MemberOf(client.JID(row.Target), client.JID(row.Address)))
+	if err != nil {
+		return verdict{}, err
+	}
 	if row.EvidenceID != 0 {
 		why, err := x.postsCount(ctx, row)
 		if err != nil {
