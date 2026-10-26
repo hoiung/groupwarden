@@ -699,6 +699,28 @@ func TestBanDeletesPosts(t *testing.T) {
 			t.Fatalf("calls %v, want the ban held and S1 and P2 deleted", h.k.Fake.Calls())
 		}
 	})
+	// A ban held while only the member's phone number was known still counts
+	// once their post arrives under their LID.
+	t.Run("post-after-held-ban-by-phone-deleted", func(t *testing.T) {
+		h := newHarness(t, "")
+		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
+			Reason: "too many removals", Since: h.k.Clock.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
+			_, err := ledger.Write(h.k.Ctx, tx, ledger.Plan{Trigger: "H1", Target: client.Member{Phone: modtest.SpammerPhone},
+				ConfigHash: "h", Ban: []string{store.BanEverywhere}, BanEnforce: true, BanHeld: true,
+				BanCommunity: string(modtest.Community), Reason: "spam post"}, h.k.Clock.Now())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Fire()
+		if h.k.Banned(modtest.SpammerM, "") || !h.revoked(modtest.G1, "P1") {
+			t.Fatalf("calls %v, want the ban still held and P1 deleted", h.k.Fake.Calls())
+		}
+	})
 	// The paused reply says the same about a community in shadow mode.
 	t.Run("shadow-community-paused-reply", func(t *testing.T) {
 		cfg := strings.Replace(modtest.Config, "    name: set b\n", "    name: set b\n    mode: shadow\n", 1)
