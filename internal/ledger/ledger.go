@@ -279,7 +279,7 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 			return w, err
 		}
 		// A ban a pause holds for the member there is in force now too.
-		if err := store.SettleHeldBansIn(ctx, tx, target, scope, id, now); err != nil {
+		if err := store.SettleHeldBansIn(ctx, tx, p.Target.IDs(), scope, id, now); err != nil {
 			return w, err
 		}
 	}
