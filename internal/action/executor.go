@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -373,12 +374,25 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 	if mode != rules.Enforce {
 		return verdict{outcome: shadow, reason: row.Community + " is in shadow mode"}, nil
 	}
+	member := x.Directory.Complete(client.MemberOf(client.JID(row.Target), client.JID(row.Address)))
 	if row.EvidenceID != 0 {
-		if why, err := x.postsCount(ctx, row); err != nil || why != "" {
+		why, err := x.postsCount(ctx, row)
+		if err != nil {
 			return verdict{outcome: fail, reason: why}, err
 		}
+		if why != "" {
+			// An admin who banned the author decided their posts go, whatever
+			// the rules say now: their ban's delete of this post folded into
+			// this row (PostsBy lists no post a delete is queued for).
+			admin, err := x.adminBanned(ctx, row, member)
+			if err != nil {
+				return verdict{}, err
+			}
+			if !admin {
+				return verdict{outcome: fail, reason: why}, nil
+			}
+		}
 	}
-	member := x.Directory.Complete(client.MemberOf(client.JID(row.Target), client.JID(row.Address)))
 	// The post of a sender the ban list cannot hold (no LID or phone number)
 	// is deleted on the post alone: no ban for them can exist.
 	if unaddressable := member.Key() == "" && row.Action == store.ActRevoke; !unaddressable {
@@ -534,6 +548,33 @@ func (x *Executor) banCommunities(ctx context.Context, row store.LedgerRow) (com
 		}
 	}
 	return communities, why, nil
+}
+
+// adminBanned reports whether row deletes a post whose author an admin
+// banned (from the admin chat or with the ban command) where the post is:
+// a ban list entry covering row's community whose ledger row an admin
+// ordered.
+func (x *Executor) adminBanned(ctx context.Context, row store.LedgerRow, member client.Member) (bool, error) {
+	if row.Action != store.ActRevoke {
+		return false, nil
+	}
+	bans, err := x.Store.BansFor(ctx, member.IDs())
+	if err != nil {
+		return false, err
+	}
+	for _, b := range bans {
+		if b.LedgerID == 0 || (b.Scope != store.BanEverywhere && b.Scope != row.Community) {
+			continue
+		}
+		r, err := x.Store.Ledger(ctx, b.LedgerID)
+		if err != nil {
+			return false, err
+		}
+		if strings.HasPrefix(r.TriggerID, store.AdminTrigger) || strings.HasPrefix(r.TriggerID, store.CLITrigger) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // banned reports whether the row's target is still banned: on the ban list
