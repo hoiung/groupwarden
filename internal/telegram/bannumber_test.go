@@ -364,6 +364,21 @@ func TestBanDeletesPosts(t *testing.T) {
 			t.Fatalf("rows %v, want 2 deletes sent", rows)
 		}
 	})
+	// A reply the bot could not decrypt is a post of its own: the ban deletes
+	// it by its ID. A secret edit it could not decrypt is not (its ID is not
+	// the post it edits).
+	t.Run("unreadable-reply-deleted-edit-not", func(t *testing.T) {
+		h := newHarness(t, "")
+		for id, isEdit := range map[string]bool{"UC1": false, "UE1": true} {
+			h.k.Deliver(&client.Undecryptable{Chat: modtest.G1, Sender: modtest.Spammer, SenderAlt: modtest.SpammerPhone,
+				ID: id, IsEdit: isEdit, Time: h.k.Clock.Now(), Reason: client.ReasonDecryptError, Detail: "synthetic"})
+		}
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "UC1") || h.revoked(modtest.G1, "UE1") {
+			t.Fatalf("calls %v, want UC1 deleted and UE1 not", h.k.Fake.Calls())
+		}
+	})
 	t.Run("skips-other-senders", func(t *testing.T) {
 		h := newHarness(t, "")
 		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
