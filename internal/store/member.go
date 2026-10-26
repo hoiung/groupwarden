@@ -57,7 +57,8 @@ func (s *Store) ForgetMember(ctx context.Context, ids []string) (Forgotten, erro
 		}
 		// The delivery records stay (a redelivery must still be ignored) but
 		// no longer name who sent the post.
-		if _, err := tx.ExecContext(ctx, `UPDATE seen SET sender = '' WHERE sender `+in, list); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE seen SET sender = '', sender_alt = '' WHERE sender `+in+
+			` OR sender_alt `+in, list); err != nil {
 			return err
 		}
 		reportIDs, err := idList(ctx, tx, `SELECT id FROM reports WHERE subject `+in, list)
