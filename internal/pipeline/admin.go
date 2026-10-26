@@ -456,7 +456,11 @@ func (a *Admin) numberMember(ctx context.Context, phone client.JID) (client.Memb
 		err = fmt.Errorf("%w: WhatsApp returned %s", client.ErrNoLID, mask.IDs(string(lid)))
 	}
 	if err != nil {
-		a.Log.Info("admin command by number: no LID found for the number; using the number alone",
+		level := slog.LevelWarn // WhatsApp could not be asked
+		if errors.Is(err, client.ErrNoLID) {
+			level = slog.LevelInfo // it was asked and has none
+		}
+		a.Log.Log(ctx, level, "admin command by number: no LID found for the number; using the number alone",
 			"target", mask.IDs(string(phone)), "err", mask.IDs(err.Error()))
 		return m, nil
 	}
