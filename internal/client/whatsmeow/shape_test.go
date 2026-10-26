@@ -82,6 +82,9 @@ func TestKeyPartDoesNotHideThePost(t *testing.T) {
 		{"key-bundled-with-group-mention", []*waE2E.Message{bundled}},
 		{"key-with-newer-delivery-field-then-post", []*waE2E.Message{newerKey, invitePost()}},
 		{"root-key-share-then-post", []*waE2E.Message{{GroupRootKeyShare: &waE2E.GroupRootKeyShare{}}, invitePost()}},
+		// A field WhatsApp adds at the message's top level, beside the key.
+		{"key-with-new-top-level-field-then-post", []*waE2E.Message{withUnknown(keyPart(), 9999, "synthetic new field"),
+			invitePost()}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -195,8 +198,9 @@ func TestUnreadableMessageWarns(t *testing.T) {
 	}{
 		{"unknown-field", withUnknown(&waE2E.Message{MessageContextInfo: &waE2E.MessageContextInfo{}}, 140, hiddenWords),
 			true, true, []string{"messageContextInfo"}, []string{"140"}, nil},
-		{"known-field-not-read", &waE2E.Message{ScheduledCallCreationMessage: &waE2E.ScheduledCallCreationMessage{Title: ps(hiddenWords)}},
-			true, true, []string{"scheduledCallCreationMessage"}, nil, nil},
+		{"known-field-not-read", &waE2E.Message{ProductMessage: &waE2E.ProductMessage{
+			Product: &waE2E.ProductMessage_ProductSnapshot{Title: ps(hiddenWords)}}},
+			true, true, []string{"productMessage"}, nil, nil},
 		{"wrapper-beside-content", &waE2E.Message{
 			GroupMentionedMessage: &waE2E.FutureProofMessage{Message: &waE2E.Message{Conversation: ps(hiddenWords)}},
 			SpoilerMessage:        &waE2E.FutureProofMessage{Message: &waE2E.Message{Conversation: ps(hiddenWords)}}},
@@ -243,6 +247,39 @@ func TestUnreadableMessageWarns(t *testing.T) {
 			if !reflect.DeepEqual(got["unknown"], c.unknown) || !reflect.DeepEqual(got["wrappers"], c.wrappers) || len(got["read"]) != 0 {
 				t.Errorf("unknown %v wrappers %v read %v, want %v, %v and nothing read", got["unknown"], got["wrappers"],
 					got["read"], c.unknown, c.wrappers)
+			}
+			if strings.Contains(buf.String(), hiddenWords) {
+				t.Fatalf("the log holds the message text: %s", buf)
+			}
+		})
+	}
+}
+
+// TestKeyPartWithUnreadExtraNotStored: a key part that also carries a field
+// the bot cannot read is not stored either (it would take the post's ID); a
+// warning gives its shape, never text.
+func TestKeyPartWithUnreadExtraNotStored(t *testing.T) {
+	const warn = "a message part with a sender key and nothing else the bot can read, not stored"
+	for name, msg := range map[string]*waE2E.Message{
+		"unknown-field": withUnknown(keyPart(), 9999, hiddenWords),
+		"known-field-not-read": func() *waE2E.Message {
+			k := keyPart()
+			k.ProductMessage = &waE2E.ProductMessage{Product: &waE2E.ProductMessage_ProductSnapshot{Title: ps(hiddenWords)}}
+			return k
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := &fakeSink{}
+			a, buf := loggedAdapter(t, sink, slog.LevelInfo)
+			if !a.handle(delivered("3EB0SYNTH0005", msg)) {
+				t.Fatal("handler refused the part")
+			}
+			if n := len(sink.events()); n != 0 {
+				t.Fatalf("%d events stored, want none", n)
+			}
+			lines := logLines(t, buf)
+			if len(lines) != 1 || lines[0]["msg"] != warn || lines[0]["level"] != "WARN" {
+				t.Fatalf("log lines %v, want one %q warning", lines, warn)
 			}
 			if strings.Contains(buf.String(), hiddenWords) {
 				t.Fatalf("the log holds the message text: %s", buf)
