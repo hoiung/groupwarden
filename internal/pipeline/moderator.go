@@ -166,7 +166,8 @@ func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Messa
 	if member.Key() == "" {
 		return nil
 	}
-	if _, banned, err := store.FindBan(ctx, tx, member.IDs(), community); err != nil || !banned {
+	ban, banned, err := store.FindBan(ctx, tx, member.IDs(), community)
+	if err != nil || !banned {
 		return err
 	}
 	if m.Directory.IsAdmin(member.LID, member.Phone, community, cur.Rules) {
@@ -174,11 +175,19 @@ func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Messa
 			"chat", mask.IDs(string(ev.Chat)), "sender", mask.IDs(member.Key()))
 		return nil
 	}
+	// The delete names the member as the ban does: a ban still keyed by the
+	// phone number (its LID not found yet) is matched here through the post's
+	// other address, which the executor's check before sending does not have
+	// for someone who joined since the group list was last read.
+	target := member
+	if ban.LID == "" {
+		target = client.MemberOf(client.JID(ban.Member))
+	}
 	at := item.TargetTime
 	if at.IsZero() {
 		at = ev.Time
 	}
-	p := ledger.Plan{Trigger: store.BannedPostTrigger + ev.ID, Target: member, ConfigHash: cur.Hash,
+	p := ledger.Plan{Trigger: store.BannedPostTrigger + ev.ID, Target: target, ConfigHash: cur.Hash,
 		Reason: "a post by a banned member", Intents: []ledger.Intent{{Action: store.ActRevoke, Chat: ev.Chat,
 			Community: community, Enforce: true, Address: ev.Sender, MsgID: ev.TargetID, MsgTime: at}}}
 	w, err := ledger.Write(ctx, tx, p, m.Store.Now())
