@@ -127,7 +127,10 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 	actor := ch.Actor.Bare()
 	humanAdmin := actor != "" && !e.Directory.IsSelf(actor) && e.Directory.IsAdmin(actor, ch.ActorAlt, community, rs)
 	for _, j := range ch.Joined {
-		m := e.Directory.Complete(client.MemberOf(j))
+		m, err := Identify(ctx, e.Directory, e.Store, tx, client.MemberOf(j))
+		if err != nil {
+			return err
+		}
 		ban, banned, err := store.FindBan(ctx, tx, m.IDs(), community)
 		if err != nil {
 			return err
@@ -180,7 +183,10 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 			if l.Bare() == actor || e.Directory.IsSelf(l) {
 				continue
 			}
-			m := e.Directory.Complete(client.MemberOf(l))
+			m, err := Identify(ctx, e.Directory, e.Store, tx, client.MemberOf(l))
+			if err != nil {
+				return err
+			}
 			if m.Key() == "" {
 				// No LID or phone number: nobody the ban list could hold.
 				e.Log.Warn("a human admin removed an address the bot cannot ban; not offered", "group",
@@ -312,6 +318,10 @@ func (e *Enforcer) enforceBan(ctx context.Context, m client.Member, group client
 	rs, where := cur.Rules, CommunityLabel(cur.Config, community)
 	queued := 0
 	err := e.Store.Write(ctx, func(tx *sql.Tx) error {
+		m, err := Identify(ctx, e.Directory, e.Store, tx, m)
+		if err != nil {
+			return err
+		}
 		ban, banned, err := store.FindBan(ctx, tx, m.IDs(), community)
 		if err != nil || !banned {
 			return err
