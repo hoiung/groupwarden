@@ -182,27 +182,49 @@ func unwrap(m *waE2E.Message) *waE2E.Message {
 	return m
 }
 
-// futureProofInner returns the message inside m when m's only content is a
-// FutureProofMessage envelope.
-func futureProofInner(m *waE2E.Message) *waE2E.Message {
-	var inner *waE2E.Message
+// soleContent returns m's only set field that is not a sender key or
+// delivery metadata (ok false when it has none or several).
+func soleContent(m *waE2E.Message) (protoreflect.FieldDescriptor, protoreflect.Value, bool) {
+	var sole protoreflect.FieldDescriptor
+	var value protoreflect.Value
 	set := 0
 	m.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
 		if keyFields[fd.Name()] {
 			return true // a sender key or delivery metadata, not content
 		}
 		set++
-		if fd.Kind() == protoreflect.MessageKind && fd.Message().FullName() == futureProofName {
-			if fp, ok := v.Message().Interface().(*waE2E.FutureProofMessage); ok {
-				inner = fp.GetMessage()
-			}
-		}
+		sole, value = fd, v
 		return true
 	})
-	if set != 1 {
+	return sole, value, set == 1
+}
+
+// futureProofInner returns the message inside m when m's only content is a
+// FutureProofMessage envelope.
+func futureProofInner(m *waE2E.Message) *waE2E.Message {
+	fd, v, ok := soleContent(m)
+	if !ok || fd.Kind() != protoreflect.MessageKind || fd.Message().FullName() != futureProofName {
 		return nil
 	}
-	return inner
+	fp, _ := v.Message().Interface().(*waE2E.FutureProofMessage)
+	return fp.GetMessage()
+}
+
+// commentInner returns the message a comment sent in the clear carries (a
+// reply under a community announcement, as a decrypted one reads), when the
+// comment is m's only content.
+func commentInner(m *waE2E.Message) *waE2E.Message {
+	if _, _, ok := soleContent(m); !ok {
+		return nil
+	}
+	return m.GetCommentMessage().GetMessage()
+}
+
+// carriesKey reports whether m hands over a sender key: the fields a key part
+// is made of, not the delivery data every message carries.
+func carriesKey(m *waE2E.Message) bool {
+	return m.GetSenderKeyDistributionMessage() != nil || m.GetFastRatchetKeySenderKeyDistributionMessage() != nil ||
+		m.GetGroupRootKeyShare() != nil
 }
 
 // contextInfo finds the ContextInfo of m's content part (mentions live there).
@@ -285,9 +307,16 @@ func extract(m *waE2E.Message) extracted {
 			continue
 		}
 		add("contact.name", c.GetDisplayName())
-		for _, n := range vcardNumbers(c.GetVcard()) {
+		numbers, text := vcard(c.GetVcard(), c.GetDisplayName())
+		for _, n := range numbers {
 			add("contact.number", n)
 		}
+		for _, s := range text {
+			add("contact.vcard", s)
+		}
+	}
+	if sc := m.GetScheduledCallCreationMessage(); sc != nil {
+		add("call.title", sc.GetTitle())
 	}
 	if l := m.GetLocationMessage(); l != nil {
 		add("location.name", l.GetName())
@@ -353,21 +382,42 @@ func extract(m *waE2E.Message) extracted {
 	return extracted{fields: raw, mentions: mentions, media: mediaOf(m)}
 }
 
-// vcardNumbers returns the phone numbers on the TEL lines of a vCard.
-func vcardNumbers(vcard string) []string {
-	var out []string
-	for _, line := range strings.Split(vcard, "\n") {
-		line = strings.TrimSpace(line)
-		key, val, ok := strings.Cut(line, ":")
+// vcard returns the phone numbers on the TEL lines of a vCard, and the text
+// on its other lines (a business's name and description, a URL, an e-mail, a
+// note: any can carry a pitch). Its structure (BEGIN, END, VERSION, the
+// structured name N), the binary photo or logo, and a full name the same as
+// the card's display name are left out.
+func vcard(card, displayName string) (numbers, text []string) {
+	for _, line := range strings.Split(card, "\n") {
+		key, val, ok := strings.Cut(strings.TrimSpace(line), ":")
 		if !ok {
 			continue
 		}
-		if k := strings.ToUpper(key); k == "TEL" || strings.HasPrefix(k, "TEL;") || strings.HasSuffix(k, ".TEL") ||
-			strings.Contains(k, ".TEL;") {
-			out = append(out, strings.TrimSpace(val))
+		val = strings.TrimSpace(val)
+		k := strings.ToUpper(key)
+		k, _, _ = strings.Cut(k, ";") // its parameters ("TEL;TYPE=CELL")
+		if i := strings.LastIndexByte(k, '.'); i >= 0 {
+			k = k[i+1:] // its group ("item1.TEL")
+		}
+		switch k {
+		case "TEL":
+			numbers = append(numbers, val)
+		case "BEGIN", "END", "VERSION", "N", "PHOTO", "LOGO", "SOUND", "KEY", "UID", "REV", "PRODID":
+		case "FN":
+			if val != strings.TrimSpace(displayName) {
+				text = append(text, vcardUnescape(val))
+			}
+		default:
+			text = append(text, vcardUnescape(val))
 		}
 	}
-	return out
+	return numbers, text
+}
+
+// vcardUnescape undoes a vCard value's escapes: "\n" is a line break, and a
+// comma, semicolon or backslash after a backslash stands for itself.
+func vcardUnescape(s string) string {
+	return strings.NewReplacer(`\n`, "\n", `\N`, "\n", `\,`, ",", `\;`, ";", `\\`, `\`).Replace(s)
 }
 
 // mediaOf describes m's attachment, keeping the part DownloadMedia needs.
