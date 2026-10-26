@@ -403,10 +403,10 @@ func TestBanDeletesPosts(t *testing.T) {
 	// author is on the ban list (no pause held it), and when the admin's
 	// ban can no longer show who made it (its ledger row purged past
 	// retention): the queue goes on, with a Warn. The admin's ban is found
-	// for someone who joined since the group list was last read too (the
-	// bot's row names their LID, the ban their number; the post they sent
-	// pairs the two), from the admin chat or the command line, which asks
-	// for no sweep.
+	// for someone who joined since the group list was last read too: from
+	// the admin chat it is resolved on their LID at once; from the command
+	// line, which asks for no sweep, it names their number, and the post
+	// they sent pairs the two for the bot's row, which names their LID.
 	for name, c := range map[string]struct{ pause, adminBan, cliBan, joiner, purge, deleted bool }{
 		"admin-banned":               {pause: true, adminBan: true, deleted: true},
 		"bot-only":                   {pause: true},
@@ -1146,9 +1146,9 @@ func TestBanRecentJoiner(t *testing.T) {
 			}
 		})
 	}
-	// [Undo] after /ban <number>, before the sweep re-keys the number's ban on
-	// their LID, lifts the number's ban too: the record of their post gives
-	// the number, so the next sweep removes nobody.
+	// [Undo] after a ban of their number with the ban command, before the
+	// sweep re-keys it on their LID, lifts the number's ban too: the record
+	// of their post gives the number, so the next sweep removes nobody.
 	t.Run("undo-before-sweep-lifts-number-ban", func(t *testing.T) {
 		h := newHarness(t, "")
 		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
@@ -1159,7 +1159,7 @@ func TestBanRecentJoiner(t *testing.T) {
 		}
 		r := h.spam("S1")
 		h.drain()
-		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.cliBan()
 		h.press(secondAdm, "undo", r.ID)
 		if bans := h.bans(); len(bans) != 0 {
 			t.Fatalf("bans %+v after [Undo], want none (the number's ban lifted too)", bans)
@@ -1253,17 +1253,18 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("reply %q, bans %+v, want the already-banned reply and no second ban", reply, h.bans())
 		}
 	})
-	// A post they send after /ban <number> without their number is deleted
+	// A post they send without their number, after a ban of their number
+	// with the ban command (keyed by the number until the sweep), is deleted
 	// on arrival: an earlier post of theirs paired the two addresses.
 	t.Run("post-without-number-after-ban-deleted", func(t *testing.T) {
 		h := newHarness(t, "")
 		recentJoiner(h)
 		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
-		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.cliBan()
 		h.post("P2", modtest.G1, modtest.Spammer, "")
 		h.k.Fire()
-		if !h.revoked(modtest.G1, "P1") || !h.revoked(modtest.G1, "P2") {
-			t.Fatalf("calls %v, rows %v, want P1 and P2 deleted", h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
+		if !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, rows %v, want P2 deleted", h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
 		}
 	})
 	// [Ban] on a report about a post sent without their number bans them
