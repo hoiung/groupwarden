@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -183,10 +184,17 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		p.Ban, p.BanEnforce, p.Reason = []string{scope}, true, "added with the ban command"
 		p.Reports = []store.Report{{Kind: ledger.KindBanCLI, Community: scope, Text: "A ban was added with the ban command."}}
 	case "remove":
+		// By every address the stores know: a ban that names them by the
+		// address not given (by LID alone, for someone who joined since the
+		// group list was last read) is found by the number too.
+		if p.Target, err = e.banMember(ctx, st, cfg, m); err != nil {
+			fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+			return exitFail
+		}
 		// A ban a pause holds is lifted too (it would apply once the pause ends).
-		_, banned, err := st.FindBan(ctx, m.IDs(), community)
+		_, banned, err := st.FindBan(ctx, p.Target.IDs(), community)
 		if err == nil && !banned {
-			banned, err = st.HeldBan(ctx, m.IDs(), community)
+			banned, err = st.HeldBan(ctx, p.Target.IDs(), community)
 		}
 		if err != nil {
 			fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
@@ -218,6 +226,36 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 	}
 	fmt.Fprintf(e.stdout, "unbanned %s%s\n", m.Key(), in)
 	return exitOK
+}
+
+// banMember is m by every address the stores know (knownIDs) and the other
+// address the bot recorded beside the one given (store.OtherAddress), as
+// /unban <number> finds them.
+func (e *env) banMember(ctx context.Context, st *store.Store, cfg *config.Config, m client.Member) (client.Member, error) {
+	session, err := openSession(ctx, cfg, e.now)
+	if err != nil {
+		return m, err
+	}
+	if session != nil {
+		defer session.Close()
+	}
+	ids, err := knownIDs(ctx, st, session, m)
+	if err != nil {
+		return m, err
+	}
+	if (m.LID == "") != (m.Phone == "") {
+		other, err := st.OtherAddress(ctx, m.Key())
+		if err != nil {
+			return m, err
+		}
+		ids = append(ids, other)
+	}
+	sort.Strings(ids)
+	all := []client.JID{m.LID, m.Phone}
+	for _, id := range ids {
+		all = append(all, client.JID(id))
+	}
+	return client.MemberOf(all...), nil
 }
 
 func dash(s string) string {
