@@ -154,8 +154,9 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 // before their removal, whether or not a log rule or a watch-only rule matched
 // it. A ban a pause holds does not count until it is applied: the pause may
 // be the breaker's, held because a rule may be misfiring, and the ban may
-// still fail. The removal is the sweep's or the join's. No report: the admins were told
-// of the ban or the rejoin; the ledger row and a log line record the delete.
+// still fail. The removal is the sweep's or the join's. No report: the admins
+// were told of the ban or the rejoin; the ledger row and a log line record the
+// delete.
 func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Message, item Item, community string,
 	cur *config.Loaded) error {
 	if item.ReportOnly || ev.TargetID == "" || !enforced(cur.Rules, community) {
