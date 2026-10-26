@@ -375,13 +375,15 @@ type NumberBanned struct {
 
 // BanNumber is /ban <number>: it bans a phone number in the admin chat,
 // stored as `groupwarden ban add <phone>` stores it (keyed by the phone JID
-// until the sweep resolves its LID, in the scope bans.scope gives, with
-// every action in enforce), its ledger rows triggered store.AdminBanTrigger
-// and naming the admin, and deletes the number's posts the bot still has a
-// record of, found by the number and by the LID the bot knows or finds for
-// it (numberMember). Removing them from the groups is the sweep's, which the
-// caller asks for. A number already banned everywhere gets no second ban,
-// but its posts are deleted all the same: every /ban cleans up.
+// until its LID is known, in the scope bans.scope gives, with every action
+// in enforce; when the bot knows the LID or WhatsApp gives it, the ban is
+// resolved at once, as the sweep resolves it), its ledger rows triggered
+// store.AdminBanTrigger and naming the admin, and deletes the number's posts
+// the bot still has a record of, found by the number and by the LID the bot
+// knows or finds for it (numberMember). Removing them from the groups is the
+// sweep's, which the caller asks for. A number already banned everywhere
+// gets no second ban, but its posts are deleted all the same: every /ban
+// cleans up.
 func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (NumberBanned, error) {
 	if !a.Directory.IsLoaded() {
 		return NumberBanned{}, errGroupsNotLoaded
@@ -427,8 +429,13 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 		if p.Intents, out.Posts, err = a.postDeletes(ctx, tx, m, scopes, true, "", ""); err != nil {
 			return err
 		}
-		w, err = ledger.Write(ctx, tx, p, now)
-		return err
+		if w, err = ledger.Write(ctx, tx, p, now); err != nil || out.Already || m.LID == "" {
+			return err
+		}
+		// Their LID is known, so the ban is resolved now, as the sweep would
+		// resolve it: a post they send under their LID alone before the sweep
+		// is then found as banned and deleted.
+		return store.ResolveBanIn(ctx, tx, string(phone), string(m.LID))
 	}); err != nil {
 		return NumberBanned{}, err
 	}
@@ -436,7 +443,7 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 		a.Enforcer.wake()
 	}
 	a.Log.Info("admin ban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "already", out.Already,
-		"posts_deleting", out.Posts.Deleting, "posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow,
+		"lid_resolved", !out.Already && m.LID != "", "posts_deleting", out.Posts.Deleting, "posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow,
 		"posts_spared", out.Posts.Spared, "queued", w.Queued, "by", actor)
 	return out, nil
 }
