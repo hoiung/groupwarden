@@ -166,7 +166,7 @@ func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Messa
 	}
 	_, banned, err := store.FindBan(ctx, tx, member.IDs(), community)
 	if err == nil && !banned {
-		banned, err = store.HeldBanIn(ctx, tx, []string{member.Key()}, community)
+		banned, err = store.HeldBanIn(ctx, tx, member.IDs(), community)
 	}
 	if err != nil || !banned {
 		return err
