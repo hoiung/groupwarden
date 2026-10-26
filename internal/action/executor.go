@@ -387,7 +387,7 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 			return verdict{}, err
 		}
 		if !banned {
-			return verdict{outcome: fail, reason: "the member is not banned in " + row.Community}, nil
+			return verdict{outcome: fail, reason: store.ReasonNotBanned + row.Community}, nil
 		}
 	}
 	// Only a delete has a deadline: act_on_replay_max_age (at most WhatsApp's
