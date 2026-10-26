@@ -77,10 +77,12 @@ func TestHeldBanSettlesOnce(t *testing.T) {
 	}
 }
 
-// TestHeldBanFoundByPhone: a held ban that names the member by LID is found,
-// settled and dropped by the phone it keeps in address, as for someone who
-// joined since the group list was last read (the directory has no pair for
-// them, so a lookup by number has the phone alone).
+// TestHeldBanFoundByPhone: a held ban that names the member by LID is found
+// and dropped by the phone it keeps in address, as for someone who joined
+// since the group list was last read (the directory has no pair for them, so
+// a lookup by number has the phone alone). An admin's ban by the phone alone
+// does not settle it: that ban puts no LID on the ban list, so the held ban
+// stays to apply when the pause ends.
 func TestHeldBanFoundByPhone(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
@@ -116,8 +118,8 @@ func TestHeldBanFoundByPhone(t *testing.T) {
 	if err := s.Write(ctx, func(tx *sql.Tx) error { return DropHeldBans(ctx, tx, []string{phone}, "c2", "unbanned", now) }); err != nil {
 		t.Fatal(err)
 	}
-	if statusOf("c1") != Requested || statusOf("c2") != Overturned || statusOf("c3") != Intended {
-		t.Fatalf("settled by phone in c1, dropped by phone in c2: c1 %s, c2 %s, c3 %s; want requested, overturned, intended",
+	if statusOf("c1") != Intended || statusOf("c2") != Overturned || statusOf("c3") != Intended {
+		t.Fatalf("settling by phone in c1, dropped by phone in c2: c1 %s, c2 %s, c3 %s; want intended, overturned, intended",
 			statusOf("c1"), statusOf("c2"), statusOf("c3"))
 	}
 }
