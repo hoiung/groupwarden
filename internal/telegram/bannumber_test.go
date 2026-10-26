@@ -599,6 +599,76 @@ func TestBanDeletesPosts(t *testing.T) {
 			t.Fatalf("%d enforced delete rows for W1, calls %v, want one", dels, h.k.Fake.Calls())
 		}
 	})
+	// A post the banned person sends after the ban, before the sweep removes
+	// them, is deleted when it arrives; once they are unbanned it is not.
+	t.Run("post-after-ban-deleted", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.post("P2", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") || !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, want P1 and P2 deleted", h.k.Fake.Calls())
+		}
+		if n := h.k.Logged("post by a banned member; delete planned"); n != 1 {
+			t.Fatalf("%d delete-planned log lines, want 1 (for P2)", n)
+		}
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		h.post("P3", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Fire()
+		for _, r := range h.k.Rows(modtest.SpammerM) {
+			if r.Action == store.ActRevoke && r.MsgID == "P3" {
+				t.Fatalf("row %+v, want no delete planned for a post after the unban", r)
+			}
+		}
+		if h.revoked(modtest.G1, "P3") {
+			t.Fatalf("calls %v, want P3 kept", h.k.Fake.Calls())
+		}
+	})
+	// In a community in shadow mode a ban deletes nothing: the reply counts the
+	// person's posts there as left, says the sweep only reports them there, and
+	// a post they send there after the ban is kept too.
+	t.Run("shadow-community-not-deleted", func(t *testing.T) {
+		cfg := strings.Replace(modtest.Config, "    name: set b\n", "    name: set b\n    mode: shadow\n", 1)
+		if cfg == modtest.Config {
+			t.Fatal("the kit config has no community named set b")
+		}
+		h := newHarnessKit(t, modtest.NewConfig(t, cfg))
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.post("P3", modtest.GB, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		got := h.lastReply()
+		if !strings.Contains(got, "1 being deleted, 0 too old to delete, 1 left in a community in shadow mode") ||
+			!strings.Contains(got, "except in a community in shadow mode, where the sweep only reports them") {
+			t.Fatalf("reply %q", got)
+		}
+		h.post("P4", modtest.GB, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") || h.revoked(modtest.GB, "P3") || h.revoked(modtest.GB, "P4") {
+			t.Fatalf("calls %v, want only P1 deleted", h.k.Fake.Calls())
+		}
+		for _, r := range h.k.Rows(modtest.SpammerM) {
+			if r.Action == store.ActRevoke && r.Mode == store.ModeEnforce && r.MsgID != "P1" {
+				t.Fatalf("row %+v, want no enforced delete outside the enforce community", r)
+			}
+		}
+	})
+	// A post by a banned member who is a current admin is left alone, as
+	// every action against an admin is.
+	t.Run("post-by-banned-admin-kept", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Ban(modtest.AdminM)
+		h.post("A1", modtest.G1, modtest.Admin, modtest.AdminPhone)
+		h.k.Fire()
+		for _, r := range h.k.Rows(modtest.AdminM) {
+			if r.Action == store.ActRevoke {
+				t.Fatalf("row %+v, want no delete planned for an admin's post", r)
+			}
+		}
+		if h.revoked(modtest.G1, "A1") || h.k.Logged("post by a banned member who is a current admin; not deleted") != 1 {
+			t.Fatalf("calls %v, want A1 kept and logged", h.k.Fake.Calls())
+		}
+	})
 }
 
 // TestBanWaitsForGroupList: a ban sent before the bot has read its group
