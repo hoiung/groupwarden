@@ -995,3 +995,36 @@ func TestBanRecentJoiner(t *testing.T) {
 		})
 	}
 }
+
+// TestBanNumberCommunityScope (AC 5.1, 5.2): a ban one community holds (from
+// bans.scope per_community) is lifted by /unban <number>, and, left over
+// after a switch to all_communities, does not make /ban <number> answer
+// "already banned".
+func TestBanNumberCommunityScope(t *testing.T) {
+	communityBan := func(t *testing.T, h *harness) {
+		t.Helper()
+		h.k.Deliver(h.k.Spam("S1", modtest.G1))
+		h.k.Fire()
+		if bans := h.bans(); len(bans) != 1 || bans[0].Scope != string(modtest.Community) {
+			t.Fatalf("premise: want one ban scoped to the community, got %+v", bans)
+		}
+	}
+	t.Run("unban-lifts-community-ban", func(t *testing.T) {
+		h := newHarness(t, "bans:\n  scope: per_community\n")
+		communityBan(t, h)
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		if reply := h.lastReply(); !strings.Contains(reply, "(1 ban(s) lifted)") || len(h.bans()) != 0 ||
+			h.k.Banned(modtest.SpammerM, "") {
+			t.Fatalf("reply %q, bans left %+v; want the community's ban lifted", reply, h.bans())
+		}
+	})
+	t.Run("community-ban-not-already-everywhere", func(t *testing.T) {
+		h := newHarness(t, "bans:\n  scope: per_community\n")
+		communityBan(t, h)
+		h.k.ReloadConfig(modtest.Config)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if reply := h.lastReply(); strings.Contains(reply, "already banned") || !h.k.Banned(modtest.SpammerM, string(modtest.SetB)) {
+			t.Fatalf("reply %q, bans %+v; want them banned everywhere", reply, h.bans())
+		}
+	})
+}
