@@ -354,6 +354,11 @@ const (
 	AdminUnbanTrigger = AdminTrigger + "unban:"
 )
 
+// CLITrigger prefixes the trigger of a row ordered with the ban command on the
+// node (`groupwarden ban add|remove`), followed by its time in unix
+// milliseconds.
+const CLITrigger = "cli:"
+
 // BannedPostTrigger prefixes the trigger of a delete of a banned member's
 // post ("banned:<message ID>"), so its row never shares a key with the
 // shadow row a watch-only match of the same post writes.
@@ -575,13 +580,8 @@ WHERE action = 'ban' AND status = 'intended' AND `+banRowOf+`
 // HeldBan reports whether a pause holds a ban for any of targets that covers
 // community (as FindBan; "" for any scope).
 func (s *Store) HeldBan(ctx context.Context, targets []string, community string) (bool, error) {
-	return HeldBanIn(ctx, s.db, targets, community)
-}
-
-// HeldBanIn is HeldBan read through q (a transaction).
-func HeldBanIn(ctx context.Context, q queryer, targets []string, community string) (bool, error) {
 	var n int
-	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+`
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+`
 	AND `+banRowOf+` AND (?2 = '' OR chat = '*' OR chat = ?2)`,
 		jsonList(targets), community).Scan(&n)
 	if err != nil {
