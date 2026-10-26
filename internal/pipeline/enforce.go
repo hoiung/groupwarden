@@ -461,8 +461,8 @@ func (e *Enforcer) ResolveBans(ctx context.Context) error {
 		e.Log.Warn("ban phone number not resolved to a LID", "phone", mask.IDs(b.Phone), "err", mask.IDs(err.Error()))
 		reported, err := e.Store.MarkBanLIDFailed(ctx, b.Phone, store.Report{Kind: ledger.KindLIDUnresolved, Priority: true,
 			Subject: b.Member, Text: "A banned phone number could not be matched to its WhatsApp ID (LID). The ban is kept " +
-				"on the phone number; someone who joins under their LID only matches it only through the record of a " +
-				"post of theirs that carried both."})
+				"on the phone number; someone who joins under their LID alone matches it when the group list or the " +
+				"record of a post of theirs pairs the two."})
 		if err != nil {
 			return err
 		}
