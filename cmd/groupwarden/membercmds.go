@@ -21,8 +21,8 @@ import (
 )
 
 // parseMember reads a member given as a LID ("<digits>@lid") or a phone
-// number (digits with country code, spaces, + and - allowed, or a full
-// "<digits>@s.whatsapp.net").
+// number: a full "<digits>@s.whatsapp.net", or written with its country code
+// as /ban <number> takes it (client.PhoneJID).
 func parseMember(arg string) (client.Member, error) {
 	s := strings.TrimSpace(arg)
 	user, server, hasServer := strings.Cut(s, "@")
@@ -32,11 +32,11 @@ func parseMember(arg string) (client.Member, error) {
 		}
 		return client.MemberOf(client.JID(user + "@" + server)), nil
 	}
-	digits := strings.NewReplacer(" ", "", "+", "", "-", "", "(", "", ")", "").Replace(s)
-	if !allDigits(digits) || len(digits) < 7 || len(digits) > 15 {
+	phone, ok := client.PhoneJID(s)
+	if !ok {
 		return client.Member{}, fmt.Errorf("%q is not a LID (<digits>@lid) or a phone number with its country code", arg)
 	}
-	return client.Member{Phone: client.JID(digits + "@s.whatsapp.net")}, nil
+	return client.Member{Phone: phone}, nil
 }
 
 func allDigits(s string) bool {
@@ -177,7 +177,7 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 	if community != "" {
 		in = " in " + community
 	}
-	p := ledger.Plan{Trigger: "cli:" + strconv.FormatInt(e.now().UnixMilli(), 10), Target: m, ConfigHash: l.Hash,
+	p := ledger.Plan{Trigger: store.CLITrigger + strconv.FormatInt(e.now().UnixMilli(), 10), Target: m, ConfigHash: l.Hash,
 		Actor: "cli", BanCommunity: scope}
 	switch sub {
 	case "add":
