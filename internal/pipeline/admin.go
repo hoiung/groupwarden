@@ -437,11 +437,11 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 type NumberUnbanned struct {
 	// Member is the number, with the LID the directory and the ban list know.
 	Member client.Member
-	// Lifted counts the ban list entries lifted (a ban a pause holds is
-	// dropped too, and not counted); NotBanned: there was neither, so
-	// nothing changed.
-	Lifted    int
-	NotBanned bool
+	// Lifted counts the ban list entries lifted and Held the bans a pause
+	// held for them, dropped too; NotBanned: there was neither, so nothing
+	// changed.
+	Lifted, Held int
+	NotBanned    bool
 }
 
 // UnbanNumber is /unban <number>: it lifts every ban of a phone number,
@@ -464,11 +464,11 @@ func (a *Admin) UnbanNumber(ctx context.Context, phone client.JID, actor string)
 		if err != nil {
 			return err
 		}
-		held, err := store.HeldBanIn(ctx, tx, m.IDs(), "")
+		held, err := store.HeldBansIn(ctx, tx, m.IDs(), "")
 		if err != nil {
 			return err
 		}
-		out.Lifted, out.NotBanned = len(bans), len(bans) == 0 && !held
+		out.Lifted, out.Held, out.NotBanned = len(bans), held, len(bans) == 0 && held == 0
 		if out.NotBanned {
 			return nil
 		}
@@ -478,7 +478,7 @@ func (a *Admin) UnbanNumber(ctx context.Context, phone client.JID, actor string)
 		return NumberUnbanned{}, err
 	}
 	a.Log.Info("admin unban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "bans_lifted", out.Lifted,
-		"not_banned", out.NotBanned, "by", actor)
+		"held_dropped", out.Held, "not_banned", out.NotBanned, "by", actor)
 	return out, nil
 }
 
