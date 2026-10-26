@@ -29,7 +29,8 @@ type Enforcer struct {
 	Config    *config.Holder
 	Directory *Directory
 	// Adapter is used only by the sweep-time checks (join requests, LID
-	// lookups); deciding an event never touches the network.
+	// lookups) and by /ban and /unban <number>'s LID lookup (Admin); deciding
+	// an event never touches the network.
 	Adapter client.Adapter
 	// Wake is called after actions or reports were queued (nil: no-op).
 	Wake func()
