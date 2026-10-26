@@ -116,15 +116,14 @@ func (c controls) BanNumber(ctx context.Context, phone client.JID, by telegram.A
 	text := fmt.Sprintf("Banned by %s: %s is banned everywhere. %s. ", by.Name, who,
 		upperFirst(postsNote(res.Posts, res.Paused, false)))
 	if res.Paused != "" {
-		text += "The bot sweeps every group now; removing them waits for the pause to end."
+		text += "The bot sweeps every group now; removing them waits for the pause to end"
 	} else {
 		text += "The bot sweeps every group now and removes them wherever it finds them"
-		if anyShadow(c.a.Config.Current().Rules) {
-			text += ", except in a community in shadow mode, where the sweep only reports them"
-		}
-		text += "."
 	}
-	return text + " To undo: /unban with the same number.", nil
+	if anyShadow(c.a.Config.Current().Rules) {
+		text += ", except in a community in shadow mode, where the sweep only reports them"
+	}
+	return text + ". To undo: /unban with the same number.", nil
 }
 
 // UnbanNumber is /unban <number>.
