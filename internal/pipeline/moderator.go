@@ -116,7 +116,7 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 				return err
 			}
 		}
-		return nil
+		return m.bannedPost(ctx, tx, ev, item, community, cur)
 	}
 	m.Log.Info("decision", "action", string(d.Action), "rule", d.Rule, "would_have_acted", d.WouldHaveActed,
 		"exempt", string(d.Exempt), "community", mask.IDs(community), "chat", mask.IDs(string(ev.Chat)),
@@ -138,6 +138,47 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 		return err
 	}
 	if w.Queued > 0 || len(w.ReportIDs) > 0 {
+		m.Enforcer.wake()
+	}
+	return nil
+}
+
+// bannedPost deletes a post no rule acted on when its sender is banned in
+// community and it is in enforce mode: a post sent after the ban and before
+// the sweep removes them, or after they rejoined and before their removal.
+// The removal is the sweep's or the join's. No report: the admins were told
+// of the ban or the rejoin; the ledger row and a log line record the delete.
+func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Message, item Item, community string,
+	cur *config.Loaded) error {
+	if item.ReportOnly || ev.TargetID == "" || !enforced(cur.Rules, community) {
+		return nil
+	}
+	member := m.Directory.Complete(client.MemberOf(ev.Sender, ev.SenderAlt))
+	if member.Key() == "" {
+		return nil
+	}
+	if _, banned, err := store.FindBan(ctx, tx, member.IDs(), community); err != nil || !banned {
+		return err
+	}
+	if m.Directory.IsAdmin(member.LID, member.Phone, community, cur.Rules) {
+		m.Log.Info("post by a banned member who is a current admin; not deleted", "community", mask.IDs(community),
+			"chat", mask.IDs(string(ev.Chat)), "sender", mask.IDs(member.Key()))
+		return nil
+	}
+	at := item.TargetTime
+	if at.IsZero() {
+		at = ev.Time
+	}
+	p := ledger.Plan{Trigger: ev.ID, Target: member, ConfigHash: cur.Hash, Reason: "a post by a banned member",
+		Intents: []ledger.Intent{{Action: store.ActRevoke, Chat: ev.Chat, Community: community, Enforce: true,
+			Address: ev.Sender, MsgID: ev.TargetID, MsgTime: at}}}
+	w, err := ledger.Write(ctx, tx, p, m.Store.Now())
+	if err != nil {
+		return err
+	}
+	m.Log.Info("post by a banned member; delete planned", "community", mask.IDs(community),
+		"chat", mask.IDs(string(ev.Chat)), "sender", mask.IDs(member.Key()), "queued", w.Queued)
+	if w.Queued > 0 {
 		m.Enforcer.wake()
 	}
 	return nil
