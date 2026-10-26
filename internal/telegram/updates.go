@@ -215,10 +215,11 @@ const (
 )
 
 // phoneDigits takes out what people write around and between a phone
-// number's digits (spaces, dashes, brackets, a leading "+") and reports
-// whether only digits are left.
+// number's digits (spaces, dashes, brackets, a leading "+", and a "(0)" after
+// the country code, the national 0 that is not dialled from abroad) and
+// reports whether only digits are left.
 func phoneDigits(s string) (string, bool) {
-	s = strings.TrimPrefix(strings.TrimSpace(s), "+")
+	s = strings.ReplaceAll(strings.TrimPrefix(strings.TrimSpace(s), "+"), "(0)", "")
 	bad := false
 	d := strings.Map(func(r rune) rune {
 		switch {
