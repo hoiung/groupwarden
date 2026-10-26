@@ -38,8 +38,8 @@ type Admin struct {
 // planned before then finds no group to delete the member's posts in or to
 // check them as an admin of, and once they are banned no later ban plans
 // those deletes. The press (or command) can be tried again.
-var errGroupsNotLoaded = errors.New("the bot has not loaded its group list yet (it is still connecting to WhatsApp); " +
-	"try again in a minute")
+var errGroupsNotLoaded = errors.New("the bot has not loaded its group list yet (it has just started, or it cannot read the " +
+	"list from WhatsApp, which it alerts about); try again in a minute")
 
 // adminTrigger is a press's ledger trigger.
 func adminTrigger(reportID int64, button string) string {
