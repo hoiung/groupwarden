@@ -30,6 +30,8 @@ func spellings() map[string]string {
 		"dashes":      strings.ReplaceAll(spammerNumber, " ", "-"),
 		"brackets":    strings.Replace(spammerNumber, " 7700 ", " (7700) ", 1),
 		"digits-only": strings.TrimPrefix(plus, "+"),
+		// The national 0 some write in brackets after the country code.
+		"trunk-zero": strings.Replace(spammerNumber, " 7700 ", " (0)7700 ", 1),
 	}
 }
 
