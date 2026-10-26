@@ -600,20 +600,21 @@ func (x *Executor) send(ctx context.Context, row store.LedgerRow) error {
 	if err != nil || settled || status != store.Requested || row.Action == store.ActRevoke {
 		return err
 	}
-	// [Undo] overturned the row while its call was in flight: the member was
-	// removed (or refused) anyway, and the Undo reply did not list this group.
-	// This report is written after Finish, not with it: rolled back together,
-	// a failed report would also lose the record that the call went out (sent
-	// time and code on the overturned row), and nothing would retry it, since
-	// [Undo] already dropped the row from the outbox.
+	// [Undo] or /unban <number> overturned the row while its call was in
+	// flight: the member was removed (or refused) anyway, and the reply did
+	// not list this group. This report is written after Finish, not with it:
+	// rolled back together, a failed report would also lose the record that
+	// the call went out (sent time and code on the overturned row), and
+	// nothing would retry it, since the unban already dropped the row from the
+	// outbox.
 	next := "re-invite them there by hand"
 	if row.Action == store.ActReject {
 		next = "they can ask to join again"
 	}
-	x.Log.Warn("action went out while [Undo] ran", "action", string(row.Action), "chat", mask.IDs(row.Chat),
+	x.Log.Warn("action went out while an unban ran", "action", string(row.Action), "chat", mask.IDs(row.Chat),
 		"target", mask.IDs(row.Target))
 	x.report(ctx, store.Report{Kind: ledger.KindUndoRace, Priority: true, Community: row.Community, Subject: row.Target,
-		Text: fmt.Sprintf("While an admin pressed [Undo], the bot's call to %s in %s had already gone out: %s.",
+		Text: fmt.Sprintf("While an admin unbanned them ([Undo] or /unban), the bot's call to %s in %s had already gone out: %s.",
 			what(row.Action), x.Directory.Label(chat), next)}, row.ID)
 	return nil
 }
