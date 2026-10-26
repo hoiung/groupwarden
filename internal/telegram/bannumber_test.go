@@ -446,4 +446,50 @@ func TestBanDeletesPosts(t *testing.T) {
 			t.Fatalf("rows %v, calls %v, want the one failed delete and no send", rows, h.k.Fake.Calls())
 		}
 	})
+	// Several posts in one group are each deleted: one ban writes a delete
+	// row per post, never one per group.
+	t.Run("two-posts-one-group", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.post("P2", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if got := h.lastReply(); !strings.Contains(got, "Their posts on record: 2 being deleted, 0 too old to delete.") {
+			t.Fatalf("reply %q", got)
+		}
+		if queued, err := h.k.Store.OutboxLen(h.k.Ctx); err != nil || queued != 2 {
+			t.Fatalf("%d queued (%v), want the 2 deletes in the outbox", queued, err)
+		}
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") || !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, want P1 and P2 deleted", h.k.Fake.Calls())
+		}
+	})
+	// An older post too old to delete does not stop a newer one in the same
+	// group.
+	t.Run("old-and-new-one-group", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("OLD", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Clock.Advance(47*time.Hour + time.Minute)
+		h.post("NEW", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if got := h.lastReply(); !strings.Contains(got, "Their posts on record: 1 being deleted, 1 too old to delete") {
+			t.Fatalf("reply %q", got)
+		}
+		h.k.Fire()
+		if h.revoked(modtest.G1, "OLD") || !h.revoked(modtest.G1, "NEW") {
+			t.Fatalf("calls %v, want NEW deleted and OLD never sent", h.k.Fake.Calls())
+		}
+	})
+	// [Ban] on a report deletes the reported post and the member's other
+	// posts in the same group.
+	t.Run("ban-button-other-post-same-group", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("P2", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		r := watchOnly(t, h)
+		h.press(adminUser, "ban", r.ID)
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "W1") || !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, want the reported W1 and the other post P2 deleted", h.k.Fake.Calls())
+		}
+	})
 }
