@@ -36,8 +36,10 @@ var adminCommands = []adminCommand{
 	{"reload", "", "load the config again (a rejected config leaves the old one running)"},
 	{"enable", "<invite link>", "moderate what the link points to (a community link: the whole community; a group link: that group alone), joining it if needed"},
 	{"disable", "<invite link or name>", "stop moderating what /enable switched on for that link, or under the name /status shows (the bot stays in the group)"},
-	{"ban", "", "send as a reply to a \"would have acted\" report: delete that post, remove and ban its sender"},
-	{"unban", "<report number>", "unban the person in that report everywhere"},
+	{"ban", "<number>", "ban that phone number everywhere, or send /ban alone as a reply to a \"would have acted\" " +
+		"report: delete that post, ban its sender. Every /ban sweeps at once and deletes their posts the bot has on record"},
+	{"unban", "<number> or <report number>", "unban that phone number, or the person in that report, everywhere " +
+		"(nobody is added back to a group)"},
 }
 
 // commandList is the list as text: the pinned message, and the reply to a

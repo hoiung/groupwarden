@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/reconcile"
@@ -58,11 +59,16 @@ func (c controls) Undo(ctx context.Context, reportID int64, by telegram.Actor) (
 	return text + " A deleted message cannot be restored; the report keeps its text until the evidence window ends.", nil
 }
 
+// Ban is [Ban] and /ban as a reply to its report. A ban applied asks for a
+// sweep at once, so the member is removed wherever the bot finds them
+// without waiting for reconcile.interval_minutes; AddToBanList and
+// BanNumber do the same.
 func (c controls) Ban(ctx context.Context, reportID int64, by telegram.Actor) (string, error) {
 	res, err := c.a.Admin.Ban(ctx, reportID, by.String())
 	if err != nil {
 		return "", err
 	}
+	c.sweepAfter(res)
 	return banReply(res, reportID, by, true), nil
 }
 
@@ -71,7 +77,91 @@ func (c controls) AddToBanList(ctx context.Context, reportID int64, by telegram.
 	if err != nil {
 		return "", err
 	}
+	c.sweepAfter(res)
 	return banReply(res, reportID, by, false), nil
+}
+
+// sweepAfter asks for a sweep once a report's ban is applied (a spared admin
+// and a ban recorded in shadow mode put nobody on the ban list).
+func (c controls) sweepAfter(res pipeline.Banned) {
+	if !res.Spared && !res.Shadow {
+		c.a.Log.Info("sweep requested after a ban from the admin chat", "target", mask.IDs(res.Member.Key()))
+		c.a.requestSweep()
+	}
+}
+
+// BanNumber is /ban <number>.
+func (c controls) BanNumber(ctx context.Context, phone client.JID, by telegram.Actor) (string, error) {
+	res, err := c.a.Admin.BanNumber(ctx, phone, by.String())
+	if err != nil {
+		return "", err
+	}
+	who := mask.IDs(string(phone))
+	switch {
+	case res.Self:
+		return who + " is the bot's own number: it is never banned.", nil
+	case res.PerCommunity:
+		return "Not banned: bans.scope is per_community, so a ban needs its community. On the node, run " +
+			"`groupwarden ban add <number> --community <id>`, or send /ban as a reply to a report from that community.", nil
+	case res.Already:
+		return who + " is already banned; nothing changed.", nil
+	}
+	c.a.Log.Info("sweep requested after a ban from the admin chat", "target", mask.IDs(res.Member.Key()))
+	c.a.requestSweep()
+	text := fmt.Sprintf("Banned by %s: %s is banned everywhere. %s. ", by.Name, who,
+		upperFirst(postsNote(res.Posts, res.Paused, false)))
+	if res.Paused != "" {
+		text += "The bot sweeps every group now; removing them waits for the pause to end."
+	} else {
+		text += "The bot sweeps every group now and removes them wherever it finds them."
+	}
+	return text + " To undo: /unban with the same number.", nil
+}
+
+// UnbanNumber is /unban <number>.
+func (c controls) UnbanNumber(ctx context.Context, phone client.JID, by telegram.Actor) (string, error) {
+	res, err := c.a.Admin.UnbanNumber(ctx, phone, by.String())
+	if err != nil {
+		return "", err
+	}
+	who := mask.IDs(string(phone))
+	if res.NotBanned {
+		return who + " is not banned; nothing changed.", nil
+	}
+	return fmt.Sprintf("Unbanned by %s: %s is unbanned everywhere (%d ban(s) lifted). They are not added back to any "+
+		"group: re-invite them by hand where they should be.", by.Name, who, res.Lifted), nil
+}
+
+// postsNote says what a ban did about the member's posts the bot still has a
+// record of: how many are being deleted and how many could not be. other:
+// the reported post is counted apart.
+func postsNote(p pipeline.Posts, paused store.Scope, other bool) string {
+	which := "their posts on record"
+	if other {
+		which = "their other posts on record"
+	}
+	deleting := "being deleted"
+	if paused == store.ScopeAll {
+		deleting = "deleted once the pause ends"
+	}
+	s := fmt.Sprintf("%s: %d %s, %d too old to delete", which, p.Deleting, deleting, p.Refused)
+	if p.Refused > 0 {
+		s += " (older than act_on_replay_max_age)"
+	}
+	if p.Shadow > 0 {
+		s += fmt.Sprintf(", %d left in a community in shadow mode", p.Shadow)
+	}
+	if p.Spared > 0 {
+		s += fmt.Sprintf(", %d left where they are a current admin", p.Spared)
+	}
+	return s
+}
+
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func banReply(res pipeline.Banned, reportID int64, by telegram.Actor, message bool) string {
@@ -93,10 +183,14 @@ func banReply(res pipeline.Banned, reportID int64, by telegram.Actor, message bo
 	if res.Shadow {
 		// No ban is applied and nothing is sent, paused or not: the reply
 		// neither says "banned" nor offers an /unban of a ban that is not there.
-		parts = append(parts, fmt.Sprintf("%s would be removed from %d group(s) and banned, but the community is in "+
-			"shadow mode: nothing is banned or sent", who, res.Removals))
+		would := fmt.Sprintf("%s would be removed from %d group(s) and banned", who, res.Removals)
+		if res.Posts.Shadow > 0 {
+			would += fmt.Sprintf(", and %d more post(s) of theirs deleted", res.Posts.Shadow)
+		}
+		parts = append(parts, would+", but the community is in shadow mode: nothing is banned or sent")
 		return fmt.Sprintf("Recorded by %s (#%d): %s.", by.Name, reportID, strings.Join(parts, "; "))
 	}
+	parts = append(parts, postsNote(res.Posts, res.Paused, message))
 	switch {
 	case res.Paused != "":
 		parts = append(parts, fmt.Sprintf("%s is banned; their removal from %d group(s) waits for the pause to end",

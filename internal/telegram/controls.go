@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/go-telegram/bot/models"
+
+	"github.com/hoiung/groupwarden/internal/client"
 )
 
 // Controls is what the admin chat's buttons and commands do. The app
@@ -21,6 +23,14 @@ type Controls interface {
 	// AddToBanList bans (and removes everywhere) a member a human admin
 	// removed.
 	AddToBanList(ctx context.Context, reportID int64, by Actor) (string, error)
+	// BanNumber bans a phone number (a JID "<digits>@s.whatsapp.net") with
+	// no report: /ban <number>. Every ban from the chat (this, Ban and
+	// AddToBanList) sweeps at once and deletes the member's posts the bot
+	// still has a record of.
+	BanNumber(ctx context.Context, phone client.JID, by Actor) (string, error)
+	// UnbanNumber lifts every ban of a phone number: /unban <number>. Nobody
+	// is added back to a group.
+	UnbanNumber(ctx context.Context, phone client.JID, by Actor) (string, error)
 	// Resume lifts every pause; queued actions are checked again first.
 	Resume(ctx context.Context, by Actor) (string, error)
 	// Pause stops every action, deletes included, until /resume.

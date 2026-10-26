@@ -11,6 +11,7 @@ import (
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 
+	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/ledger"
 	"github.com/hoiung/groupwarden/internal/mask"
@@ -156,8 +157,18 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 		}
 		return call(func() (string, error) { return c.Controls.Disable(ctx, args, by) }), 0
 	case "ban":
-		if m.ReplyToMessage == nil {
-			return "Send /ban as a reply to a report.", 0
+		// A number bans that number; anything else is the reply form, which
+		// ignores what follows /ban, as it always has.
+		_, number := phoneDigits(args)
+		switch {
+		case number:
+			phone, ok := phoneJID(args)
+			if !ok {
+				return banUsage, 0
+			}
+			return call(func() (string, error) { return c.Controls.BanNumber(ctx, phone, by) }), 0
+		case m.ReplyToMessage == nil:
+			return banUsage, 0
 		}
 		id, ok, err := c.Store.ReportOfTGMessage(ctx, m.Chat.ID, m.ReplyToMessage.ID)
 		if err != nil {
@@ -169,13 +180,68 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 		}
 		return c.act(ctx, id, ledger.ButtonBan, by, false), id
 	case "unban":
+		// phoneMinDigits digits or more are a phone number; "#N" or fewer
+		// digits, a report number.
+		if d, number := phoneDigits(args); number && len(d) >= phoneMinDigits && !strings.HasPrefix(args, "#") {
+			phone, ok := phoneJID(args)
+			if !ok {
+				return unbanUsage, 0
+			}
+			return call(func() (string, error) { return c.Controls.UnbanNumber(ctx, phone, by) }), 0
+		}
 		id, err := strconv.ParseInt(strings.TrimPrefix(args, "#"), 10, 64)
 		if err != nil {
-			return "Usage: /unban <report number> (the #number in a report or digest).", 0
+			return unbanUsage, 0
 		}
 		return c.act(ctx, id, ledger.ButtonUndo, by, false), id
 	}
 	return commandList(acl), 0
+}
+
+// The replies to a /ban or /unban the bot cannot read.
+const (
+	banUsage = "Usage: /ban <number> (a phone number starting with its country code, such as +44), or send /ban " +
+		"alone as a reply to a report."
+	unbanUsage = "Usage: /unban <number> (a phone number starting with its country code, such as +44) or " +
+		"/unban <report number> (the #number in a report or digest)."
+)
+
+// A phone number given to /ban or /unban has its country code and, once its
+// spaces, dashes, brackets and leading "+" are taken out, phoneMinDigits to
+// phoneMaxDigits digits (E.164). A shorter run of digits is a report number.
+const (
+	phoneMinDigits = 8
+	phoneMaxDigits = 15
+)
+
+// phoneDigits takes out what people write around and between a phone
+// number's digits (spaces, dashes, brackets, a leading "+") and reports
+// whether only digits are left.
+func phoneDigits(s string) (string, bool) {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "+")
+	bad := false
+	d := strings.Map(func(r rune) rune {
+		switch {
+		case r >= '0' && r <= '9':
+			return r
+		case unicode.IsSpace(r), r == '-', r == '(', r == ')':
+			return -1
+		}
+		bad = true
+		return -1
+	}, s)
+	return d, !bad && d != ""
+}
+
+// phoneJID is the WhatsApp phone JID of a number written with its country
+// code (ok false when s is not one: too short or long, or starting with 0,
+// which no country code does, so it is a number written without one).
+func phoneJID(s string) (client.JID, bool) {
+	d, ok := phoneDigits(s)
+	if !ok || len(d) < phoneMinDigits || len(d) > phoneMaxDigits || d[0] == '0' {
+		return "", false
+	}
+	return client.JID(d + "@s.whatsapp.net"), true
 }
 
 // press handles a button press on a report.

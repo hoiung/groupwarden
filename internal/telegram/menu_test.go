@@ -14,8 +14,8 @@ import (
 )
 
 // wantCommands is every AC 4.3 command, in the list's order, with its argument.
-var wantCommands = []string{"/status", "/pause", "/resume", "/reload", "/enable <invite link>", "/disable <invite link or name>", "/ban",
-	"/unban <report number>"}
+var wantCommands = []string{"/status", "/pause", "/resume", "/reload", "/enable <invite link>", "/disable <invite link or name>",
+	"/ban <number>", "/unban <number> or <report number>"}
 
 // setup runs the command list setup once and fails the test on an error.
 func (h *harness) setup() {
