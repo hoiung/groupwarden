@@ -382,26 +382,40 @@ func TestBanDeletesPosts(t *testing.T) {
 	// The bot's own delete of a post, queued while paused, still goes out
 	// after the rule is relaxed when an admin banned the author meanwhile:
 	// the ban's delete folded into the bot's row. Without the admin's ban,
-	// the relaxed rule keeps the post.
-	for name, adminBan := range map[string]bool{"admin-banned": true, "bot-only": false} {
+	// the relaxed rule keeps the post, also when the bot's own ban of the
+	// author is on the ban list (no pause held it).
+	for name, c := range map[string]struct{ pause, adminBan bool }{
+		"admin-banned":    {pause: true, adminBan: true},
+		"bot-only":        {pause: true},
+		"bot-ban-on-list": {},
+	} {
 		t.Run("rule-relaxed-while-queued/"+name, func(t *testing.T) {
 			h := newHarness(t, "")
-			if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceAdmin, Scope: store.ScopeAll,
-				Reason: "paused", Since: h.k.Clock.Now()}); err != nil {
-				t.Fatal(err)
+			if c.pause {
+				if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceAdmin, Scope: store.ScopeAll,
+					Reason: "paused", Since: h.k.Clock.Now()}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			h.k.Deliver(h.k.Spam("S1", modtest.G1))
-			if adminBan {
+			if c.adminBan {
 				h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+			}
+			if !c.pause {
+				if bans, err := h.k.Store.BansFor(h.k.Ctx, modtest.SpammerM.IDs()); err != nil || len(bans) == 0 {
+					t.Fatalf("bans %v (%v), want the bot's own ban on the list", bans, err)
+				}
 			}
 			h.k.ReloadConfig(strings.Replace(modtest.Config, "      action: delete_remove_ban\n      confirmed: true",
 				"      action: log", 1))
-			if err := h.k.Store.ClearPause(h.k.Ctx, store.SourceAdmin); err != nil {
-				t.Fatal(err)
+			if c.pause {
+				if err := h.k.Store.ClearPause(h.k.Ctx, store.SourceAdmin); err != nil {
+					t.Fatal(err)
+				}
 			}
 			h.k.Fire()
-			if got := h.revoked(modtest.G1, "S1"); got != adminBan {
-				t.Fatalf("S1 deleted %v, want %v; calls %v, rows %v", got, adminBan, h.k.Fake.Calls(),
+			if got := h.revoked(modtest.G1, "S1"); got != c.adminBan {
+				t.Fatalf("S1 deleted %v, want %v; calls %v, rows %v", got, c.adminBan, h.k.Fake.Calls(),
 					rowsOf(h, modtest.SpammerM))
 			}
 		})
