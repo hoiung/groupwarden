@@ -355,13 +355,15 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 
 // NumberBanned is what /ban <number> did.
 type NumberBanned struct {
-	// Member is the number, with the LID the directory knows for it.
+	// Member is the number, with the LID the bot knows or found for it.
 	Member client.Member
-	// Already: the number is banned already, so nothing changed. Self: it is
-	// the bot's own number. PerCommunity: bans.scope is per_community, so a
-	// ban needs its community (`groupwarden ban add --community`). Spared: it
-	// is a current admin of a community the bot moderates, which [Ban]
-	// refuses too. None of those three changes anything either.
+	// Already: the number is banned everywhere already, so no ban was added
+	// (its posts are still deleted and the caller still asks for a sweep).
+	// Self: it is the bot's own number. PerCommunity: bans.scope is
+	// per_community, so a ban needs its community (`groupwarden ban add
+	// --community`). Spared: it is a current admin of a community the bot
+	// moderates, which [Ban] refuses too. None of those three changes
+	// anything.
 	Already, Self, PerCommunity, Spared bool
 	Posts                               Posts
 	// Paused is the pause in force when the ban was written ("": none).
@@ -373,26 +375,32 @@ type NumberBanned struct {
 // until the sweep resolves its LID, in the scope bans.scope gives, with
 // every action in enforce), its ledger rows triggered store.AdminBanTrigger
 // and naming the admin, and deletes the number's posts the bot still has a
-// record of. Removing them from the groups is the sweep's, which the caller
-// asks for. A number already banned changes nothing.
+// record of, found by the number and by the LID the bot knows or finds for
+// it (numberMember). Removing them from the groups is the sweep's, which the
+// caller asks for. A number already banned everywhere gets no second ban,
+// but its posts are deleted all the same: every /ban cleans up.
 func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (NumberBanned, error) {
 	if !a.Directory.IsLoaded() {
 		return NumberBanned{}, errGroupsNotLoaded
 	}
 	cur := a.Config.Current()
 	target := client.Member{Phone: phone}
-	m := a.Directory.Complete(target)
-	out := NumberBanned{Member: m}
 	switch {
 	case a.Directory.IsSelf(phone):
 		a.Log.Info("admin ban by number refused: the bot's own number", "by", actor)
-		return NumberBanned{Member: m, Self: true}, nil
+		return NumberBanned{Member: target, Self: true}, nil
 	case cur.Rules.BanScope() == rules.PerCommunity:
-		a.Log.Info("admin ban by number refused: bans.scope is per_community", "target", mask.IDs(m.Key()), "by", actor)
-		return NumberBanned{Member: m, PerCommunity: true}, nil
-	case slices.ContainsFunc(cur.Rules.Communities(), func(c string) bool {
+		a.Log.Info("admin ban by number refused: bans.scope is per_community", "target", mask.IDs(target.Key()), "by", actor)
+		return NumberBanned{Member: target, PerCommunity: true}, nil
+	}
+	m, err := a.numberMember(ctx, phone)
+	if err != nil {
+		return NumberBanned{}, err
+	}
+	out := NumberBanned{Member: m}
+	if slices.ContainsFunc(cur.Rules.Communities(), func(c string) bool {
 		return a.Directory.IsAdmin(m.LID, m.Phone, c, cur.Rules)
-	}):
+	}) {
 		a.Log.Info("admin ban by number skipped: a current admin", "target", mask.IDs(m.Key()), "by", actor)
 		return NumberBanned{Member: m, Spared: true}, nil
 	}
@@ -400,6 +408,7 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 	p := ledger.Plan{Trigger: store.AdminBanTrigger + strconv.FormatInt(now.UnixMilli(), 10), Target: target,
 		ConfigHash: cur.Hash, Actor: client.JID(actor), Reason: "banned in the admin chat by " + actor,
 		Ban: []string{store.BanEverywhere}, BanEnforce: true, BanCommunity: store.BanEverywhere}
+	scopes := p.Ban
 	var w ledger.Written
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
 		// Only a ban everywhere is the one this would add; a community's own
@@ -409,10 +418,10 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 			return err
 		}
 		if out.Already = slices.ContainsFunc(bans, func(b store.Ban) bool { return b.Scope == store.BanEverywhere }); out.Already {
-			return nil
+			p.Ban, p.BanEnforce = nil, false
 		}
 		out.Paused = pausedScope(ctx, tx, a.Store)
-		if p.Intents, out.Posts, err = a.postDeletes(ctx, tx, m, p.Ban, true, "", ""); err != nil {
+		if p.Intents, out.Posts, err = a.postDeletes(ctx, tx, m, scopes, true, "", ""); err != nil {
 			return err
 		}
 		w, err = ledger.Write(ctx, tx, p, now)
@@ -420,17 +429,39 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 	}); err != nil {
 		return NumberBanned{}, err
 	}
-	if out.Already {
-		a.Log.Info("admin ban by number: already banned; nothing changed", "target", mask.IDs(m.Key()), "by", actor)
-		return out, nil
-	}
 	if w.Queued > 0 {
 		a.Enforcer.wake()
 	}
-	a.Log.Info("admin ban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "posts_deleting", out.Posts.Deleting,
-		"posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow, "posts_spared", out.Posts.Spared,
-		"queued", w.Queued, "by", actor)
+	a.Log.Info("admin ban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "already", out.Already,
+		"posts_deleting", out.Posts.Deleting, "posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow,
+		"posts_spared", out.Posts.Spared, "queued", w.Queued, "by", actor)
 	return out, nil
+}
+
+// numberMember is the member a phone number names, by every address the bot
+// knows (member) and, when it has no record of their LID, the one WhatsApp
+// gives for the number (its own store first, then one lookup): a ban by
+// number then finds the posts of someone who joined since the group list was
+// last read and whose posts came without their number, and an unban by
+// number finds a ban that names them by LID alone. A lookup that finds
+// nothing is logged and the number alone used (for a ban, the sweep looks it
+// up again).
+func (a *Admin) numberMember(ctx context.Context, phone client.JID) (client.Member, error) {
+	m, err := a.member(ctx, string(phone))
+	if err != nil || m.LID != "" || a.Enforcer == nil || a.Enforcer.Adapter == nil {
+		return m, err
+	}
+	lid, err := a.Enforcer.Adapter.ResolvePhoneToLID(ctx, phone)
+	if err == nil && lid.Server() != "lid" {
+		err = fmt.Errorf("%w: WhatsApp returned %s", client.ErrNoLID, mask.IDs(string(lid)))
+	}
+	if err != nil {
+		a.Log.Info("admin command by number: no LID found for the number; using the number alone",
+			"target", mask.IDs(string(phone)), "err", mask.IDs(err.Error()))
+		return m, nil
+	}
+	m.LID = lid.Bare()
+	return a.Directory.Complete(m), nil
 }
 
 // NumberUnbanned is what /unban <number> did.
@@ -440,25 +471,31 @@ type NumberUnbanned struct {
 	// Lifted counts the scopes the member was banned in, each once, whether
 	// by a ban list entry or a ban a pause held (dropped too), and Held those
 	// only a held ban covered; NotBanned: there was neither, so nothing
-	// changed.
+	// changed. Overturned counts their deletes and removals still queued,
+	// cancelled.
 	Lifted, Held int
 	NotBanned    bool
+	Overturned   int64
 }
 
 // UnbanNumber is /unban <number>: it lifts every ban of a phone number,
 // whether the ban is still keyed by the phone JID or already resolved to a
-// LID, and every ban a pause holds for it, with an unban row triggered
-// store.AdminUnbanTrigger and naming the admin. Nobody is added back to a
-// group: an admin re-invites them by hand.
+// LID (numberMember), and every ban a pause holds for it, with an unban row
+// triggered store.AdminUnbanTrigger and naming the admin, and cancels their
+// deletes and removals still queued, as [Undo] does: the executor would fail
+// each as "not banned", and one whose call is already in flight is reported
+// (ledger.KindUndoRace). Nobody is added back to a group: an admin re-invites
+// them by hand.
 func (a *Admin) UnbanNumber(ctx context.Context, phone client.JID, actor string) (NumberUnbanned, error) {
-	m, err := a.member(ctx, string(phone))
+	m, err := a.numberMember(ctx, phone)
 	if err != nil {
 		return NumberUnbanned{}, err
 	}
 	out := NumberUnbanned{Member: m}
 	now := a.Store.Now()
+	reason := "unbanned in the admin chat by " + actor
 	p := ledger.Plan{Trigger: store.AdminUnbanTrigger + strconv.FormatInt(now.UnixMilli(), 10), Target: m,
-		ConfigHash: a.Config.Current().Hash, Actor: client.JID(actor), Reason: "unbanned in the admin chat by " + actor,
+		ConfigHash: a.Config.Current().Hash, Actor: client.JID(actor), Reason: reason,
 		Lift: true, BanCommunity: store.BanEverywhere}
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
 		bans, err := store.BansForIn(ctx, tx, m.IDs())
@@ -485,13 +522,29 @@ func (a *Admin) UnbanNumber(ctx context.Context, phone client.JID, actor string)
 		if out.NotBanned {
 			return nil
 		}
-		_, err = ledger.Write(ctx, tx, p, now)
+		rows, err := store.LedgerForTargetsIn(ctx, tx, m.IDs())
+		if err != nil {
+			return err
+		}
+		var queued []int64
+		for _, row := range rows {
+			switch row.Action {
+			case store.ActRevoke, store.ActRemove, store.ActReject:
+				if row.Status == store.Intended && row.Mode == store.ModeEnforce {
+					queued = append(queued, row.ID)
+				}
+			}
+		}
+		if _, err = ledger.Write(ctx, tx, p, now); err != nil {
+			return err
+		}
+		out.Overturned, err = store.Overturn(ctx, tx, queued, reason, now)
 		return err
 	}); err != nil {
 		return NumberUnbanned{}, err
 	}
 	a.Log.Info("admin unban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "bans_lifted", out.Lifted,
-		"held_only_scopes", out.Held, "not_banned", out.NotBanned, "by", actor)
+		"held_only_scopes", out.Held, "not_banned", out.NotBanned, "overturned", out.Overturned, "by", actor)
 	return out, nil
 }
 
@@ -507,10 +560,20 @@ func (a *Admin) report(ctx context.Context, id int64) (store.Report, error) {
 	return r, nil
 }
 
-// member is a report subject by every address the directory and the ban
-// list know.
+// member is a report subject by every address the bot knows: the
+// directory's, the other address it recorded beside the one it has
+// (store.OtherAddress: someone who joined since the group list was last read
+// is known there by their LID alone), and the ban list's. A ban written for
+// them then carries both, and a lookup by either finds it.
 func (a *Admin) member(ctx context.Context, key string) (client.Member, error) {
 	m := a.Directory.Complete(client.MemberOf(client.JID(key)))
+	if (m.LID == "") != (m.Phone == "") {
+		other, err := a.Store.OtherAddress(ctx, m.Key())
+		if err != nil {
+			return m, err
+		}
+		m = client.MemberOf(m.LID, m.Phone, client.JID(other))
+	}
 	bans, err := a.Store.BansFor(ctx, m.IDs())
 	if err != nil {
 		return m, err
