@@ -238,15 +238,19 @@ CREATE TABLE enabled (
 	created_at INTEGER NOT NULL
 );
 `,
-	// 12: who sent each decided post (their LID, or their phone JID when no
-	// LID is known), so a ban from the admin chat can delete the posts the bot
-	// still has a record of; '' for rows written before this and for what is
-	// not a post of its own (an edit, a membership change). The row is kept as
-	// long as before (the worker's seenRetention). Deletes are looked up by
-	// message, whichever address their row names.
+	// 12: who sent each decided post, as the group addressed them (sender: a
+	// LID or a phone JID, the address a delete must name) and their other
+	// address when WhatsApp gave it (sender_alt), so a ban from the admin chat
+	// can delete the posts the bot still has a record of, found by either;
+	// '' for rows written before this and for what is not a post of its own
+	// (an edit, a membership change). The row is kept as long as before (the
+	// worker's seenRetention). Deletes are looked up by message, whichever
+	// address their row names.
 	`
 ALTER TABLE seen ADD COLUMN sender TEXT NOT NULL DEFAULT '';
+ALTER TABLE seen ADD COLUMN sender_alt TEXT NOT NULL DEFAULT '';
 CREATE INDEX seen_sender ON seen (sender) WHERE sender != '';
+CREATE INDEX seen_sender_alt ON seen (sender_alt) WHERE sender_alt != '';
 CREATE INDEX ledger_revoke_msg ON ledger (chat, msg_id) WHERE action = 'revoke';
 `,
 }
