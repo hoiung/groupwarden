@@ -100,8 +100,9 @@ func (h *harness) revoked(chat client.JID, id string) bool {
 // sweep resolves it, scope everywhere under bans.scope all_communities),
 // with a ban row triggered from the admin chat that names who sent it. A
 // number of fewer than 8 or more than 15 digits, or with letters, gets the
-// usage text and bans nobody; a number already banned gets a reply saying so
-// and changes nothing; /ban as a reply to a report works as before.
+// usage text and bans nobody; a number already banned everywhere gets a reply
+// saying so and no second ban, but its posts are still deleted (every /ban
+// cleans up); /ban as a reply to a report works as before.
 func TestBanByNumber(t *testing.T) {
 	phone := string(modtest.SpammerPhone)
 	for name, number := range spellings() {
@@ -138,16 +139,27 @@ func TestBanByNumber(t *testing.T) {
 			}
 		})
 	}
-	t.Run("already-banned", func(t *testing.T) {
+	t.Run("already-banned-still-cleans-up", func(t *testing.T) {
 		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
 		h.k.Ban(modtest.SpammerM)
-		before, bans := h.ledgerRows(), h.bans()
+		bans := h.bans()
 		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
-		if got := h.lastReply(); got != "phone…0123 is already banned; nothing changed." {
+		if got := h.lastReply(); !strings.HasPrefix(got, "phone…0123 is already banned everywhere, so no ban was added. "+
+			"Their posts on record: 1 being deleted, 0 too old to delete. The bot sweeps every group now") {
 			t.Fatalf("reply %q", got)
 		}
-		if after := h.bans(); h.ledgerRows() != before || len(after) != len(bans) || after[0] != bans[0] {
-			t.Fatalf("the ban list or the ledger changed: %+v → %+v", bans, after)
+		if after := h.bans(); len(after) != len(bans) || after[0] != bans[0] {
+			t.Fatalf("the ban list changed: %+v → %+v", bans, after)
+		}
+		for _, r := range h.k.Rows(client.Member{Phone: modtest.SpammerPhone}) {
+			if r.Action == store.ActBan {
+				t.Fatalf("a second ban row %+v for a number already banned", r)
+			}
+		}
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") {
+			t.Fatalf("calls %v, want P1 deleted", h.k.Fake.Calls())
 		}
 	})
 	t.Run("ledger-names-sender", func(t *testing.T) {
@@ -243,6 +255,35 @@ func TestUnbanByNumber(t *testing.T) {
 		if got := h.lastReply(); !strings.HasPrefix(got, "Unbanned by Ann:") || len(h.bans()) != 0 ||
 			h.k.Banned(modtest.SpammerM, "") {
 			t.Fatalf("reply %q, bans %+v", got, h.bans())
+		}
+	})
+	// The deletes a ban queued and the bot has not sent yet are cancelled
+	// (never sent, however often the outbox fires); a later /ban plans them
+	// again.
+	t.Run("cancels-queued-deletes-reban-plans-again", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.post("P2", modtest.G2, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		for i := 0; i < 5; i++ {
+			h.k.Fire()
+		}
+		if n := h.k.Fake.Count("Revoke"); n != 0 {
+			t.Fatalf("calls %v: %d deletes sent after /unban, want none", h.k.Fake.Calls(), n)
+		}
+		for _, r := range h.k.Rows(client.Member{Phone: modtest.SpammerPhone}) {
+			if r.Action == store.ActRevoke && r.Status != store.Overturned {
+				t.Fatalf("delete row %+v after /unban, want it overturned", r)
+			}
+		}
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if reply := h.lastReply(); !strings.Contains(reply, "Their posts on record: 2 being deleted") {
+			t.Fatalf("reply %q, want both posts planned again", reply)
+		}
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") || !h.revoked(modtest.G2, "P2") {
+			t.Fatalf("calls %v, want P1 and P2 deleted after the second /ban", h.k.Fake.Calls())
 		}
 	})
 	t.Run("not-banned", func(t *testing.T) {
@@ -874,12 +915,13 @@ func TestBanRecentJoiner(t *testing.T) {
 		recentJoiner(h)
 		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
 		h.k.Fake.FailNext("ResolvePhoneToLID", fmt.Errorf("%w: status 429", client.ErrRateLimited))
+		before := len(h.k.Fake.Calls()) // /ban's own lookup is not the sweep's
 		res, err := h.app.Sweep.Run(h.k.Ctx, "r1")
 		if err != nil {
 			t.Fatal(err)
 		}
 		var lookups, checks []int
-		for i, c := range h.k.Fake.Calls() {
+		for i, c := range h.k.Fake.Calls()[before:] {
 			switch {
 			case strings.HasPrefix(c, "ResolvePhoneToLID "):
 				lookups = append(lookups, i)
@@ -888,7 +930,7 @@ func TestBanRecentJoiner(t *testing.T) {
 			}
 		}
 		if len(lookups) != 2 || len(checks) == 0 || lookups[0] > checks[0] || lookups[1] < checks[len(checks)-1] {
-			t.Fatalf("calls %v, want a lookup, the group checks, then the lookup again", h.k.Fake.Calls())
+			t.Fatalf("calls %v, want a lookup, the group checks, then the lookup again", h.k.Fake.Calls()[before:])
 		}
 		if slept := h.k.Clock.Slept(); len(slept) != 0 || res.RateLimited != 1 || res.Errors != 0 {
 			t.Fatalf("waits %v, result %+v; want no wait (the groups came between), one rate limit, no error", slept, res)
@@ -957,6 +999,96 @@ func TestBanRecentJoiner(t *testing.T) {
 		h.k.Fire()
 		if h.k.Banned(modtest.SpammerM, "") || h.k.Fake.Count("Remove "+string(modtest.G1)+" "+string(modtest.Spammer)) != 0 {
 			t.Fatalf("calls %v: banned or removed after /unban", h.k.Fake.Calls())
+		}
+	})
+	// [Add to ban list] for them writes the ban with their phone number, which
+	// the record of their post gives (and, in a pause, the ban it holds), so
+	// /unban <number> finds it and cancels the queued delete of their post.
+	for _, tc := range []struct {
+		name   string
+		source string
+		scope  store.Scope
+	}{
+		{"no-pause", "", ""},
+		{"breaker-pause", store.SourceBreaker, store.ScopeRemoveBan},
+	} {
+		t.Run("add-to-ban-list-then-unban-number/"+tc.name, func(t *testing.T) {
+			h := newHarness(t, "")
+			recentJoiner(h)
+			if tc.source != "" {
+				if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: tc.source, Scope: tc.scope, Reason: "paused",
+					Since: h.k.Clock.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+			h.k.Deliver(&client.GroupChange{Group: modtest.G1, Time: h.k.Clock.Now(), Actor: modtest.Admin,
+				Left: []client.JID{modtest.Spammer}})
+			h.drain()
+			h.press(adminUser, "addban", h.only(ledger.KindHumanRemoval).ID)
+			if bans := h.bans(); len(bans) != 1 || bans[0].LID != string(modtest.Spammer) ||
+				bans[0].Phone != string(modtest.SpammerPhone) {
+				t.Fatalf("bans %+v, want one entry with their LID and phone number", bans)
+			}
+			h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+			if reply := h.lastReply(); !strings.Contains(reply, "is unbanned everywhere (1 ban(s) lifted)") {
+				t.Fatalf("reply %q, want the ban found by number and lifted", reply)
+			}
+			if tc.source != "" {
+				if err := h.k.Store.ClearPause(h.k.Ctx, tc.source); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.k.Fire()
+			if len(h.bans()) != 0 || h.k.Banned(modtest.SpammerM, "") || h.revoked(modtest.G1, "P1") {
+				t.Fatalf("bans %+v, calls %v: still banned, or P1 deleted after /unban", h.bans(), h.k.Fake.Calls())
+			}
+		})
+	}
+	// [Undo] after /ban <number>, before the sweep re-keys the number's ban on
+	// their LID, lifts the number's ban too: the record of their post gives
+	// the number, so the next sweep removes nobody.
+	t.Run("undo-before-sweep-lifts-number-ban", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		recentJoiner(h)
+		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
+			Reason: "too many removals", Since: h.k.Clock.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		r := h.spam("S1")
+		h.drain()
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.press(secondAdm, "undo", r.ID)
+		if bans := h.bans(); len(bans) != 0 {
+			t.Fatalf("bans %+v after [Undo], want none (the number's ban lifted too)", bans)
+		}
+		if err := h.k.Store.ClearPause(h.k.Ctx, store.SourceBreaker); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := h.app.Sweep.Run(h.k.Ctx, "r1"); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Fire()
+		if h.k.Banned(modtest.SpammerM, "") || h.k.Fake.Count("Remove "+string(modtest.G1)+" "+string(modtest.Spammer)) != 0 {
+			t.Fatalf("calls %v: banned or removed after [Undo]", h.k.Fake.Calls())
+		}
+	})
+	// /ban <number> deletes a post they sent without their number (the post
+	// names their LID alone, which the directory does not know): the LID
+	// WhatsApp gives for the number finds it.
+	t.Run("ban-number-deletes-posts-sent-without-their-number", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, "")
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if reply := h.lastReply(); !strings.Contains(reply, "Their posts on record: 1 being deleted") {
+			t.Fatalf("reply %q, want P1 counted", reply)
+		}
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") {
+			t.Fatalf("calls %v, want P1 deleted", h.k.Fake.Calls())
 		}
 	})
 	// /ban <number> while a pause holds their ban leaves that held ban to
