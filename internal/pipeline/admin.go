@@ -343,10 +343,11 @@ type NumberBanned struct {
 	Member client.Member
 	// Already: the number is banned already, so nothing changed. Self: it is
 	// the bot's own number. PerCommunity: bans.scope is per_community, so a
-	// ban needs its community (`groupwarden ban add --community`). Neither
-	// of those two changes anything either.
-	Already, Self, PerCommunity bool
-	Posts                       Posts
+	// ban needs its community (`groupwarden ban add --community`). Spared: it
+	// is a current admin of a community the bot moderates, which [Ban]
+	// refuses too. None of those three changes anything either.
+	Already, Self, PerCommunity, Spared bool
+	Posts                               Posts
 	// Paused is the pause in force when the ban was written ("": none).
 	Paused store.Scope
 }
@@ -368,6 +369,11 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 		return NumberBanned{Member: m, Self: true}, nil
 	case cur.Rules.BanScope() == rules.PerCommunity:
 		return NumberBanned{Member: m, PerCommunity: true}, nil
+	case slices.ContainsFunc(cur.Rules.Communities(), func(c string) bool {
+		return a.Directory.IsAdmin(m.Phone, m.LID, c, cur.Rules)
+	}):
+		a.Log.Info("admin ban by number skipped: a current admin", "target", mask.IDs(m.Key()), "by", actor)
+		return NumberBanned{Member: m, Spared: true}, nil
 	}
 	now := a.Store.Now()
 	p := ledger.Plan{Trigger: store.AdminBanTrigger + strconv.FormatInt(now.UnixMilli(), 10), Target: target,
