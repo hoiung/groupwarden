@@ -272,6 +272,7 @@ type memberRecord struct {
 	Bans      []banJSON            `json:"bans"`
 	Ledger    []ledgerJSON         `json:"ledger"`
 	Evidence  []evidenceJSON       `json:"evidence"`
+	Posts     []postJSON           `json:"posts"` // the seen table's record of their posts (no text)
 	Session   *store.SessionMember `json:"whatsmeow,omitempty"`
 	Reports   []reportJSON         `json:"reports"`
 }
@@ -292,6 +293,10 @@ type evidenceJSON struct {
 	Fields                                         json.RawMessage
 	Media                                          string
 	At                                             string
+}
+
+type postJSON struct {
+	Chat, MsgID, Sender, At string
 }
 
 type reportJSON struct {
@@ -337,7 +342,8 @@ func (e *env) member(ctx context.Context, cfg *config.Config, sub string, args [
 }
 
 func (e *env) memberShow(ctx context.Context, st *store.Store, session *store.Session, ids []string) int {
-	rec := memberRecord{Addresses: ids, Bans: []banJSON{}, Ledger: []ledgerJSON{}, Evidence: []evidenceJSON{}, Reports: []reportJSON{}}
+	rec := memberRecord{Addresses: ids, Bans: []banJSON{}, Ledger: []ledgerJSON{}, Evidence: []evidenceJSON{}, Posts: []postJSON{},
+		Reports: []reportJSON{}}
 	fail := func(err error) int {
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
 		return exitFail
@@ -372,6 +378,13 @@ func (e *env) memberShow(ctx context.Context, st *store.Store, session *store.Se
 		}
 		rec.Evidence = append(rec.Evidence, evidenceJSON{ev.ID, ev.Chat, ev.Community, ev.Sender, ev.PushName, ev.MsgID, ev.Rule,
 			json.RawMessage(ev.Fields), media, ev.CreatedAt.UTC().Format(time.RFC3339)})
+	}
+	posts, err := st.SeenBy(ctx, ids)
+	if err != nil {
+		return fail(err)
+	}
+	for _, p := range posts {
+		rec.Posts = append(rec.Posts, postJSON{p.Chat, p.MsgID, p.Sender, p.ServerTime.UTC().Format(time.RFC3339)})
 	}
 	reps, err := st.ReportsFor(ctx, ids)
 	if err != nil {
