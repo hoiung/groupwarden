@@ -25,7 +25,8 @@ func banApp(t *testing.T) (*App, *modtest.Kit) {
 // at once (the request the bot makes at connect), so a banned member who is
 // present is removed without waiting for reconcile.interval_minutes: by
 // number, and as a reply to a report, which is the [Ban] button's code. A
-// number already banned changes nothing, so it asks for none.
+// number already banned gets no second ban but asks for a sweep all the
+// same: every /ban sweeps and cleans up.
 func TestBanSweepsNow(t *testing.T) {
 	ctx := context.Background()
 	by := telegram.Actor{ID: 501, Name: "Ann"}
@@ -56,15 +57,15 @@ func TestBanSweepsNow(t *testing.T) {
 			t.Fatalf("%d sweeps pending after /ban as a reply ([Ban]), want 1", len(a.sweepNow))
 		}
 	})
-	t.Run("already-banned-no-sweep", func(t *testing.T) {
+	t.Run("already-banned-still-sweeps", func(t *testing.T) {
 		a, k := banApp(t)
 		k.Ban(modtest.SpammerM)
 		reply, err := controls{a}.BanNumber(ctx, modtest.SpammerPhone, by)
-		if err != nil || !strings.Contains(reply, "already banned") {
+		if err != nil || !strings.Contains(reply, "already banned everywhere, so no ban was added") {
 			t.Fatalf("reply %q %v", reply, err)
 		}
-		if len(a.sweepNow) != 0 {
-			t.Fatalf("%d sweeps pending after a /ban that changed nothing, want 0", len(a.sweepNow))
+		if len(a.sweepNow) != 1 {
+			t.Fatalf("%d sweeps pending after /ban <number> of a number already banned, want 1", len(a.sweepNow))
 		}
 	})
 }
