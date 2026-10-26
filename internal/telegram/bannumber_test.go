@@ -685,7 +685,7 @@ func TestBanDeletesPosts(t *testing.T) {
 	})
 	// Under a pause that holds removals and bans (the breaker's: a rule may be
 	// misfiring), a spam post's ban is held, not applied; the member's next
-	// post is kept until the ban applies.
+	// post is kept, and applying the ban later does not delete it.
 	t.Run("post-after-held-ban-kept", func(t *testing.T) {
 		h := newHarness(t, "")
 		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
@@ -803,6 +803,57 @@ func TestBanWaitsForGroupList(t *testing.T) {
 		h.k.Fire()
 		if !h.k.Banned(modtest.SpammerM, "") || !h.revoked(modtest.G1, "W1") {
 			t.Fatalf("answers %q, calls %v, want the second press to ban and delete", h.answers(), h.k.Fake.Calls())
+		}
+	})
+}
+
+// recentJoiner makes the kit spammer someone who joined G1 since the group
+// list was last read: the directory knows them by their LID only (a join
+// event names no phone number).
+func recentJoiner(h *harness) {
+	h.t.Helper()
+	groups := modtest.Groups()
+	for i := range groups {
+		var ps []client.Participant
+		for _, p := range groups[i].Participants {
+			if p.LID != modtest.Spammer {
+				ps = append(ps, p)
+			}
+		}
+		groups[i].Participants = ps
+	}
+	modtest.Load(h.t, h.k.Dir, groups)
+	h.k.Deliver(&client.GroupChange{Group: modtest.G1, Time: h.k.Clock.Now(), JoinReason: "invite",
+		Joined: []client.JID{modtest.Spammer}})
+}
+
+// TestBanRecentJoiner: /ban <number> for someone who joined since the group
+// list was last read (the ban is keyed by the phone number, the directory
+// knows them by LID only) deletes the post they send after the ban, and the
+// sweep the ban asks for removes them at once.
+func TestBanRecentJoiner(t *testing.T) {
+	t.Run("post-after-ban-deleted", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.post("P2", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") || !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, rows %v, want P1 and P2 deleted", h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
+		}
+	})
+	t.Run("sweep-removes-at-once", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		recentJoiner(h)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if _, err := h.app.Sweep.Run(h.k.Ctx, "r1"); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Fire()
+		if want := "Remove " + string(modtest.G1) + " " + string(modtest.Spammer); h.k.Fake.Count(want) != 1 {
+			t.Fatalf("calls %v, want %q from the first sweep", h.k.Fake.Calls(), want)
 		}
 	})
 }
