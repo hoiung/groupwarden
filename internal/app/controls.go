@@ -137,7 +137,7 @@ func (c controls) UnbanNumber(ctx context.Context, phone client.JID, by telegram
 		return who + " is not banned; nothing changed.", nil
 	}
 	return fmt.Sprintf("Unbanned by %s: %s is unbanned everywhere (%d ban(s) lifted). They are not added back to any "+
-		"group: re-invite them by hand where they should be.", by.Name, who, res.Lifted), nil
+		"group: re-invite them by hand where they should be.", by.Name, who, res.Lifted+res.Held), nil
 }
 
 // postsNote says what a ban did about the member's posts the bot still has a
