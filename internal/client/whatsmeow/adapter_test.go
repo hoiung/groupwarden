@@ -99,6 +99,15 @@ func TestExtractAllSenderFields(t *testing.T) {
 		{"contact card", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{DisplayName: ps("Trader Tom"),
 			Vcard: ps("BEGIN:VCARD\nVERSION:3.0\nFN:Trader Tom\nitem1.TEL;waid=447700900456:+44 7700 900456\nTEL;TYPE=CELL:+44 7700 900789\nEND:VCARD")}},
 			map[string][]string{"contact.name": {"Trader Tom"}, "contact.number": {"+44 7700 900456", "+44 7700 900789"}}},
+		// Every text line of the card but its structure, photo and repeated name.
+		{"contact card text", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{DisplayName: ps("Trader Tom"),
+			Vcard: ps("BEGIN:VCARD\nVERSION:3.0\nN:Tom;Trader;;;\nFN:Trader Tom\nORG:Signals\\, VIP;\nitem1.URL;type=pref:https://example.org/vip\n" +
+				"NOTE:DM me for profit\nX-WA-BIZ-DESCRIPTION:Daily trades\nPHOTO;BASE64:AAAA\n" +
+				"TEL;TYPE=CELL:+44 7700 900789\nEND:VCARD")}},
+			map[string][]string{"contact.name": {"Trader Tom"}, "contact.number": {"+44 7700 900789"},
+				"contact.vcard": {"Signals, VIP;", "https://example.org/vip", "DM me for profit", "Daily trades"}}},
+		{"scheduled call", &waE2E.Message{ScheduledCallCreationMessage: &waE2E.ScheduledCallCreationMessage{Title: ps("Profit call")}},
+			map[string][]string{"call.title": {"Profit call"}}},
 		{"contacts array", &waE2E.Message{ContactsArrayMessage: &waE2E.ContactsArrayMessage{DisplayName: ps("2 contacts"),
 			Contacts: []*waE2E.ContactMessage{{DisplayName: ps("Mentor")}}}},
 			map[string][]string{"contact.name": {"2 contacts", "Mentor"}}},
@@ -285,6 +294,37 @@ func TestCommentAndSecretEditDecrypt(t *testing.T) {
 	}
 	if f.calls[0] != "DecryptComment" || f.calls[1] != "DecryptSecretEncryptedMessage" {
 		t.Fatalf("calls %v", f.calls)
+	}
+	// A comment sent in the clear is read as a decrypted one is.
+	p := convert(t, a, sink, groupMsg("C2", &waE2E.Message{CommentMessage: &waE2E.CommentMessage{
+		Message: &waE2E.Message{Conversation: ps("plain reply")}, TargetMessageKey: &waCommon.MessageKey{ID: ps("ANNOUNCE1")}}})).(*client.Message)
+	if !p.IsComment || p.TargetID != "C2" || fieldsOf(p)["body"][0] != "plain reply" {
+		t.Fatalf("plain comment: %+v", p)
+	}
+}
+
+// TestUndecryptableCarriesSender: a reply or secret edit the bot cannot
+// decrypt keeps both of its sender's addresses, and says which it is (a
+// ban deletes an unreadable reply by its ID; an edit's ID is not the post).
+func TestUndecryptableCarriesSender(t *testing.T) {
+	f := &fakeWA{offline: true, commentErr: errors.New("synthetic decrypt failure"),
+		secretEditErr: errors.New("synthetic decrypt failure")}
+	a := newTestAdapter(t, f, &fakeSink{})
+	for _, c := range []struct {
+		msg    *waE2E.Message
+		isEdit bool
+	}{
+		{&waE2E.Message{EncCommentMessage: &waE2E.EncCommentMessage{TargetMessageKey: &waCommon.MessageKey{ID: ps("A")}}}, false},
+		{&waE2E.Message{SecretEncryptedMessage: &waE2E.SecretEncryptedMessage{
+			SecretEncType: waE2E.SecretEncryptedMessage_MESSAGE_EDIT.Enum(), TargetMessageKey: &waCommon.MessageKey{ID: ps("B")}}}, true},
+	} {
+		u, ok := a.convertMessage(groupMsg("U1", c.msg)).(*client.Undecryptable)
+		if !ok {
+			t.Fatalf("%v: not an undecryptable event", c.msg)
+		}
+		if u.Sender != client.JID(spammer.String()) || u.SenderAlt != client.JID(spammerPN.String()) || u.IsEdit != c.isEdit {
+			t.Fatalf("undecryptable %+v, want sender %s / %s, edit %v", u, spammer, spammerPN, c.isEdit)
+		}
 	}
 }
 
