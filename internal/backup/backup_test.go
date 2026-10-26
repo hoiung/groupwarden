@@ -262,3 +262,80 @@ func TestSessionStoreNotBackedUp(t *testing.T) {
 		t.Fatalf("the restored file is not groupwarden.db (pause table: %d, %v)", n, err)
 	}
 }
+
+// TestRestoreRefusesADamagedBackup: a backup cut short, with a byte changed,
+// empty or not an age file at all, or a key file that holds no key, is
+// refused with nothing left where the database would go.
+func TestRestoreRefusesADamagedBackup(t *testing.T) {
+	k := newKit(t)
+	ctx := context.Background()
+	res := k.backup(t0, 14)
+	raw, err := os.ReadFile(res.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flipped := bytes.Clone(raw)
+	flipped[len(flipped)-40] ^= 0x01
+	damaged := map[string][]byte{
+		"truncated":  raw[:len(raw)-100],
+		"half":       raw[:len(raw)/2],
+		"a byte off": flipped,
+		"empty":      {},
+		"not age":    []byte("SQLite format 3\x00 nothing here"),
+	}
+	for name, body := range damaged {
+		src := filepath.Join(t.TempDir(), "groupwarden-20261006T031500Z.db.age")
+		if err := os.WriteFile(src, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		if err := Restore(ctx, src, k.keyFile, filepath.Join(dir, "groupwarden.db")); err == nil {
+			t.Errorf("%s: restored", name)
+		}
+		if got := names(t, dir); len(got) != 0 {
+			t.Errorf("%s: a refused restore left %v", name, got)
+		}
+	}
+
+	noKey := filepath.Join(t.TempDir(), "key.txt")
+	if err := os.WriteFile(noKey, []byte("# just a comment\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, keyFile := range map[string]string{"no key in it": noKey, "missing": filepath.Join(t.TempDir(), "none.txt")} {
+		dir := t.TempDir()
+		err := Restore(ctx, res.File, keyFile, filepath.Join(dir, "groupwarden.db"))
+		if err == nil || !strings.HasPrefix(err.Error(), "identity file: ") {
+			t.Errorf("key file %s: %v", name, err)
+		}
+		if got := names(t, dir); len(got) != 0 {
+			t.Errorf("key file %s: left %v", name, got)
+		}
+	}
+}
+
+// TestBackupFailureLeavesNoCopy: a backup that cannot be written (the target
+// directory is gone, or the recipient is not an age public key) fails before
+// or after the snapshot without leaving the plaintext copy in the data dir or
+// a partial file in the target.
+func TestBackupFailureLeavesNoCopy(t *testing.T) {
+	k := newKit(t)
+	ctx := context.Background()
+	opts := func(target, recipient string) Options {
+		return Options{TargetDir: target, Recipient: recipient, Keep: 3, ScratchDir: k.data, Now: t0,
+			Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	}
+	gone := filepath.Join(t.TempDir(), "unmounted")
+	if _, err := Run(ctx, k.st, opts(gone, k.id.Recipient().String())); err == nil {
+		t.Fatal("backed up to a directory that does not exist")
+	}
+	_, err := Run(ctx, k.st, opts(k.dst, "age1notakey"))
+	if err == nil || !strings.HasPrefix(err.Error(), "backup.age_recipient: ") {
+		t.Fatalf("a bad recipient: %v", err)
+	}
+	if got := names(t, k.data); len(got) != 3 || got[0] != "groupwarden.db" {
+		t.Fatalf("data dir after failed backups: %v", got)
+	}
+	if got := names(t, k.dst); len(got) != 0 {
+		t.Fatalf("target after failed backups: %v", got)
+	}
+}

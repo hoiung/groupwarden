@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -299,6 +300,130 @@ func TestNewEpisode(t *testing.T) {
 	for _, c := range cases {
 		if got := NewEpisode(c.previous, c.o); got != c.want {
 			t.Errorf("NewEpisode(%q, %s %s) = %v", c.previous, c.o.Status, c.o.Commit, got)
+		}
+	}
+}
+
+// TestSyncRefusesADeployKeyInTheRepo: the deploy key, like the data dir and
+// the secrets file, must live outside the synced tree.
+func TestSyncRefusesADeployKeyInTheRepo(t *testing.T) {
+	f := newFixture(t)
+	if o := f.run(t); o.Status != OK || !o.Swapped {
+		t.Fatalf("first sync %+v", o)
+	}
+	liveDir := filepath.Dir(f.live)
+	before := target(t, liveDir)
+	cfg := strings.Replace(exampleConfig(t, f.dataDir), "\nsecrets_file: ", "\ndeploy_key_file: keys/deploy\nsecrets_file: ", 1)
+	commit := f.repo.Commit(map[string]string{"config.yaml": cfg}, "key in the repo")
+	o := f.run(t)
+	if o.Status != Rejected || o.Swapped || o.Commit != commit[:12] ||
+		!strings.Contains(o.Result, "deploy_key_file must be an absolute path outside the config repo") {
+		t.Fatalf("deploy key inside the repo: %+v", o)
+	}
+	if got := target(t, liveDir); got != before || slices.Contains(releases(t, liveDir), commit) {
+		t.Fatalf("after a rejected commit: live %s, releases %v", got, releases(t, liveDir))
+	}
+}
+
+// TestSyncRefusesASymlinkInTheRepo: a release is a copy of regular files
+// only; a commit with a symlink fails the copy and leaves the live config and
+// the releases directory as they were (no half-built copy).
+func TestSyncRefusesASymlinkInTheRepo(t *testing.T) {
+	f := newFixture(t)
+	if o := f.run(t); o.Status != OK || !o.Swapped {
+		t.Fatalf("first sync %+v", o)
+	}
+	liveDir := filepath.Dir(f.live)
+	before, rels := target(t, liveDir), releases(t, liveDir)
+	if err := os.Symlink("config.yaml", filepath.Join(f.repo.Work, "linked.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	commit := f.repo.Commit(nil, "a symlink")
+	o := f.run(t)
+	if o.Status != Failed || o.Swapped || o.Commit != commit[:12] ||
+		!strings.Contains(o.Result, "copy the new config: linked.yaml is not a regular file (symlinks are not synced)") {
+		t.Fatalf("symlink in the repo: %+v", o)
+	}
+	if got := target(t, liveDir); got != before {
+		t.Fatalf("a failed copy moved the live config: %s", got)
+	}
+	if got := releases(t, liveDir); !slices.Equal(got, rels) {
+		t.Fatalf("releases after a failed copy: %v, want %v", got, rels)
+	}
+	if len(f.signals) != 0 {
+		t.Fatalf("signalled after a failed copy: %v", f.signals)
+	}
+}
+
+// TestSyncNeedsAReadableLiveConfig: once a live config exists the sync reads
+// its deploy key and data dir from it alone. A live file that no longer reads
+// fails the run before any pull (the repo's copy is only for the first sync).
+func TestSyncNeedsAReadableLiveConfig(t *testing.T) {
+	f := newFixture(t)
+	if o := f.run(t); o.Status != OK || !o.Swapped {
+		t.Fatalf("first sync %+v", o)
+	}
+	// Break the live copy in place (the release is the sync's own, mode 0600).
+	if err := os.WriteFile(f.live, []byte("mode: banana\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := f.sync()
+	var calls [][]string
+	s.Git = func(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+		calls = append(calls, args)
+		return configsynctest.Git(ctx, dir, env, args...)
+	}
+	o := s.Run(context.Background())
+	if o.Status != Failed || o.Settings != nil || o.Commit != "-" ||
+		!strings.HasPrefix(o.Result, "FAILED -: no config to read the deploy key and data dir from: ") {
+		t.Fatalf("unreadable live config: %+v", o)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("git ran with no settings: %v", calls)
+	}
+}
+
+// TestSSHEnv: git never prompts, and with a deploy key its ssh command names
+// the key as one argument however the path is written (git runs the command
+// through the shell).
+func TestSSHEnv(t *testing.T) {
+	if got := sshEnv(""); !slices.Equal(got, []string{"GIT_TERMINAL_PROMPT=0"}) {
+		t.Fatalf("no key: %q", got)
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh")
+	}
+	for _, key := range []string{
+		"/var/lib/groupwarden/deploy_key",
+		"/srv/my keys/deploy key",
+		"/srv/it's/deploy",
+		`/srv/$HOME/"q"/` + "`x`" + `/\n;*`,
+	} {
+		env := sshEnv(key)
+		if len(env) != 2 || env[0] != "GIT_TERMINAL_PROMPT=0" || !strings.HasPrefix(env[1], "GIT_SSH_COMMAND=") {
+			t.Fatalf("key %q: env %q", key, env)
+		}
+		// The shell's own word splitting of the command, as git hands it over.
+		cmd := exec.Command(sh, "-c", `eval "set -- $GIT_SSH_COMMAND"; printf '%s\n' "$@"`) // #nosec G204 -- the test's own values
+		cmd.Env = []string{env[1]}
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("key %q: sh: %v", key, err)
+		}
+		want := []string{"ssh", "-i", key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"}
+		if got := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); !slices.Equal(got, want) {
+			t.Errorf("key %q: ssh runs as %q", key, got)
+		}
+	}
+}
+
+// TestShort: a commit is shown by its first 12 characters.
+func TestShort(t *testing.T) {
+	for in, want := range map[string]string{"": "", "abc": "abc", "0123456789ab": "0123456789ab",
+		"0123456789abcdef0123": "0123456789ab"} {
+		if got := short(in); got != want {
+			t.Errorf("short(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

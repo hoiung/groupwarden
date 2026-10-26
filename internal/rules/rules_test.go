@@ -801,3 +801,55 @@ func TestCommunityOfResolvesSetsAndParents(t *testing.T) {
 		t.Errorf("unconfigured group → %q", got)
 	}
 }
+
+// TestLogRuleCombinations: a log rule reads its when: tree as written: has:
+// is any one of its conditions, words: any one of its lists, any: one branch
+// and all: every branch, nested to any depth. It reports only, never acts.
+func TestLogRuleCombinations(t *testing.T) {
+	spec := testSpec()
+	spec.Rules = []RuleSpec{{Name: "money-ask", Action: Log, When: Node{All: []Node{
+		{Has: Names{MoneyAmount}},
+		{Any: []Node{{Words: Names{"lures"}}, {Has: Names{PhoneNumber, Handle}}}},
+	}}}}
+	rs := compile(t, spec)
+	for _, c := range []struct {
+		text string
+		want bool
+	}{
+		{"send $500 and dm me", true},          // money + a lure
+		{"send $500 to +44 7700 900123", true}, // money + a phone number
+		{"send $500 to @cashier_desk", true},   // money + a handle
+		{"send $500 today", false},             // money alone: the any: branch fails
+		{"dm me on +44 7700 900123", false},    // the any: branch alone: no money
+		{"class fees are due on Sunday", false},
+	} {
+		d := rs.Decide(Input{Community: communityA, Fields: body(c.text)})
+		got := d.Action == Log && d.Rule == "money-ask"
+		if got != c.want {
+			t.Errorf("%q: decision %+v, want a match %v", c.text, d, c.want)
+		}
+		if d.Action == DeleteRemoveBan || d.WouldHaveActed || len(d.BanIn) != 0 {
+			t.Errorf("%q: a log rule acted: %+v", c.text, d)
+		}
+		if c.want && (len(d.Matches) != 1 || d.Matches[0].Action != Log || d.Matches[0].Enforced) {
+			t.Errorf("%q: matches %+v", c.text, d.Matches)
+		}
+	}
+
+	// A nested all: inside any: needs every one of its own branches.
+	spec.Rules = []RuleSpec{{Name: "nested", Action: Log, When: Node{Any: []Node{
+		{All: []Node{{Words: Names{"crypto"}}, {Words: Names{"stocks"}}}},
+		{Has: Names{InviteLink}},
+	}}}}
+	rs = compile(t, spec)
+	for text, want := range map[string]bool{
+		"crypto and stock tips":      true,
+		"join chat.whatsapp.com/AbC": true,
+		"crypto only":                false,
+		"stock tips only":            false,
+	} {
+		if d := rs.Decide(Input{Community: communityA, Fields: body(text)}); (d.Rule == "nested") != want {
+			t.Errorf("nested %q: decision %+v, want a match %v", text, d, want)
+		}
+	}
+}

@@ -827,3 +827,93 @@ func TestCorpusAddSavesAndSeeds(t *testing.T) {
 		t.Errorf("bad label: exit %d", code)
 	}
 }
+
+// TestUsageExits: no command, an unknown one, a known group without its
+// subcommand and a command without a config each print usage and exit 2;
+// help prints it and exits 0.
+func TestUsageExits(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	for _, c := range []struct {
+		args []string
+		code int
+		out  string // where the text goes: "out" or "err"
+		want string
+	}{
+		{nil, exitUsage, "err", "Every command except fatal-exit-code"},
+		{[]string{"frobnicate"}, exitUsage, "err", `unknown command "frobnicate"`},
+		{[]string{"ban"}, exitUsage, "err", "usage: groupwarden ban add|remove|list ..."},
+		{[]string{"ban", "drop"}, exitUsage, "err", "usage: groupwarden ban add|remove|list ..."},
+		{[]string{"member", "show"}, exitUsage, "err", "no config: pass --config <file> or set GROUPWARDEN_CONFIG"},
+		{[]string{"corpus"}, exitUsage, "err", "usage: groupwarden corpus test|add ..."},
+		{[]string{"ledger", "dump"}, exitUsage, "err", "usage: groupwarden ledger summary ..."},
+		{[]string{"check"}, exitUsage, "err", "no config: pass --config <file> or set GROUPWARDEN_CONFIG"},
+		{[]string{"check", "--no-such-flag"}, exitUsage, "err", "flag provided but not defined: -no-such-flag"},
+		{[]string{"help"}, exitOK, "out", "Every command except fatal-exit-code"},
+		{[]string{"--help"}, exitOK, "out", "Every command except fatal-exit-code"},
+		{[]string{"-h"}, exitOK, "out", "Every command except fatal-exit-code"},
+	} {
+		te.out.Reset()
+		te.errb.Reset()
+		code := te.run(c.args)
+		text := te.errb.String()
+		if c.out == "out" {
+			text = te.out.String()
+		}
+		if code != c.code || !strings.Contains(text, c.want) {
+			t.Errorf("%q: exit %d, %s %q; want exit %d and %q", c.args, code, c.out, text, c.code, c.want)
+		}
+	}
+}
+
+// TestCheckNodeInputs: `check --secrets` names what is wrong with the age
+// recipient, the deploy key and the directories: unset, a directory where a
+// file belongs, a file that is not a key, a file where a directory belongs.
+func TestCheckNodeInputs(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	for v, want := range map[string]string{
+		"":             "backup.age_recipient is not set",
+		"age1nonsense": "backup.age_recipient is not an age public key",
+		"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample": "backup.age_recipient is not an age public key",
+	} {
+		if err := ageRecipient(v); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("ageRecipient(%q) = %v; want %q", v, err, want)
+		}
+	}
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ageRecipient(id.Recipient().String()); err != nil {
+		t.Errorf("a real recipient: %v", err)
+	}
+	if err := ageRecipient(strings.ToLower(id.String())); err == nil || !strings.Contains(err.Error(), "PRIVATE key") {
+		t.Errorf("a lower-case private key: %v", err)
+	}
+
+	pub := write("deploy_key.pub", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample groupwarden\n")
+	key := write("deploy_key", "-----BEGIN OPENSSH "+"PRIVATE KEY-----\nAAAA\n-----END OPENSSH "+"PRIVATE KEY-----\n")
+	for path, want := range map[string]string{
+		"":                                "deploy_key_file is not set",
+		dir:                               dir + " is not a file",
+		pub:                               pub + " is not an SSH private key",
+		filepath.Join(dir, "missing_key"): "no such file or directory",
+	} {
+		if err := deployKey(path); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("deployKey(%q) = %v; want %q", path, err, want)
+		}
+	}
+	if err := deployKey(key); err != nil {
+		t.Errorf("a private key: %v", err)
+	}
+
+	if err := linuxDir(key); err == nil || err.Error() != key+" is not a directory" {
+		t.Errorf("linuxDir on a file: %v", err)
+	}
+}

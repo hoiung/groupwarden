@@ -538,3 +538,20 @@ func TestLongWordStaysFast(t *testing.T) {
 		t.Fatalf("matching a %d-character post took over a minute", len(text))
 	}
 }
+
+// TestCompileRefusesEntriesWithoutLetters: an entry, or a word of a phrase,
+// made only of punctuation or symbols can match nothing, so it is refused
+// with the word named.
+func TestCompileRefusesEntriesWithoutLetters(t *testing.T) {
+	for entry, word := range map[string]string{"!!!": "!!!", "stock --": "--", "*...*": "...", "$ signals": "$"} {
+		_, err := Compile(entry)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q has no letters or digits", word)) {
+			t.Errorf("Compile(%q) = %v", entry, err)
+		}
+	}
+	for _, entry := range []string{"1.10", "usd$", "£100"} {
+		if _, err := Compile(entry); err != nil {
+			t.Errorf("Compile(%q) refused: %v", entry, err)
+		}
+	}
+}

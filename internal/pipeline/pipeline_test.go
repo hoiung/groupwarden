@@ -379,3 +379,34 @@ func TestStuckRowSetAside(t *testing.T) {
 		t.Fatalf("the set-aside message came back (%d rows)", n)
 	}
 }
+
+// TestUnreadableInboxRowDropped: a row this binary cannot decode (an unknown
+// kind, or a payload that no longer parses) is counted and removed instead of
+// blocking the rows behind it.
+func TestUnreadableInboxRowDropped(t *testing.T) {
+	ctx := context.Background()
+	s := open(t, filepath.Join(t.TempDir(), "g.db"), t0)
+	rec := &recorder{}
+	w := worker(s, rec)
+	for key, row := range map[string][2]string{"bad-json": {"message", "{not json"}, "bad-kind": {"mystery", "{}"}} {
+		if ok, err := s.InboxPut(ctx, key, row[0], []byte(row[1])); err != nil || !ok {
+			t.Fatalf("put %s: %v %v", key, ok, err)
+		}
+	}
+	if err := w.Inbox.Persist(msg("AFTER", "hello", t0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := rec.got()
+	if len(got) != 1 || got[0].Event.(*client.Message).ID != "AFTER" {
+		t.Fatalf("decided %+v, want only the readable message", got)
+	}
+	if rows, err := s.InboxOldest(ctx, 10); err != nil || len(rows) != 0 {
+		t.Fatalf("inbox after the drain: %d rows (%v)", len(rows), err)
+	}
+	if n, err := s.Counter(ctx, t0.Format("2006-01-02"), CounterInboxUnreadable); err != nil || n != 2 {
+		t.Fatalf("unreadable counter %d (%v), want 2", n, err)
+	}
+}
