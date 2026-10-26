@@ -106,6 +106,12 @@ func TestExtractAllSenderFields(t *testing.T) {
 				"TEL;TYPE=CELL:+44 7700 900789\nEND:VCARD")}},
 			map[string][]string{"contact.name": {"Trader Tom"}, "contact.number": {"+44 7700 900789"},
 				"contact.vcard": {"Signals, VIP;", "https://example.org/vip", "DM me for profit", "Daily trades"}}},
+		// A long line folded onto the next (RFC 6350 3.2) is read whole.
+		{"contact card folded lines", &waE2E.Message{ContactMessage: &waE2E.ContactMessage{DisplayName: ps("Trader Tom"),
+			Vcard: ps("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Trader Tom\r\nNOTE:DM me for pro\r\n fit at https://example.o\r\n\trg/vip\r\n" +
+				"TEL;TYPE=CELL:+44 7700\r\n  900789\r\nEND:VCARD")}},
+			map[string][]string{"contact.name": {"Trader Tom"}, "contact.number": {"+44 7700 900789"},
+				"contact.vcard": {"DM me for profit at https://example.org/vip"}}},
 		{"scheduled call", &waE2E.Message{ScheduledCallCreationMessage: &waE2E.ScheduledCallCreationMessage{Title: ps("Profit call")}},
 			map[string][]string{"call.title": {"Profit call"}}},
 		{"contacts array", &waE2E.Message{ContactsArrayMessage: &waE2E.ContactsArrayMessage{DisplayName: ps("2 contacts"),
