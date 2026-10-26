@@ -152,7 +152,7 @@ type Post struct {
 // never listed.
 func PostsBy(ctx context.Context, q queryer, senders, chats []string) ([]Post, error) {
 	rows, err := q.QueryContext(ctx, `SELECT s.chat, s.msg_id, s.sender, s.server_time FROM seen s
-WHERE s.sender != '' AND (s.sender IN (SELECT value FROM json_each(?1)) OR s.sender_alt IN (SELECT value FROM json_each(?1)))
+WHERE s.rowid IN (`+seenOf+`)
 	AND s.chat IN (SELECT value FROM json_each(?2))
 	AND s.msg_id != '' AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.action = 'revoke' AND l.chat = s.chat
 		AND l.msg_id = s.msg_id AND l.mode = 'enforce' AND (l.status IN ('intended', 'requested')
@@ -166,10 +166,17 @@ ORDER BY s.server_time, s.chat, s.msg_id`, jsonList(nonEmpty(senders)), jsonList
 // address), oldest first, for `member show`.
 func (s *Store) SeenBy(ctx context.Context, senders []string) ([]Post, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT chat, msg_id, sender, server_time FROM seen
-WHERE sender != '' AND (sender IN (SELECT value FROM json_each(?1)) OR sender_alt IN (SELECT value FROM json_each(?1)))
+WHERE rowid IN (`+seenOf+`)
 ORDER BY server_time, chat, msg_id`, jsonList(nonEmpty(senders)))
 	return scanPosts(rows, err)
 }
+
+// seenOf selects the seen rows of posts written by any of the JSON list ?1,
+// matched on either address the row keeps: two lookups, so the one by sender
+// uses its index (one OR would read the whole table for both); the one by
+// sender_alt reads the table, which holds only seenRetention's posts.
+const seenOf = `SELECT rowid FROM seen WHERE sender IN (SELECT value FROM json_each(?1)) AND sender != ''
+	UNION SELECT rowid FROM seen WHERE sender_alt IN (SELECT value FROM json_each(?1)) AND sender != ''`
 
 // scanPosts reads the rows of a seen query that selects chat, msg_id, sender
 // and server_time.
