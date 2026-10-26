@@ -87,9 +87,14 @@ func (c controls) AddToBanList(ctx context.Context, reportID int64, by telegram.
 // and a ban recorded in shadow mode put nobody on the ban list).
 func (c controls) sweepAfter(res pipeline.Banned) {
 	if !res.Spared && !res.Shadow {
-		c.a.Log.Info("sweep requested after a ban from the admin chat", "target", mask.IDs(res.Member.Key()))
-		c.a.requestSweep()
+		c.requestSweepFor(res.Member)
 	}
+}
+
+// requestSweepFor asks for a sweep after a ban of m from the admin chat.
+func (c controls) requestSweepFor(m client.Member) {
+	c.a.Log.Info("sweep requested after a ban from the admin chat", "target", mask.IDs(m.Key()))
+	c.a.requestSweep()
 }
 
 // BanNumber is /ban <number>.
@@ -108,13 +113,14 @@ func (c controls) BanNumber(ctx context.Context, phone client.JID, by telegram.A
 	case res.Spared:
 		return "Not banned: " + who + " is a current admin of a community or group the bot moderates. An admin " +
 			"must decide.", nil
-	case res.Already:
-		return who + " is already banned; nothing changed.", nil
 	}
-	c.a.Log.Info("sweep requested after a ban from the admin chat", "target", mask.IDs(res.Member.Key()))
-	c.a.requestSweep()
+	c.requestSweepFor(res.Member)
 	text := fmt.Sprintf("Banned by %s: %s is banned everywhere. %s. ", by.Name, who,
 		upperFirst(postsNote(res.Posts, res.Paused, false)))
+	if res.Already {
+		text = fmt.Sprintf("%s is already banned everywhere, so no ban was added. %s. ", who,
+			upperFirst(postsNote(res.Posts, res.Paused, false)))
+	}
 	if res.Paused != "" {
 		text += "The bot sweeps every group now; removing them waits for the pause to end"
 	} else {
