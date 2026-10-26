@@ -437,7 +437,8 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 		// on the list, from the ban command) is resolved now, as the sweep
 		// would resolve it: a post they send under their LID alone before the
 		// sweep is then found as banned and deleted. A ban already resolved is
-		// left as it is.
+		// left as it is; where a ban of their LID in the same scope is on the
+		// list too, the number's is merged into it, as the sweep would merge it.
 		return store.ResolveBanIn(ctx, tx, string(phone), string(m.LID))
 	}); err != nil {
 		return NumberBanned{}, err
