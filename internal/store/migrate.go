@@ -250,7 +250,6 @@ CREATE TABLE enabled (
 ALTER TABLE seen ADD COLUMN sender TEXT NOT NULL DEFAULT '';
 ALTER TABLE seen ADD COLUMN sender_alt TEXT NOT NULL DEFAULT '';
 CREATE INDEX seen_sender ON seen (sender) WHERE sender != '';
-CREATE INDEX seen_sender_alt ON seen (sender_alt) WHERE sender_alt != '';
 CREATE INDEX ledger_revoke_msg ON ledger (chat, msg_id) WHERE action = 'revoke';
 `,
 }
