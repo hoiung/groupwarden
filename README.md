@@ -51,7 +51,7 @@ The bot pins this list in the admin chat, and typing `/` there shows it:
 | `/ban` as a reply to a "would have acted" report | delete that post, remove and ban its sender |
 | `/unban <number>`, `/unban <report number>` | unban that phone number, or the person in that report, everywhere (nobody is added back to a group) |
 
-`/ban <number>` sweeps at once, so the person is removed from every group the bot finds them in, and deletes their posts the bot still has a record of (the last 72 hours; one older than `act_on_replay_max_age` cannot be deleted, and the reply counts it). `/ban` as a reply, [Ban] and [Add to ban list] do the same in a community in enforce mode; in shadow mode the ban is only recorded. [docs/config.md](docs/config.md#banning-from-the-admin-chat) has the details, and who may use what.
+`/ban <number>` sweeps at once, so the person is removed from every group the bot finds them in, and deletes their posts the bot still has a record of (the last 72 hours; one older than `act_on_replay_max_age` cannot be deleted, and the reply counts it). In a community in shadow mode it does neither: the sweep only reports the person there, and the reply counts their posts there as left. A post they send after the ban, before the sweep removes them, is deleted when it arrives. `/ban` as a reply, [Ban] and [Add to ban list] do the same in a community in enforce mode; in shadow mode the ban is only recorded. [docs/config.md](docs/config.md#banning-from-the-admin-chat) has the details, and who may use what.
 
 ## Run it
 
