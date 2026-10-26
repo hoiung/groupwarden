@@ -131,9 +131,11 @@ func TestBanByNumber(t *testing.T) {
 			if len(bans) != 1 {
 				t.Fatalf("bans %+v, want one", bans)
 			}
-			b := bans[0]
-			if b.Member != phone || b.Phone != phone || b.LID != "" || b.Scope != store.BanEverywhere || b.LedgerID == 0 {
-				t.Fatalf("ban %+v, want it keyed by %s with no LID, everywhere, as `ban add` stores it", b, phone)
+			// The group list knows their LID, so the ban is resolved at once,
+			// as the sweep would resolve a `ban add` of the number.
+			b, lid := bans[0], string(modtest.Spammer)
+			if b.Member != lid || b.LID != lid || b.Phone != phone || b.Scope != store.BanEverywhere || b.LedgerID == 0 {
+				t.Fatalf("ban %+v, want it keyed by %s with the number %s, everywhere", b, lid, phone)
 			}
 		})
 	}
@@ -1006,12 +1008,13 @@ func TestBanRecentJoiner(t *testing.T) {
 		}
 	})
 	// A rate-limited LID lookup does not hold up the groups: the sweep checks
-	// them first, then looks up again; the next sweep removes them.
+	// them first, then looks up again; the next sweep removes them. (WhatsApp
+	// has no LID for the number at /ban, so the ban waits for the sweep's.)
 	t.Run("sweep-checks-groups-when-lookup-rate-limited", func(t *testing.T) {
 		h := newHarness(t, "")
-		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
 		recentJoiner(h)
 		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
 		h.k.Fake.FailNext("ResolvePhoneToLID", fmt.Errorf("%w: status 429", client.ErrRateLimited))
 		before := len(h.k.Fake.Calls()) // /ban's own lookup is not the sweep's
 		res, err := h.app.Sweep.Run(h.k.Ctx, "r1")
@@ -1326,6 +1329,52 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("reports %+v, want no [Add to ban list] offer for someone already banned", reps)
 		}
 	})
+	// Banned by number with the ban command while already in a group, under
+	// their LID alone: the sweep's check of the group's members finds the ban
+	// through the record of their earlier post, when the sweep's LID lookup
+	// finds nothing or is rate-limited, so the first sweep removes them.
+	for name, fail := range map[string]error{
+		"no-lid":       nil,
+		"rate-limited": fmt.Errorf("%w: status 429", client.ErrRateLimited),
+	} {
+		t.Run("sweep-removes-present-through-record/"+name, func(t *testing.T) {
+			h := newHarness(t, "")
+			recentJoiner(h)
+			h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+			h.cliBan()
+			if fail != nil {
+				h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+				h.k.Fake.FailNext("ResolvePhoneToLID", fail)
+			}
+			if _, err := h.app.Sweep.Run(h.k.Ctx, "r1"); err != nil {
+				t.Fatal(err)
+			}
+			h.k.Fire()
+			if want := "Remove " + string(modtest.G1) + " " + string(modtest.Spammer); h.k.Fake.Count(want) != 1 {
+				t.Fatalf("calls %v, want %q from the first sweep", h.k.Fake.Calls(), want)
+			}
+		})
+	}
+	// A post they send under their LID alone right after /ban <number>,
+	// before any sweep, with no record pairing their two addresses, is
+	// deleted on arrival: the LID WhatsApp gave for the number resolves the
+	// ban at once.
+	t.Run("ban-number-post-before-sweep-deleted", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, "")
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.post("P2", modtest.G1, modtest.Spammer, "")
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") || !h.revoked(modtest.G1, "P2") {
+			t.Fatalf("calls %v, rows %v, want P1 and P2 deleted", h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
+		}
+		if bans := h.bans(); len(bans) != 1 || bans[0].Member != string(modtest.Spammer) ||
+			bans[0].Phone != string(modtest.SpammerPhone) {
+			t.Fatalf("bans %+v, want the number's ban resolved on their LID", bans)
+		}
+	})
 	// When WhatsApp has no LID for the number, or cannot be asked, the ban
 	// goes ahead by the number alone: the first is an Info line, the second
 	// a Warn.
@@ -1347,13 +1396,17 @@ func TestBanRecentJoiner(t *testing.T) {
 			if len(lines) != 1 || !strings.Contains(lines[0], " level="+c.level+" ") {
 				t.Fatalf("log lines %q, want one at %s", lines, c.level)
 			}
+			phone := string(modtest.SpammerPhone)
+			if bans := h.bans(); len(bans) != 1 || bans[0].Member != phone || bans[0].LID != "" {
+				t.Fatalf("bans %+v, want it keyed by %s with no LID, as `ban add` stores it", bans, phone)
+			}
 		})
 	}
 	// /ban <number> while a pause holds their ban leaves that held ban to
-	// apply: the number's ban puts no LID on the ban list, so settling the
-	// held ban would leave their queued delete and removal "not banned".
-	// When the pause ends, with no sweep between, the post is deleted and
-	// they are removed.
+	// apply: when their LID is not known the number's ban puts none on the
+	// ban list, so settling the held ban would leave their queued delete and
+	// removal "not banned". When the pause ends, with no sweep between, the
+	// post is deleted and they are removed.
 	for _, tc := range []struct {
 		name   string
 		source string
