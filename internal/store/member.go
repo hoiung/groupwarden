@@ -26,11 +26,17 @@ type Forgotten struct {
 // joined since it was last read is known by their LID alone, as a join names
 // no phone number.
 func (s *Store) OtherAddress(ctx context.Context, addr string) (string, error) {
+	return OtherAddressIn(ctx, s.db, addr)
+}
+
+// OtherAddressIn is OtherAddress read through q: a caller inside a
+// transaction reads through it, as the store has one connection.
+func OtherAddressIn(ctx context.Context, q queryer, addr string) (string, error) {
 	if addr == "" {
 		return "", nil
 	}
 	var other string
-	err := s.db.QueryRowContext(ctx, `SELECT other FROM (
+	err := q.QueryRowContext(ctx, `SELECT other FROM (
 	SELECT sender_alt AS other, decided_at AS at FROM seen WHERE sender = ?1 AND sender_alt != ''
 	UNION ALL SELECT sender, decided_at FROM seen WHERE sender_alt = ?1 AND sender != ''
 	UNION ALL SELECT sender_alt, created_at FROM evidence WHERE sender = ?1 AND sender_alt != ''
