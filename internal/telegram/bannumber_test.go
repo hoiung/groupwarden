@@ -3,6 +3,7 @@ package telegram_test
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -863,6 +864,73 @@ func TestBanRecentJoiner(t *testing.T) {
 		h.k.Fire()
 		if want := "Remove " + string(modtest.G1) + " " + string(modtest.Spammer); h.k.Fake.Count(want) != 1 {
 			t.Fatalf("calls %v, want %q from the first sweep", h.k.Fake.Calls(), want)
+		}
+	})
+	// A rate-limited LID lookup does not hold up the groups: the sweep checks
+	// them first, then looks up again; the next sweep removes them.
+	t.Run("sweep-checks-groups-when-lookup-rate-limited", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		recentJoiner(h)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.k.Fake.FailNext("ResolvePhoneToLID", fmt.Errorf("%w: status 429", client.ErrRateLimited))
+		res, err := h.app.Sweep.Run(h.k.Ctx, "r1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var lookups, checks []int
+		for i, c := range h.k.Fake.Calls() {
+			switch {
+			case strings.HasPrefix(c, "ResolvePhoneToLID "):
+				lookups = append(lookups, i)
+			case strings.HasPrefix(c, "JoinRequests "):
+				checks = append(checks, i)
+			}
+		}
+		if len(lookups) != 2 || len(checks) == 0 || lookups[0] > checks[0] || lookups[1] < checks[len(checks)-1] {
+			t.Fatalf("calls %v, want a lookup, the group checks, then the lookup again", h.k.Fake.Calls())
+		}
+		if slept := h.k.Clock.Slept(); len(slept) != 0 || res.RateLimited != 1 || res.Errors != 0 {
+			t.Fatalf("waits %v, result %+v; want no wait (the groups came between), one rate limit, no error", slept, res)
+		}
+		if _, banned, err := h.k.Store.FindBan(h.k.Ctx, []string{string(modtest.Spammer)}, ""); err != nil || !banned {
+			t.Fatalf("the ban has no LID after the sweep: %v (%v)", banned, err)
+		}
+		if _, err := h.app.Sweep.Run(h.k.Ctx, "r2"); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Fire()
+		if want := "Remove " + string(modtest.G1) + " " + string(modtest.Spammer); h.k.Fake.Count(want) != 1 {
+			t.Fatalf("calls %v, want %q from the next sweep", h.k.Fake.Calls(), want)
+		}
+	})
+	// /unban <number> lifts a ban a pause holds for them: the held ban names
+	// them by LID and keeps the phone, which is all the number gives.
+	t.Run("unban-drops-held-ban", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceBreaker, Scope: store.ScopeRemoveBan,
+			Reason: "too many removals", Since: h.k.Clock.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Deliver(h.k.Spam("S1", modtest.G1))
+		h.k.Fire()
+		if held, err := h.k.Store.HeldBan(h.k.Ctx, []string{string(modtest.Spammer)}, ""); err != nil || !held {
+			t.Fatalf("held %v (%v), want a ban the pause holds", held, err)
+		}
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		if reply := h.lastReply(); strings.Contains(reply, "not banned") {
+			t.Fatalf("reply %q, want the held ban lifted", reply)
+		}
+		if held, err := h.k.Store.HeldBan(h.k.Ctx, []string{string(modtest.Spammer)}, ""); err != nil || held {
+			t.Fatalf("held %v (%v) after /unban, want none", held, err)
+		}
+		if err := h.k.Store.ClearPause(h.k.Ctx, store.SourceBreaker); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Fire()
+		if h.k.Banned(modtest.SpammerM, "") || h.k.Fake.Count("Remove "+string(modtest.G1)+" "+string(modtest.Spammer)) != 0 {
+			t.Fatalf("calls %v: the ban applied after the pause ended, though they were unbanned", h.k.Fake.Calls())
 		}
 	})
 }
