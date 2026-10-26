@@ -37,7 +37,8 @@ var adminCommands = []adminCommand{
 	{"enable", "<invite link>", "moderate what the link points to (a community link: the whole community; a group link: that group alone), joining it if needed"},
 	{"disable", "<invite link or name>", "stop moderating what /enable switched on for that link, or under the name /status shows (the bot stays in the group)"},
 	{"ban", "<number>", "ban that phone number everywhere, or send /ban alone as a reply to a \"would have acted\" " +
-		"report: delete that post, ban its sender. Every /ban sweeps at once and deletes their posts the bot has on record"},
+		"report: delete that post, ban its sender. A ban sweeps at once and deletes their posts on record (in shadow " +
+		"mode it is only recorded)"},
 	{"unban", "<number> or <report number>", "unban that phone number, or the person in that report, everywhere " +
 		"(nobody is added back to a group)"},
 }
