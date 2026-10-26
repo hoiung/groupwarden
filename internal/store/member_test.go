@@ -63,3 +63,27 @@ VALUES ('msg|P1', ?, 'P1', ?, ?, ?, ?)`, group, at.UnixMilli(), at.UnixMilli(), 
 		}
 	})
 }
+
+// TestForgetMemberCountsHeldBanByPhone: `member forget <phone>` keeps, and
+// counts, a ban a pause holds that names the member by LID and keeps their
+// phone, as /unban <number> finds it.
+func TestForgetMemberCountsHeldBanByPhone(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	s := openAt(t, &now)
+	const lid, phone = "99999000000444@lid", "447700900123@s.whatsapp.net"
+	if err := s.Write(ctx, func(tx *sql.Tx) error {
+		_, _, err := InsertLedger(ctx, tx, LedgerRow{Action: ActBan, Chat: BanEverywhere, Target: lid, Address: phone,
+			TriggerID: "T", Community: "c", Mode: ModeEnforce, ConfigHash: "h"}, now)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.ForgetMember(ctx, []string{phone})
+	if err != nil || f.HeldBans != 1 {
+		t.Fatalf("forgotten %+v (%v), want the held ban counted", f, err)
+	}
+	if held, err := s.HeldBan(ctx, []string{lid}, ""); err != nil || !held {
+		t.Fatalf("held %v (%v) after forget, want the held ban kept", held, err)
+	}
+}
