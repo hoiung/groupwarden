@@ -206,9 +206,13 @@ const (
 
 // Undecryptable is a reply or secret edit the adapter could not decrypt.
 type Undecryptable struct {
-	Chat   JID                 `json:"chat"`
-	Sender JID                 `json:"sender"`
-	ID     string              `json:"id"`
+	Chat      JID    `json:"chat"`
+	Sender    JID    `json:"sender"`
+	SenderAlt JID    `json:"sender_alt,omitempty"` // the sender's other address, when WhatsApp gave it
+	ID        string `json:"id"`
+	// IsEdit: a secret edit (its ID is not the post it edits), not a reply
+	// of its own.
+	IsEdit bool                `json:"is_edit,omitempty"`
 	Time   time.Time           `json:"time"`
 	Reason UndecryptableReason `json:"reason"`
 	Detail string              `json:"detail"`
