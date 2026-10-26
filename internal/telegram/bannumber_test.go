@@ -919,8 +919,8 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("held %v (%v), want a ban the pause holds", held, err)
 		}
 		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
-		if reply := h.lastReply(); strings.Contains(reply, "not banned") {
-			t.Fatalf("reply %q, want the held ban lifted", reply)
+		if reply := h.lastReply(); !strings.Contains(reply, "is unbanned everywhere (1 ban(s) lifted)") {
+			t.Fatalf("reply %q, want the held ban lifted and counted", reply)
 		}
 		if held, err := h.k.Store.HeldBan(h.k.Ctx, []string{string(modtest.Spammer)}, ""); err != nil || held {
 			t.Fatalf("held %v (%v) after /unban, want none", held, err)
@@ -933,4 +933,39 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("calls %v: the ban applied after the pause ended, though they were unbanned", h.k.Fake.Calls())
 		}
 	})
+	// /ban <number> while a pause holds their ban leaves that held ban to
+	// apply: the number's ban puts no LID on the ban list, so settling the
+	// held ban would leave their queued delete and removal "not banned".
+	// When the pause ends, with no sweep between, the post is deleted and
+	// they are removed.
+	for _, tc := range []struct {
+		name   string
+		source string
+		scope  store.Scope
+	}{
+		{"pause-all", store.SourceAdmin, store.ScopeAll},
+		{"breaker-pause", store.SourceBreaker, store.ScopeRemoveBan},
+	} {
+		t.Run("ban-number-keeps-held-ban/"+tc.name, func(t *testing.T) {
+			h := newHarness(t, "")
+			recentJoiner(h)
+			if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: tc.source, Scope: tc.scope, Reason: "paused",
+				Since: h.k.Clock.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			h.k.Deliver(h.k.Spam("S1", modtest.G1))
+			h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+			if held, err := h.k.Store.HeldBan(h.k.Ctx, []string{string(modtest.Spammer)}, ""); err != nil || !held {
+				t.Fatalf("held %v (%v) after /ban <number>, want the held ban kept", held, err)
+			}
+			if err := h.k.Store.ClearPause(h.k.Ctx, tc.source); err != nil {
+				t.Fatal(err)
+			}
+			h.k.Fire()
+			if !h.revoked(modtest.G1, "S1") ||
+				h.k.Fake.Count("Remove "+string(modtest.G1)+" "+string(modtest.Spammer)) != 1 {
+				t.Fatalf("calls %v, rows %v; want S1 deleted and them removed", h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
+			}
+		})
+	}
 }
