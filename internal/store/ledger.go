@@ -50,7 +50,7 @@ type LedgerRow struct {
 	Action     Action
 	Chat       string // group or community the action is in ("" for ban/unban)
 	Target     string // member key: the LID, or the phone JID when no LID is known
-	TriggerID  string // message ID, join event, sweep run, or report + button
+	TriggerID  string // message ID, join event, sweep run, report + button, admin command, or BannedPostTrigger + message ID
 	Community  string // the configured community this row counts towards
 	Mode       string
 	Status     Status
@@ -353,6 +353,11 @@ const (
 	AdminBanTrigger   = AdminTrigger + "ban:"
 	AdminUnbanTrigger = AdminTrigger + "unban:"
 )
+
+// BannedPostTrigger prefixes the trigger of a delete of a banned member's
+// post ("banned:<message ID>"), so its row never shares a key with the
+// shadow row a watch-only match of the same post writes.
+const BannedPostTrigger = "banned:"
 
 // Overturn marks each given row that is still intended or requested as
 // overturned (an admin pressed [Undo]) and drops it from the outbox, in tx.
