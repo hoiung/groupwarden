@@ -2,6 +2,7 @@ package telegram_test
 
 import (
 	"database/sql"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -32,6 +33,8 @@ func spellings() map[string]string {
 		"digits-only": strings.TrimPrefix(plus, "+"),
 		// The national 0 some write in brackets after the country code.
 		"trunk-zero": strings.Replace(spammerNumber, " 7700 ", " (0)7700 ", 1),
+		// A 0 in brackets anywhere else is one of the number's digits.
+		"bracketed-zero": strings.Replace(spammerNumber, "900123", "90(0)123", 1),
 	}
 }
 
@@ -514,6 +517,44 @@ func TestBanDeletesPosts(t *testing.T) {
 		if !h.revoked(modtest.G1, "P1") {
 			t.Fatalf("calls %v, want P1 deleted by the second ban", h.k.Fake.Calls())
 		}
+	})
+	// A delete WhatsApp refused is never tried again by a later ban: one it
+	// answered "not an admin" to, and one that failed every try.
+	refusedThenRebanned := func(t *testing.T, fail func(h *harness)) {
+		t.Helper()
+		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		fail(h)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		for i := 0; i < 10; i++ {
+			h.k.Fire()
+			h.k.Clock.Advance(30 * time.Minute)
+		}
+		sent := h.k.Fake.Count("Revoke")
+		if rows := rowsOf(h, client.Member{Phone: modtest.SpammerPhone}); rows["revoke/failed"] != 1 || sent == 0 {
+			t.Fatalf("rows %v, %d sends, want the delete sent and failed", rows, sent)
+		}
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if got := h.lastReply(); !strings.Contains(got, "Their posts on record: 0 being deleted, 0 too old to delete.") {
+			t.Fatalf("reply %q", got)
+		}
+		h.k.Fire()
+		if h.k.Fake.Count("Revoke") != sent {
+			t.Fatalf("calls %v, want no new send after the refusal", h.k.Fake.Calls())
+		}
+	}
+	t.Run("not-admin-refusal-not-retried", func(t *testing.T) {
+		refusedThenRebanned(t, func(h *harness) { h.k.Fake.FailNext("Revoke", client.ErrNotAdmin) })
+	})
+	t.Run("send-failures-not-retried", func(t *testing.T) {
+		refusedThenRebanned(t, func(h *harness) {
+			errs := make([]error, 8)
+			for i := range errs {
+				errs[i] = errors.New("server error")
+			}
+			h.k.Fake.FailNext("Revoke", errs...)
+		})
 	})
 	// /ban <number> and then [Ban] on a report of the same post delete it
 	// once, though one names its author by phone number and the other by LID.
