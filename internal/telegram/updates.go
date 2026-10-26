@@ -3,7 +3,6 @@ package telegram
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -160,10 +159,10 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 	case "ban":
 		// A number bans that number; anything else is the reply form, which
 		// ignores what follows /ban, as it always has.
-		_, number := phoneDigits(args)
+		_, number := client.PhoneDigits(args)
 		switch {
 		case number:
-			phone, ok := phoneJID(args)
+			phone, ok := client.PhoneJID(args)
 			if !ok {
 				return banUsage, 0
 			}
@@ -181,10 +180,10 @@ func (c *Chat) command(ctx context.Context, cmd, args string, m *models.Message,
 		}
 		return c.act(ctx, id, ledger.ButtonBan, by, false), id
 	case "unban":
-		// phoneMinDigits digits or more are a phone number; "#N" or fewer
+		// client.PhoneMinDigits digits or more are a phone number; "#N" or fewer
 		// digits, a report number.
-		if d, number := phoneDigits(args); number && len(d) >= phoneMinDigits && !strings.HasPrefix(args, "#") {
-			phone, ok := phoneJID(args)
+		if d, number := client.PhoneDigits(args); number && len(d) >= client.PhoneMinDigits && !strings.HasPrefix(args, "#") {
+			phone, ok := client.PhoneJID(args)
 			if !ok {
 				return unbanUsage, 0
 			}
@@ -206,48 +205,6 @@ const (
 	unbanUsage = "Usage: /unban <number> (a phone number starting with its country code, such as +44) or " +
 		"/unban <report number> (the #number in a report or digest)."
 )
-
-// A phone number given to /ban or /unban has its country code and, once its
-// spaces, dashes, brackets and leading "+" are taken out, phoneMinDigits to
-// phoneMaxDigits digits (E.164). A shorter run of digits is a report number.
-const (
-	phoneMinDigits = 8
-	phoneMaxDigits = 15
-)
-
-// trunkZero is a "(0)" written straight after a country code (one to three
-// digits): the national 0, which is not dialled from abroad.
-var trunkZero = regexp.MustCompile(`^(\d{1,3})\s*\(0\)`)
-
-// phoneDigits takes out what people write around and between a phone
-// number's digits (spaces, dashes, brackets, a leading "+", and a "(0)" after
-// the country code) and reports whether only digits are left.
-func phoneDigits(s string) (string, bool) {
-	s = trunkZero.ReplaceAllString(strings.TrimPrefix(strings.TrimSpace(s), "+"), "$1")
-	bad := false
-	d := strings.Map(func(r rune) rune {
-		switch {
-		case r >= '0' && r <= '9':
-			return r
-		case unicode.IsSpace(r), r == '-', r == '(', r == ')':
-			return -1
-		}
-		bad = true
-		return -1
-	}, s)
-	return d, !bad && d != ""
-}
-
-// phoneJID is the WhatsApp phone JID of a number written with its country
-// code (ok false when s is not one: too short or long, or starting with 0,
-// which no country code does, so it is a number written without one).
-func phoneJID(s string) (client.JID, bool) {
-	d, ok := phoneDigits(s)
-	if !ok || len(d) < phoneMinDigits || len(d) > phoneMaxDigits || d[0] == '0' {
-		return "", false
-	}
-	return client.JID(d + "@s.whatsapp.net"), true
-}
 
 // press handles a button press on a report.
 func (c *Chat) press(ctx context.Context, q *models.CallbackQuery) {
