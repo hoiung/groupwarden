@@ -513,6 +513,24 @@ func TestBanDeletesPosts(t *testing.T) {
 			t.Fatalf("calls %v, want P1 deleted by the second ban", h.k.Fake.Calls())
 		}
 	})
+	// /ban <number> and then [Ban] on a report of the same post delete it
+	// once, though one names its author by phone number and the other by LID.
+	t.Run("number-then-button-deletes-once", func(t *testing.T) {
+		h := newHarness(t, "")
+		r := watchOnly(t, h)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.press(adminUser, "ban", r.ID)
+		h.k.Fire()
+		dels := 0
+		for _, row := range h.k.Rows(modtest.SpammerM) {
+			if row.Action == store.ActRevoke && row.MsgID == "W1" && row.Mode == store.ModeEnforce {
+				dels++
+			}
+		}
+		if dels != 1 || !h.revoked(modtest.G1, "W1") {
+			t.Fatalf("%d enforced delete rows for W1, calls %v, want one", dels, h.k.Fake.Calls())
+		}
+	})
 }
 
 // TestBanWaitsForGroupList: a ban sent before the bot has read its group
