@@ -21,10 +21,12 @@ type Seen struct {
 	Chat       string
 	MsgID      string
 	ServerTime time.Time
-	// Sender is who wrote a post of its own (their LID, or their phone JID
-	// when no LID is known): "" for anything else (an edit, a membership
-	// change), so only posts are ever deleted by it (PostsBy).
-	Sender string
+	// Sender is who wrote a post of its own, as the group addressed them (a
+	// LID or a phone JID: the address a delete of the post must name), and
+	// SenderAlt their other address when WhatsApp gave it: "" for anything
+	// else (an edit, a membership change), so only posts are ever deleted by
+	// them (PostsBy).
+	Sender, SenderAlt string
 }
 
 // InboxPut stores an event unless the same delivery is already queued or was
@@ -104,9 +106,9 @@ func (s *Store) Decide(ctx context.Context, row InboxRow, seen Seen, record func
 			return fmt.Errorf("inbox row %d was not deleted (affected %d): %v", row.ID, n, err)
 		}
 		_, err = tx.ExecContext(ctx, `
-INSERT INTO seen (dedupe_key, chat, msg_id, server_time, decided_at, sender) VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO seen (dedupe_key, chat, msg_id, server_time, decided_at, sender, sender_alt) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (dedupe_key) DO NOTHING`, row.Key, seen.Chat, seen.MsgID, seen.ServerTime.UnixMilli(), s.now().UnixMilli(),
-			seen.Sender)
+			seen.Sender, seen.SenderAlt)
 		if err != nil {
 			return fmt.Errorf("seen insert: %w", err)
 		}
@@ -137,15 +139,18 @@ type Post struct {
 }
 
 // PostsBy lists, inside q (a transaction), the posts written by any of
-// senders in any of chats that no delete is queued for or was sent for
-// (whichever address that delete's row names), oldest first. Rows with no
-// sender (written before store migration 12, or not a post of their own) are
-// never listed.
+// senders (matched on either address the post's row keeps) in any of chats
+// that no enforced delete is queued for, was sent for or was given up on
+// (whichever address that delete's row names: a delete WhatsApp refused, or
+// one too old to send, is never tried again), oldest first. Post.Sender is
+// the address the group knew the author by. Rows with no sender (written
+// before store migration 12, or not a post of their own) are never listed.
 func PostsBy(ctx context.Context, q queryer, senders, chats []string) ([]Post, error) {
 	rows, err := q.QueryContext(ctx, `SELECT s.chat, s.msg_id, s.sender, s.server_time FROM seen s
-WHERE s.sender != '' AND s.sender IN (SELECT value FROM json_each(?1)) AND s.chat IN (SELECT value FROM json_each(?2))
+WHERE s.sender != '' AND (s.sender IN (SELECT value FROM json_each(?1)) OR s.sender_alt IN (SELECT value FROM json_each(?1)))
+	AND s.chat IN (SELECT value FROM json_each(?2))
 	AND s.msg_id != '' AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.action = 'revoke' AND l.chat = s.chat
-		AND l.msg_id = s.msg_id AND l.mode = 'enforce' AND l.status IN ('intended', 'requested'))
+		AND l.msg_id = s.msg_id AND l.mode = 'enforce' AND l.status IN ('intended', 'requested', 'failed'))
 ORDER BY s.server_time, s.chat, s.msg_id`, jsonList(nonEmpty(senders)), jsonList(chats))
 	if err != nil {
 		return nil, fmt.Errorf("read seen: %w", err)
