@@ -288,6 +288,32 @@ func TestKeyPartWithUnreadExtraNotStored(t *testing.T) {
 	}
 }
 
+// TestKeyPartWithNoTextPostStored: a key part that carries a post with no
+// text (a sticker, a location) is that post: stored, so a ban can delete it,
+// with no warning.
+func TestKeyPartWithNoTextPostStored(t *testing.T) {
+	for name, add := range map[string]func(*waE2E.Message){
+		"sticker":  func(k *waE2E.Message) { k.StickerMessage = &waE2E.StickerMessage{} },
+		"location": func(k *waE2E.Message) { k.LocationMessage = &waE2E.LocationMessage{} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := &fakeSink{}
+			a, buf := loggedAdapter(t, sink, slog.LevelInfo)
+			k := keyPart()
+			add(k)
+			if !a.handle(delivered("3EB0SYNTH0006", k)) {
+				t.Fatal("handler refused the part")
+			}
+			if n := len(sink.events()); n != 1 {
+				t.Fatalf("%d events stored, want the post", n)
+			}
+			if lines := logLines(t, buf); len(lines) != 0 {
+				t.Fatalf("log lines %v, want none", lines)
+			}
+		})
+	}
+}
+
 func TestKeyPartLoggedAtDebug(t *testing.T) {
 	sink := &fakeSink{}
 	a, buf := loggedAdapter(t, sink, slog.LevelDebug)
