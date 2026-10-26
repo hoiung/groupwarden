@@ -383,11 +383,14 @@ func TestBanDeletesPosts(t *testing.T) {
 	// after the rule is relaxed when an admin banned the author meanwhile:
 	// the ban's delete folded into the bot's row. Without the admin's ban,
 	// the relaxed rule keeps the post, also when the bot's own ban of the
-	// author is on the ban list (no pause held it).
-	for name, c := range map[string]struct{ pause, adminBan bool }{
-		"admin-banned":    {pause: true, adminBan: true},
-		"bot-only":        {pause: true},
-		"bot-ban-on-list": {},
+	// author is on the ban list (no pause held it), and when the admin's
+	// ban can no longer show who made it (its ledger row purged past
+	// retention): the queue goes on, with a Warn.
+	for name, c := range map[string]struct{ pause, adminBan, purge, deleted bool }{
+		"admin-banned":            {pause: true, adminBan: true, deleted: true},
+		"bot-only":                {pause: true},
+		"bot-ban-on-list":         {},
+		"admin-ban-ledger-purged": {pause: true, adminBan: true, purge: true},
 	} {
 		t.Run("rule-relaxed-while-queued/"+name, func(t *testing.T) {
 			h := newHarness(t, "")
@@ -406,6 +409,15 @@ func TestBanDeletesPosts(t *testing.T) {
 					t.Fatalf("bans %v (%v), want the bot's own ban on the list", bans, err)
 				}
 			}
+			if c.purge {
+				if n, err := h.k.Store.PurgeLedger(h.k.Ctx, h.k.Clock.Now().Add(time.Second)); err != nil || n == 0 {
+					t.Fatalf("purged %d (%v), want the admin's ban row gone", n, err)
+				}
+				bans, err := h.k.Store.BansFor(h.k.Ctx, modtest.SpammerM.IDs())
+				if err != nil || len(bans) != 1 || bans[0].LedgerID == 0 {
+					t.Fatalf("bans %v (%v), want the admin's ban kept with its purged ledger ID", bans, err)
+				}
+			}
 			h.k.ReloadConfig(strings.Replace(modtest.Config, "      action: delete_remove_ban\n      confirmed: true",
 				"      action: log", 1))
 			if c.pause {
@@ -414,9 +426,12 @@ func TestBanDeletesPosts(t *testing.T) {
 				}
 			}
 			h.k.Fire()
-			if got := h.revoked(modtest.G1, "S1"); got != c.adminBan {
-				t.Fatalf("S1 deleted %v, want %v; calls %v, rows %v", got, c.adminBan, h.k.Fake.Calls(),
+			if got := h.revoked(modtest.G1, "S1"); got != c.deleted {
+				t.Fatalf("S1 deleted %v, want %v; calls %v, rows %v", got, c.deleted, h.k.Fake.Calls(),
 					rowsOf(h, modtest.SpammerM))
+			}
+			if n := h.k.Logged("a ban's ledger row is gone; not counted as an admin's ban"); (n > 0) != c.purge {
+				t.Fatalf("%d gone-ledger-row warnings, want them only when the row was purged", n)
 			}
 		})
 	}
