@@ -31,7 +31,7 @@ const (
 	KindLIDUnresolved  = "lid_unresolved"   // a phone number could not be resolved to a LID
 	KindWouldRemove    = "would_remove"     // a removal in a community that is in shadow mode
 	KindStartup        = "startup"          // actions left at intended by a crash, retried
-	KindUndoRace       = "undo_race"        // a removal went out while [Undo] ran: re-invite by hand (priority)
+	KindUndoRace       = "undo_race"        // a removal went out while [Undo] or /unban ran: re-invite by hand (priority)
 	KindBanCLI         = "ban_cli"          // a ban added or removed with the ban command
 	KindNotDone        = "not_done"         // an action the bot gave up on: do it by hand (priority)
 )
