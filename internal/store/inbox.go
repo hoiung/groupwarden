@@ -142,16 +142,19 @@ type Post struct {
 // senders (matched on either address the post's row keeps) in any of chats
 // that no enforced delete is queued for, was sent for or was given up on
 // (whichever address that delete's row names: a delete WhatsApp refused, or
-// one too old to send, is never tried again), oldest first. Post.Sender is
-// the address the group knew the author by. Rows with no sender (written
-// before store migration 12, or not a post of their own) are never listed.
+// one too old to send, is never tried again; one dropped because an unban
+// got there first, ReasonNotBanned, is planned again), oldest first.
+// Post.Sender is the address the group knew the author by. Rows with no
+// sender (written before store migration 12, or not a post of their own) are
+// never listed.
 func PostsBy(ctx context.Context, q queryer, senders, chats []string) ([]Post, error) {
 	rows, err := q.QueryContext(ctx, `SELECT s.chat, s.msg_id, s.sender, s.server_time FROM seen s
 WHERE s.sender != '' AND (s.sender IN (SELECT value FROM json_each(?1)) OR s.sender_alt IN (SELECT value FROM json_each(?1)))
 	AND s.chat IN (SELECT value FROM json_each(?2))
 	AND s.msg_id != '' AND NOT EXISTS (SELECT 1 FROM ledger l WHERE l.action = 'revoke' AND l.chat = s.chat
-		AND l.msg_id = s.msg_id AND l.mode = 'enforce' AND l.status IN ('intended', 'requested', 'failed'))
-ORDER BY s.server_time, s.chat, s.msg_id`, jsonList(nonEmpty(senders)), jsonList(chats))
+		AND l.msg_id = s.msg_id AND l.mode = 'enforce' AND (l.status IN ('intended', 'requested')
+			OR (l.status = 'failed' AND instr(l.reason, ?3) != 1)))
+ORDER BY s.server_time, s.chat, s.msg_id`, jsonList(nonEmpty(senders)), jsonList(chats), ReasonNotBanned)
 	if err != nil {
 		return nil, fmt.Errorf("read seen: %w", err)
 	}
