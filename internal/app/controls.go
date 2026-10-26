@@ -103,6 +103,9 @@ func (c controls) BanNumber(ctx context.Context, phone client.JID, by telegram.A
 	case res.PerCommunity:
 		return "Not banned: bans.scope is per_community, so a ban needs its community. On the node, run " +
 			"`groupwarden ban add <number> --community <id>`, or send /ban as a reply to a report from that community.", nil
+	case res.Spared:
+		return "Not banned: " + who + " is a current admin of a community or group the bot moderates. An admin " +
+			"must decide.", nil
 	case res.Already:
 		return who + " is already banned; nothing changed.", nil
 	}
