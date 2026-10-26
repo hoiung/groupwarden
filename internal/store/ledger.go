@@ -439,7 +439,8 @@ const heldBan = `(action = 'ban' AND status = 'intended' AND mode = 'enforce')`
 // ?1: the row's target, or the phone a ban row keeps in address. A held ban
 // names the member as its plan did (by LID when the post came from one), so
 // a lookup by the phone alone (/unban <number> for someone who joined since
-// the group list was last read) finds it too.
+// the group list was last read) finds it too. Finding and dropping a held ban
+// use it; settling one does not (SettleHeldBansIn says why).
 const banRowOf = `(target IN (SELECT value FROM json_each(?1))
 	OR (address != '' AND address IN (SELECT value FROM json_each(?1))))`
 
@@ -541,10 +542,15 @@ func (s *Store) FailHeldBan(ctx context.Context, id int64, reason string) error 
 
 // SettleHeldBansIn marks requested every ban a pause holds for any of targets
 // (a member's addresses) that scope covers: an admin's ban (ledger row id)
-// put the member on the ban list there at once. It runs in tx.
+// put the member on the ban list there at once. It matches the held row's
+// target only, never the phone it keeps: an admin's ban by number alone puts
+// no LID on the ban list, so settling a held ban that names the member by LID
+// would leave nothing that finds them by it, and their queued delete and
+// removal would fail as "not banned". Such a held ban still applies when the
+// pause ends. It runs in tx.
 func SettleHeldBansIn(ctx context.Context, tx *sql.Tx, targets []string, scope string, id int64, now time.Time) error {
 	_, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'requested', reason = reason || ?2, updated_at = ?3
-WHERE `+heldBan+` AND `+banRowOf+` AND (?4 = '*' OR chat = ?4)`,
+WHERE `+heldBan+` AND target IN (SELECT value FROM json_each(?1)) AND (?4 = '*' OR chat = ?4)`,
 		jsonList(targets), fmt.Sprintf(" (in force through ledger row %d)", id), now.UnixMilli(), scope)
 	if err != nil {
 		return fmt.Errorf("settle held bans: %w", err)
@@ -574,14 +580,21 @@ func (s *Store) HeldBan(ctx context.Context, targets []string, community string)
 
 // HeldBanIn is HeldBan read through q (a transaction).
 func HeldBanIn(ctx context.Context, q queryer, targets []string, community string) (bool, error) {
+	n, err := HeldBansIn(ctx, q, targets, community)
+	return n > 0, err
+}
+
+// HeldBansIn counts the bans a pause holds for any of targets that cover
+// community (as HeldBan), read through q.
+func HeldBansIn(ctx context.Context, q queryer, targets []string, community string) (int, error) {
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+`
 	AND `+banRowOf+` AND (?2 = '' OR chat = '*' OR chat = ?2)`,
 		jsonList(targets), community).Scan(&n)
 	if err != nil {
-		return false, fmt.Errorf("read held bans: %w", err)
+		return 0, fmt.Errorf("read held bans: %w", err)
 	}
-	return n > 0, nil
+	return n, nil
 }
 
 // HeldBans lists every ban a pause holds, oldest first (`ban list` shows them
