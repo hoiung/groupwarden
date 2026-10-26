@@ -346,6 +346,34 @@ func TestBanCLIHeldBan(t *testing.T) {
 	}
 }
 
+// TestBanCLIHeldBanByPhone: `ban remove <phone>` lifts a ban a pause holds
+// that names the member by LID and keeps their phone, with nothing else tying
+// the two (someone who joined since the group list was last read).
+func TestBanCLIHeldBanByPhone(t *testing.T) {
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.Write(ctx, func(tx *sql.Tx) error {
+		_, err := ledger.Write(ctx, tx, ledger.Plan{Trigger: "S1", Target: client.Member{LID: spammerLID, Phone: spammerPhone},
+			ConfigHash: "h", Ban: []string{store.BanEverywhere}, BanEnforce: true, BanHeld: true, BanCommunity: cmdCommunity,
+			Reason: "pitch"}, time.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if code := te.sub("ban", "remove", spammerPhone); code != 0 {
+		t.Fatalf("ban remove <phone> of a held ban: exit %d %q %q", code, te.out, te.errb)
+	}
+	if held, err := st.HeldBans(ctx); err != nil || len(held) != 0 {
+		t.Fatalf("held bans left %+v (%v)", held, err)
+	}
+}
+
 type shown struct {
 	Addresses []string
 	Bans      []map[string]any
