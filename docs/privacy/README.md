@@ -1,6 +1,6 @@
 # What groupwarden.db keeps about members
 
-The bot's database (`data_dir/groupwarden.db`, `internal/store`) holds what it needs to moderate, for as long as the table below says. Retention runs every hour (`internal/ledger/purge.go`, and the inbox worker for `seen`). `groupwarden member forget <lid|phone>` deletes one person's evidence copies, action-log rows and queued inbox rows, empties `seen.sender` and `seen.sender_alt` for them and has their message text taken off the admin chat's reports; an active ban, a ban a pause holds and an action still queued are kept (`internal/store/member.go` `ForgetMember`).
+The bot's database (`data_dir/groupwarden.db`, `internal/store`) holds what it needs to moderate, for as long as the table below says. Retention runs every hour (`internal/ledger/purge.go`, and the inbox worker for `seen`). The nightly backup is an encrypted copy of the whole database, and the newest `backup.keep` of them are kept (`internal/backup`), so a row stays in the backups for up to that many nights after it leaves the database; `member forget` does not reach the backups. `groupwarden member forget <lid|phone>` deletes one person's evidence copies, action-log rows and queued inbox rows, empties `seen.sender` and `seen.sender_alt` for them and has their message text taken off the admin chat's reports; an active ban, a ban a pause holds and an action still queued are kept (`internal/store/member.go` `ForgetMember`).
 
 | Table | What it holds about a member | How long |
 |---|---|---|
@@ -11,4 +11,4 @@ The bot's database (`data_dir/groupwarden.db`, `internal/store`) holds what it n
 | `bans` | the ban list: a banned member's LID and phone JID | until the ban is lifted |
 | `tg_presses` | who pressed a report's button or sent its command (Telegram user ID and name) | as long as the report |
 
-`seen.sender` and `seen.sender_alt` are there so that every `/ban` from the admin chat can delete the banned person's posts the bot still has a record of ([Banning from the admin chat](../config.md#banning-from-the-admin-chat)). `member forget` empties both for that person and leaves the rest of the row, so a redelivered message is still ignored.
+`seen.sender` and `seen.sender_alt` are there so that every `/ban` from the admin chat can delete the banned person's posts the bot still has a record of ([Banning from the admin chat](../config.md#banning-from-the-admin-chat)). `member show` lists that person's rows (`posts`), and `member forget` empties both for them and leaves the rest of the row, so a redelivered message is still ignored.
