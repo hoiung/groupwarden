@@ -1194,6 +1194,43 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("calls %v, want P1 deleted", h.k.Fake.Calls())
 		}
 	})
+	// [Undo] after the sweep found the LID of a /ban <number>, for someone
+	// whose posts never carried their number: only the ban list pairs their
+	// two addresses, and through it [Undo] also overturns the number's own
+	// ban row (keyed by the number), so the reply counts it.
+	t.Run("undo-after-sweep-overturns-number-ban", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		recentJoiner(h)
+		if err := h.k.Store.SetPause(h.k.Ctx, store.Pause{Source: store.SourceAdmin, Scope: store.ScopeAll,
+			Reason: "paused", Since: h.k.Clock.Now()}); err != nil {
+			t.Fatal(err)
+		}
+		m := h.k.Spam("S1", modtest.G1)
+		m.SenderAlt = ""
+		h.k.Deliver(m)
+		h.post("P1", modtest.G2, modtest.Spammer, "")
+		h.drain()
+		r := h.only(ledger.KindAction)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if _, err := h.app.Sweep.Run(h.k.Ctx, "r1"); err != nil {
+			t.Fatal(err)
+		}
+		h.press(secondAdm, "undo", r.ID)
+		if got := rowsOf(h, client.Member{Phone: modtest.SpammerPhone}); got["ban/overturned"] != 1 {
+			t.Fatalf("number's rows %v, answers %q: want its ban row overturned", got, h.answers())
+		}
+		if a := h.answers(); len(a) == 0 || !strings.Contains(a[len(a)-1], "3 action(s) overturned") {
+			t.Fatalf("answers %q, want the number's ban row counted with the bot's two", a)
+		}
+		if err := h.k.Store.ClearPause(h.k.Ctx, store.SourceAdmin); err != nil {
+			t.Fatal(err)
+		}
+		h.k.Fire()
+		if h.revoked(modtest.G2, "P1") || h.k.Banned(modtest.SpammerM, "") {
+			t.Fatalf("calls %v: P1 deleted or still banned after [Undo]", h.k.Fake.Calls())
+		}
+	})
 	// A ban the bot made by their LID alone (their post came without their
 	// number) is found for /ban <number> through the LID WhatsApp gives:
 	// already banned, so no second ban.
