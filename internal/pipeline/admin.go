@@ -259,7 +259,10 @@ func (a *Admin) Ban(ctx context.Context, reportID int64, actor string) (Banned, 
 		return Banned{}, fmt.Errorf("the evidence copy of #%d is gone (purged or forgotten); use `groupwarden ban add`",
 			reportID)
 	}
-	m := a.Directory.Complete(client.MemberOf(client.JID(ev.Sender), client.JID(ev.SenderAlt)))
+	m, err := Identify(ctx, a.Directory, a.Store, nil, client.MemberOf(client.JID(ev.Sender), client.JID(ev.SenderAlt)))
+	if err != nil {
+		return Banned{}, err
+	}
 	cur := a.Config.Current()
 	now := a.Store.Now()
 	// An edit is aged by its original's time: the message the delete targets.
@@ -564,31 +567,8 @@ func (a *Admin) report(ctx context.Context, id int64) (store.Report, error) {
 	return r, nil
 }
 
-// member is a report subject by every address the bot knows: the
-// directory's, the other address it recorded beside the one it has
-// (store.OtherAddress: someone who joined since the group list was last read
-// is known there by their LID alone), and the ban list's. A ban written for
-// them then carries both, and a lookup by either finds it.
+// member is a report subject by every address the bot knows (Identify). A
+// ban written for them then carries both, and a lookup by either finds it.
 func (a *Admin) member(ctx context.Context, key string) (client.Member, error) {
-	m := a.Directory.Complete(client.MemberOf(client.JID(key)))
-	if (m.LID == "") != (m.Phone == "") {
-		other, err := a.Store.OtherAddress(ctx, m.Key())
-		if err != nil {
-			return m, err
-		}
-		m = client.MemberOf(m.LID, m.Phone, client.JID(other))
-	}
-	bans, err := a.Store.BansFor(ctx, m.IDs())
-	if err != nil {
-		return m, err
-	}
-	for _, b := range bans {
-		if m.LID == "" && b.LID != "" {
-			m.LID = client.JID(b.LID)
-		}
-		if m.Phone == "" && b.Phone != "" {
-			m.Phone = client.JID(b.Phone)
-		}
-	}
-	return a.Directory.Complete(m), nil
+	return Identify(ctx, a.Directory, a.Store, nil, client.MemberOf(client.JID(key)))
 }
