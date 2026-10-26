@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,6 +107,12 @@ func TestHeldBanFoundByPhone(t *testing.T) {
 			t.Fatal(err)
 		}
 		return got.Status
+	}
+	for ids, want := range map[string]string{phone: "c1 c2 c3", other: ""} {
+		got, err := HeldBanScopesIn(ctx, s.db, []string{ids})
+		if err != nil || strings.Join(got, " ") != want {
+			t.Errorf("HeldBanScopesIn(%s) = %v (%v), want %q", ids, got, err, want)
+		}
 	}
 	for ids, want := range map[string]bool{phone: true, other: false} {
 		if got, err := s.HeldBan(ctx, []string{ids}, ""); err != nil || got != want {
