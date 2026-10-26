@@ -140,12 +140,19 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 	if w.Queued > 0 || len(w.ReportIDs) > 0 {
 		m.Enforcer.wake()
 	}
-	return nil
+	if d.Action == rules.DeleteRemoveBan {
+		return nil // the rule's own plan deletes it (or it is too old to)
+	}
+	// A log rule or a watch-only match reported it; the post of a banned
+	// member is still deleted.
+	return m.bannedPost(ctx, tx, ev, item, community, cur)
 }
 
-// bannedPost deletes a post no rule acted on when its sender is banned in
-// community and it is in enforce mode: a post sent after the ban and before
-// the sweep removes them, or after they rejoined and before their removal.
+// bannedPost deletes a post when its sender is banned in community and it is
+// in enforce mode, unless a rule's own plan already deletes it: a post sent
+// after the ban and before the sweep removes them, or after they rejoined and
+// before their removal, whether or not a log rule or a watch-only rule matched
+// it. A ban a pause holds counts too, as it does for the executor's deletes.
 // The removal is the sweep's or the join's. No report: the admins were told
 // of the ban or the rejoin; the ledger row and a log line record the delete.
 func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Message, item Item, community string,
@@ -157,7 +164,11 @@ func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Messa
 	if member.Key() == "" {
 		return nil
 	}
-	if _, banned, err := store.FindBan(ctx, tx, member.IDs(), community); err != nil || !banned {
+	_, banned, err := store.FindBan(ctx, tx, member.IDs(), community)
+	if err == nil && !banned {
+		banned, err = store.HeldBanIn(ctx, tx, []string{member.Key()}, community)
+	}
+	if err != nil || !banned {
 		return err
 	}
 	if m.Directory.IsAdmin(member.LID, member.Phone, community, cur.Rules) {
@@ -169,18 +180,21 @@ func (m *Moderator) bannedPost(ctx context.Context, tx *sql.Tx, ev *client.Messa
 	if at.IsZero() {
 		at = ev.Time
 	}
-	p := ledger.Plan{Trigger: ev.ID, Target: member, ConfigHash: cur.Hash, Reason: "a post by a banned member",
-		Intents: []ledger.Intent{{Action: store.ActRevoke, Chat: ev.Chat, Community: community, Enforce: true,
-			Address: ev.Sender, MsgID: ev.TargetID, MsgTime: at}}}
+	p := ledger.Plan{Trigger: store.BannedPostTrigger + ev.ID, Target: member, ConfigHash: cur.Hash,
+		Reason: "a post by a banned member", Intents: []ledger.Intent{{Action: store.ActRevoke, Chat: ev.Chat,
+			Community: community, Enforce: true, Address: ev.Sender, MsgID: ev.TargetID, MsgTime: at}}}
 	w, err := ledger.Write(ctx, tx, p, m.Store.Now())
 	if err != nil {
 		return err
 	}
-	m.Log.Info("post by a banned member; delete planned", "community", mask.IDs(community),
-		"chat", mask.IDs(string(ev.Chat)), "sender", mask.IDs(member.Key()), "queued", w.Queued)
-	if w.Queued > 0 {
-		m.Enforcer.wake()
+	attrs := []any{"community", mask.IDs(community), "chat", mask.IDs(string(ev.Chat)), "sender", mask.IDs(member.Key())}
+	if w.Queued == 0 {
+		// An edit of a post whose delete is already planned or sent.
+		m.Log.Debug("post by a banned member; its delete is already planned", attrs...)
+		return nil
 	}
+	m.Log.Info("post by a banned member; delete planned", attrs...)
+	m.Enforcer.wake()
 	return nil
 }
 
