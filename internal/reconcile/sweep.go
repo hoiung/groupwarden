@@ -71,6 +71,15 @@ func (s *Sweep) Run(ctx context.Context, runID string) (Result, error) {
 		res.Errors++
 		s.Log.Error("sweep: could not record coverage", "err", mask.IDs(err.Error()))
 	}
+	// Bans still keyed by a phone number get their LID first, so a banned
+	// member the directory knows by LID only (they joined since the group list
+	// was last read) is found in this sweep, not the next one.
+	if err := s.call(ctx, &res, func() error { return s.Enforcer.ResolveBans(ctx) }); err != nil {
+		if ctx.Err() != nil {
+			return res, ctx.Err()
+		}
+		s.Log.Error("sweep: ban LID lookup failed", "err", mask.IDs(err.Error()))
+	}
 	rs := s.Config.Current().Rules
 	for _, g := range s.Directory.Moderated(rs) {
 		// The bot cannot remove or reject where it is not an admin; the
@@ -96,9 +105,6 @@ func (s *Sweep) Run(ctx context.Context, runID string) (Result, error) {
 			}
 			s.Log.Error("sweep: join-request check failed", "group", mask.IDs(string(g)), "err", mask.IDs(err.Error()))
 		}
-	}
-	if err := s.call(ctx, &res, func() error { return s.Enforcer.ResolveBans(ctx) }); err != nil && ctx.Err() == nil {
-		s.Log.Error("sweep: ban LID lookup failed", "err", mask.IDs(err.Error()))
 	}
 	return res, ctx.Err()
 }
