@@ -47,7 +47,7 @@ func TestHeldBanSettlesOnce(t *testing.T) {
 		}
 	}
 	// An admin's ban in c1 settles the held ban there, not the one in c2.
-	if err := s.Write(ctx, func(tx *sql.Tx) error { return SettleHeldBansIn(ctx, tx, x, "c1", 99, now) }); err != nil {
+	if err := s.Write(ctx, func(tx *sql.Tx) error { return SettleHeldBansIn(ctx, tx, []string{x}, "c1", 99, now) }); err != nil {
 		t.Fatal(err)
 	}
 	if statusOf(c1) != Requested || statusOf(c2) != Intended {
@@ -74,6 +74,51 @@ func TestHeldBanSettlesOnce(t *testing.T) {
 	}
 	if err := s.FailHeldBan(ctx, c2.ID, "refuted"); err != nil || statusOf(c2) != Requested {
 		t.Fatalf("failing an applied held ban: %s (%v)", statusOf(c2), err)
+	}
+}
+
+// TestHeldBanFoundByPhone: a held ban that names the member by LID is found,
+// settled and dropped by the phone it keeps in address, as for someone who
+// joined since the group list was last read (the directory has no pair for
+// them, so a lookup by number has the phone alone).
+func TestHeldBanFoundByPhone(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	s := openAt(t, &now)
+	const lid, phone, other = "99999000000444@lid", "447700900123@s.whatsapp.net", "447700900456@s.whatsapp.net"
+	held := map[string]int64{}
+	for _, chat := range []string{"c1", "c2", "c3"} {
+		if err := s.Write(ctx, func(tx *sql.Tx) error {
+			var err error
+			held[chat], _, err = InsertLedger(ctx, tx, LedgerRow{Action: ActBan, Chat: chat, Target: lid, Address: phone,
+				TriggerID: "T-" + chat, Community: chat, Mode: ModeEnforce, ConfigHash: "h"}, now)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statusOf := func(chat string) Status {
+		t.Helper()
+		got, err := s.Ledger(ctx, held[chat])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.Status
+	}
+	for ids, want := range map[string]bool{phone: true, other: false} {
+		if got, err := s.HeldBan(ctx, []string{ids}, ""); err != nil || got != want {
+			t.Errorf("HeldBan(%s) = %v (%v), want %v", ids, got, err, want)
+		}
+	}
+	if err := s.Write(ctx, func(tx *sql.Tx) error { return SettleHeldBansIn(ctx, tx, []string{phone}, "c1", 99, now) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Write(ctx, func(tx *sql.Tx) error { return DropHeldBans(ctx, tx, []string{phone}, "c2", "unbanned", now) }); err != nil {
+		t.Fatal(err)
+	}
+	if statusOf("c1") != Requested || statusOf("c2") != Overturned || statusOf("c3") != Intended {
+		t.Fatalf("settled by phone in c1, dropped by phone in c2: c1 %s, c2 %s, c3 %s; want requested, overturned, intended",
+			statusOf("c1"), statusOf("c2"), statusOf("c3"))
 	}
 }
 
