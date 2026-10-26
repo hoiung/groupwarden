@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/reconcile"
+	"github.com/hoiung/groupwarden/internal/rules"
 	"github.com/hoiung/groupwarden/internal/store"
 	"github.com/hoiung/groupwarden/internal/telegram"
 )
@@ -116,7 +118,11 @@ func (c controls) BanNumber(ctx context.Context, phone client.JID, by telegram.A
 	if res.Paused != "" {
 		text += "The bot sweeps every group now; removing them waits for the pause to end."
 	} else {
-		text += "The bot sweeps every group now and removes them wherever it finds them."
+		text += "The bot sweeps every group now and removes them wherever it finds them"
+		if anyShadow(c.a.Config.Current().Rules) {
+			text += ", except in a community in shadow mode, where the sweep only reports them"
+		}
+		text += "."
 	}
 	return text + " To undo: /unban with the same number.", nil
 }
@@ -165,6 +171,15 @@ func upperFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// anyShadow reports whether a configured community is in shadow mode, where
+// the sweep reports a banned member instead of removing them.
+func anyShadow(rs *rules.Ruleset) bool {
+	return slices.ContainsFunc(rs.Communities(), func(c string) bool {
+		mode, _ := rs.ModeFor(c)
+		return mode != rules.Enforce
+	})
 }
 
 func banReply(res pipeline.Banned, reportID int64, by telegram.Actor, message bool) string {
