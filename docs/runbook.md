@@ -99,6 +99,15 @@ If the newer version changed the database, the older binary refuses to start ("g
 
 A binary older than the `acl:` section (Issue #6) refuses a config that has one, and refuses its last good copy too (`internal/config/reload.go` `LoadRunning`), so it does not start. Before rolling back past it, remove `acl:` from the config repo and wait for `config v<hash> loaded` in the admin chat. If the older binary is already in place, its config sync cannot read the live config either, so it never pulls that change: remove `acl:` by hand from `/var/lib/groupwarden/config/config.yaml` as well (as the `groupwarden` user), then `sudo systemctl restart groupwarden`.
 
+### Going back across a schema change
+
+Only when the newer version cannot be fixed forward: the database goes back to the moment of the upgrade, so whatever the bot recorded since (bans, reports, the record of posts) is lost. Bans added since then must be added again.
+
+1. `sudo systemctl stop groupwarden`
+2. Find the backup the upgrade took before its restart: the install printed `backup before the restart: ok groupwarden-<time>.db.age …`; otherwise it is the newest `groupwarden-<time>.db.age` in `backup.target_dir` from before the upgrade.
+3. Put the older binary back while the bot is stopped: `sudo cp -p /usr/local/bin/groupwarden.previous /usr/local/bin/groupwarden` (or build the older version and copy its binary there).
+4. [Restore](#restore-a-backup) that backup, from its step 2. The bot starts with every action paused; check `/status` and press **[Resume]**.
+
 ## Bot number banned
 
 The bot exits (78) and every group is unmoderated until a new number is paired. Your human admins and the human community owner still run the community; that is why every group needs at least 2 human admins.
