@@ -580,21 +580,34 @@ func (s *Store) HeldBan(ctx context.Context, targets []string, community string)
 
 // HeldBanIn is HeldBan read through q (a transaction).
 func HeldBanIn(ctx context.Context, q queryer, targets []string, community string) (bool, error) {
-	n, err := HeldBansIn(ctx, q, targets, community)
-	return n > 0, err
-}
-
-// HeldBansIn counts the bans a pause holds for any of targets that cover
-// community (as HeldBan), read through q.
-func HeldBansIn(ctx context.Context, q queryer, targets []string, community string) (int, error) {
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM ledger WHERE `+heldBan+`
 	AND `+banRowOf+` AND (?2 = '' OR chat = '*' OR chat = ?2)`,
 		jsonList(targets), community).Scan(&n)
 	if err != nil {
-		return 0, fmt.Errorf("read held bans: %w", err)
+		return false, fmt.Errorf("read held bans: %w", err)
 	}
-	return n, nil
+	return n > 0, nil
+}
+
+// HeldBanScopesIn lists the scopes (BanEverywhere or a community) of every
+// ban a pause holds for any of targets, each once, read through q.
+func HeldBanScopesIn(ctx context.Context, q queryer, targets []string) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT DISTINCT chat FROM ledger WHERE `+heldBan+` AND `+banRowOf+` ORDER BY chat`,
+		jsonList(targets))
+	if err != nil {
+		return nil, fmt.Errorf("read held bans: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return nil, fmt.Errorf("read held bans: %w", err)
+		}
+		out = append(out, scope)
+	}
+	return out, rows.Err()
 }
 
 // HeldBans lists every ban a pause holds, oldest first (`ban list` shows them
