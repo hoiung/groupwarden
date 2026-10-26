@@ -194,6 +194,11 @@ func (a *Admin) postDeletes(ctx context.Context, tx *sql.Tx, m client.Member, sc
 		}
 	}
 	if len(chats) == 0 || len(m.IDs()) == 0 {
+		why := "no group the bot knows is in the ban's scope"
+		if len(m.IDs()) == 0 {
+			why = "the member has no address to find posts by"
+		}
+		a.Log.Info("admin ban: no post deletes planned", "reason", why, "target", mask.IDs(m.Key()))
 		return nil, n, nil
 	}
 	posts, err := store.PostsBy(ctx, tx, m.IDs(), chats)
@@ -384,7 +389,7 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 	case cur.Rules.BanScope() == rules.PerCommunity:
 		return NumberBanned{Member: m, PerCommunity: true}, nil
 	case slices.ContainsFunc(cur.Rules.Communities(), func(c string) bool {
-		return a.Directory.IsAdmin(m.Phone, m.LID, c, cur.Rules)
+		return a.Directory.IsAdmin(m.LID, m.Phone, c, cur.Rules)
 	}):
 		a.Log.Info("admin ban by number skipped: a current admin", "target", mask.IDs(m.Key()), "by", actor)
 		return NumberBanned{Member: m, Spared: true}, nil
