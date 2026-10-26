@@ -31,7 +31,8 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 
            internal/reconcile sweep (at connect, every reconcile interval,
            when the bot joins a group, after each /enable, after a /disable
-           that removes an entry and after every ban from the admin chat; the
+           that removes an entry and after every ban from the admin chat that
+           puts someone on the ban list; the
            group list is read from WhatsApp first, and a read that fails is
            tried again every 30 seconds; a sweep waits until the list has
            loaded and, after a connect, until the worker has decided
