@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -214,12 +215,15 @@ const (
 	phoneMaxDigits = 15
 )
 
+// trunkZero is a "(0)" written straight after a country code (one to three
+// digits): the national 0, which is not dialled from abroad.
+var trunkZero = regexp.MustCompile(`^(\d{1,3})\s*\(0\)`)
+
 // phoneDigits takes out what people write around and between a phone
 // number's digits (spaces, dashes, brackets, a leading "+", and a "(0)" after
-// the country code, the national 0 that is not dialled from abroad) and
-// reports whether only digits are left.
+// the country code) and reports whether only digits are left.
 func phoneDigits(s string) (string, bool) {
-	s = strings.ReplaceAll(strings.TrimPrefix(strings.TrimSpace(s), "+"), "(0)", "")
+	s = trunkZero.ReplaceAllString(strings.TrimPrefix(strings.TrimSpace(s), "+"), "$1")
 	bad := false
 	d := strings.Map(func(r rune) rune {
 		switch {
