@@ -111,9 +111,10 @@ func (h *harness) revoked(chat client.JID, id string) bool {
 // TestBanByNumber (AC 5.1): /ban <number> bans a phone number written with
 // its country code, with or without "+", spaces, dashes or brackets, and
 // stores it as `groupwarden ban add <phone>` does (cmd/groupwarden
-// membercmds.go ban: the phone JID is the key and the phone, no LID until the
-// sweep resolves it, scope everywhere under bans.scope all_communities),
-// with a ban row triggered from the admin chat that names who sent it. A
+// membercmds.go ban: the phone JID is the key until the LID is found, scope
+// everywhere under bans.scope all_communities), with a ban row triggered
+// from the admin chat that names who sent it; a LID the bot knows (here from
+// the group list) resolves the ban at once, as the sweep would. A
 // number of fewer than 8 or more than 15 digits, or with letters, gets the
 // usage text and bans nobody; a number already banned everywhere gets a reply
 // saying so and no second ban, but its posts are still deleted (every /ban
@@ -979,9 +980,10 @@ func recentJoiner(h *harness) {
 }
 
 // TestBanRecentJoiner: /ban <number> for someone who joined since the group
-// list was last read (the ban is keyed by the phone number, the directory
-// knows them by LID only) deletes the post they send after the ban, and the
-// sweep the ban asks for removes them at once.
+// list was last read (the directory knows them by LID only; with no LID on
+// record or from WhatsApp the ban is keyed by the phone number until the
+// sweep) deletes the post they send after the ban, and the sweep the ban
+// asks for removes them at once.
 func TestBanRecentJoiner(t *testing.T) {
 	t.Run("post-after-ban-deleted", func(t *testing.T) {
 		h := newHarness(t, "")
@@ -1197,10 +1199,11 @@ func TestBanRecentJoiner(t *testing.T) {
 			t.Fatalf("calls %v, want P1 deleted", h.k.Fake.Calls())
 		}
 	})
-	// [Undo] after the sweep found the LID of a /ban <number>, for someone
-	// whose posts never carried their number: only the ban list pairs their
-	// two addresses, and through it [Undo] also overturns the number's own
-	// ban row (keyed by the number), so the reply counts it.
+	// [Undo] after a /ban <number> whose ban has their LID (WhatsApp gives it
+	// at /ban here; otherwise the sweep finds it), for someone whose posts
+	// never carried their number: only the ban list pairs their two
+	// addresses, and through it [Undo] also overturns the number's own ban
+	// row (keyed by the number), so the reply counts it.
 	t.Run("undo-after-sweep-overturns-number-ban", func(t *testing.T) {
 		h := newHarness(t, "")
 		h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
