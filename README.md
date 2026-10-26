@@ -76,7 +76,7 @@ On a machine that stays on: a Linux box, a Windows PC running WSL2, or Docker. [
 | `examples/` | Example config with English word lists |
 | `tests/corpus/` | Synthetic, redacted spam and look-alike samples |
 | `deploy/` | systemd units, install script, Dockerfile |
-| `docs/` | Deploy guide, runbook, config reference, [architecture](docs/architecture.md) (how the packages fit together), research |
+| `docs/` | Deploy guide, runbook, config reference, [architecture](docs/architecture.md) (how the packages fit together), [what the database keeps about members](docs/privacy/README.md), research |
 
 Runtime state (`data/`, `evidence/`, `backups/`, `secrets/`) is never committed.
 
