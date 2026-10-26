@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"context"
+	"database/sql"
 	"sort"
 	"sync"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/mask"
 	"github.com/hoiung/groupwarden/internal/rules"
+	"github.com/hoiung/groupwarden/internal/store"
 )
 
 // Label names a group for the admins: its name and masked ID (the masked ID
@@ -290,6 +293,50 @@ func (d *Directory) IsAdmin(member, alt client.JID, community string, rs *rules.
 		}
 	}
 	return false
+}
+
+// Identify is m by every address the bot knows: the group list's pair
+// (Complete), the other address the bot recorded beside the one it has
+// (store.OtherAddress: someone who joined since the group list was last read
+// is known there by their LID alone, as a join names no phone number), and
+// the ban list's. A lookup of a member's bans or posts starts here, so it
+// finds what the bot holds under either address. tx is the transaction the
+// caller reads in, nil for none: the store has one connection, so a read
+// beside an open transaction would wait on it.
+func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m client.Member) (client.Member, error) {
+	m = d.Complete(m)
+	if (m.LID == "") == (m.Phone == "") {
+		return m, nil
+	}
+	var other string
+	var err error
+	if tx != nil {
+		other, err = store.OtherAddressIn(ctx, tx, m.Key())
+	} else {
+		other, err = st.OtherAddress(ctx, m.Key())
+	}
+	if err != nil {
+		return m, err
+	}
+	m = client.MemberOf(m.LID, m.Phone, client.JID(other))
+	var bans []store.Ban
+	if tx != nil {
+		bans, err = store.BansForIn(ctx, tx, m.IDs())
+	} else {
+		bans, err = st.BansFor(ctx, m.IDs())
+	}
+	if err != nil {
+		return m, err
+	}
+	for _, b := range bans {
+		if m.LID == "" && b.LID != "" {
+			m.LID = client.JID(b.LID)
+		}
+		if m.Phone == "" && b.Phone != "" {
+			m.Phone = client.JID(b.Phone)
+		}
+	}
+	return d.Complete(m), nil
 }
 
 // Complete fills in the address the directory knows for a member given by
