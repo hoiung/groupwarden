@@ -74,9 +74,15 @@ type LedgerRow struct {
 	UpdatedAt  time.Time
 }
 
-// Key is the row's unique key.
+// Key is the row's unique key. A delete's names its message too: one ban
+// deletes each of the member's posts in a chat, so a key without it would
+// fold every delete after the first into the first's row.
 func (r LedgerRow) Key() string {
-	return string(r.Action) + "|" + r.Chat + "|" + r.Target + "|" + r.TriggerID
+	k := string(r.Action) + "|" + r.Chat + "|" + r.Target + "|" + r.TriggerID
+	if r.Action == ActRevoke {
+		k += "|" + r.MsgID
+	}
+	return k
 }
 
 // Terminal reports whether nothing further happens to the row.
