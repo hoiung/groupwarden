@@ -124,14 +124,15 @@ const sweepPrefix = "sweep:"
 // existing is the row a new one would repeat, if any: the open removal or
 // rejection of the member in the same chat (whatever triggered it: two posts,
 // or a post and a sweep, remove once), the delete of the same message (a
-// post and its edit delete it once), the member's ban in that scope already
+// post and its edit, or two bans naming its author by different addresses,
+// delete it once), the member's ban in that scope already
 // in force or held, or a sweep's row of the same episode in the same mode
 // (an open row, or a failed enforce row to retry).
 func existing(ctx context.Context, tx *sql.Tx, p Plan, r store.LedgerRow) (store.LedgerRow, bool, error) {
 	if r.Mode == store.ModeEnforce {
 		switch r.Action {
 		case store.ActRevoke:
-			return store.RevokeOf(ctx, tx, r.Chat, r.Target, r.MsgID)
+			return store.RevokeOf(ctx, tx, r.Chat, r.MsgID)
 		case store.ActBan:
 			// An admin's ban (applied at once) never folds into a held one.
 			return store.BanRowOf(ctx, tx, r.Target, r.Chat, r.Status != store.Requested)

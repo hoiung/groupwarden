@@ -411,12 +411,14 @@ WHERE action = ? AND chat = ? AND target = ? AND mode = 'enforce' AND status = '
 		string(a), chat, target))
 }
 
-// RevokeOf returns the enforce delete of target's message msgID in chat that
-// is queued or already sent (ok false when there is none).
-func RevokeOf(ctx context.Context, tx *sql.Tx, chat, target, msgID string) (LedgerRow, bool, error) {
+// RevokeOf returns the enforce delete of message msgID in chat that is queued
+// or already sent (ok false when there is none), whichever of its author's
+// addresses the row names: a /ban <number> names them by phone, a [Ban] by
+// the address the report's post came from, and the post is deleted once.
+func RevokeOf(ctx context.Context, tx *sql.Tx, chat, msgID string) (LedgerRow, bool, error) {
 	return oneRow(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger
-WHERE target = ? AND action = 'revoke' AND chat = ? AND msg_id = ? AND mode = 'enforce'
-	AND status IN ('intended', 'requested') ORDER BY id LIMIT 1`, target, chat, msgID))
+WHERE action = 'revoke' AND chat = ? AND msg_id = ? AND mode = 'enforce'
+	AND status IN ('intended', 'requested') ORDER BY id LIMIT 1`, chat, msgID))
 }
 
 // heldBan selects the bans a pause holds: never queued, settled by the
