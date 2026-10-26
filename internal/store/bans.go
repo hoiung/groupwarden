@@ -153,22 +153,25 @@ func bans(ctx context.Context, q queryer, query string, args ...any) ([]Ban, err
 // ResolveBan records the LID found for a phone-only ban: the entry is re-keyed
 // on the LID (merging with an existing LID entry of the same scope).
 func (s *Store) ResolveBan(ctx context.Context, phone, lid string) error {
-	return s.Write(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE bans SET lid = ? WHERE phone = ? AND lid = ''`, lid, phone); err != nil {
-			return err
-		}
-		// Re-key; where the LID already has an entry for that scope, keep it,
-		// with the phone number filled in so the ban still matches it.
-		if _, err := tx.ExecContext(ctx, `UPDATE OR IGNORE bans SET member = lid WHERE phone = ? AND member = phone`, phone); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE bans SET phone = ?1 WHERE member = ?2 AND phone = ''
-	AND scope IN (SELECT scope FROM bans WHERE phone = ?1 AND member = phone)`, phone, lid); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM bans WHERE phone = ? AND member = phone`, phone)
+	return s.Write(ctx, func(tx *sql.Tx) error { return ResolveBanIn(ctx, tx, phone, lid) })
+}
+
+// ResolveBanIn is ResolveBan inside tx.
+func ResolveBanIn(ctx context.Context, tx *sql.Tx, phone, lid string) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE bans SET lid = ? WHERE phone = ? AND lid = ''`, lid, phone); err != nil {
 		return err
-	})
+	}
+	// Re-key; where the LID already has an entry for that scope, keep it,
+	// with the phone number filled in so the ban still matches it.
+	if _, err := tx.ExecContext(ctx, `UPDATE OR IGNORE bans SET member = lid WHERE phone = ? AND member = phone`, phone); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE bans SET phone = ?1 WHERE member = ?2 AND phone = ''
+	AND scope IN (SELECT scope FROM bans WHERE phone = ?1 AND member = phone)`, phone, lid); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM bans WHERE phone = ? AND member = phone`, phone)
+	return err
 }
 
 // MarkBanLIDFailed records that the phone number of a ban could not be
