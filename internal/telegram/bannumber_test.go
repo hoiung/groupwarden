@@ -492,4 +492,24 @@ func TestBanDeletesPosts(t *testing.T) {
 			t.Fatalf("calls %v, want the reported W1 and the other post P2 deleted", h.k.Fake.Calls())
 		}
 	})
+	// A delete dropped because an /unban got there before it was sent is
+	// planned again by the next ban.
+	t.Run("unbanned-before-send-planned-again", func(t *testing.T) {
+		h := newHarness(t, "")
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		h.k.Fire()
+		if h.revoked(modtest.G1, "P1") {
+			t.Fatalf("calls %v, want no delete sent while unbanned", h.k.Fake.Calls())
+		}
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if got := h.lastReply(); !strings.Contains(got, "Their posts on record: 1 being deleted, 0 too old to delete.") {
+			t.Fatalf("reply %q", got)
+		}
+		h.k.Fire()
+		if !h.revoked(modtest.G1, "P1") {
+			t.Fatalf("calls %v, want P1 deleted by the second ban", h.k.Fake.Calls())
+		}
+	})
 }
