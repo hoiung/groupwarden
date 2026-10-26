@@ -222,13 +222,15 @@ func (a *Adapter) convertMessage(e *events.Message) client.Event {
 	case content.GetEncCommentMessage() != nil:
 		dec, err := a.decrypt(a.cli.DecryptComment, e)
 		if err != nil {
-			return undecryptable(e, err)
+			return undecryptable(e, err, false)
 		}
 		content, m.IsComment = unwrap(dec), true
+	case commentInner(content) != nil:
+		content, m.IsComment = unwrap(commentInner(content)), true
 	case content.GetSecretEncryptedMessage() != nil:
 		dec, err := a.decrypt(a.cli.DecryptSecretEncryptedMessage, e)
 		if err != nil {
-			return undecryptable(e, err)
+			return undecryptable(e, err, true)
 		}
 		m.IsEdit, m.TargetID = true, content.GetSecretEncryptedMessage().GetTargetMessageKey().GetID()
 		content = unwrap(dec)
@@ -252,6 +254,14 @@ func (a *Adapter) convertMessage(e *events.Message) client.Event {
 		return m
 	}
 	sh := shapeOf(raw, content)
+	// A key part with a field this library does not know (or one it does not
+	// read) is still a key part: kept, it would take the post's ID like the
+	// plain one above, so it is not stored either.
+	if unread && !m.IsEdit && !m.IsComment && carriesKey(content) {
+		a.log.Warn("a message part with a sender key and nothing else the bot can read, not stored",
+			"chat", mask.IDs(string(m.Chat)), "id", m.ID, "wrappers", sh.wrappers, "fields", sh.fields, "unknown", sh.unknown)
+		return nil
+	}
 	read := make([]string, len(x.fields))
 	for i, f := range x.fields {
 		read[i] = f.Name
@@ -272,12 +282,12 @@ func (a *Adapter) decrypt(fn func(context.Context, *events.Message) (*waE2E.Mess
 	return fn(ctx, e)
 }
 
-// undecryptable records a reply or secret edit that could not be read: a
-// missing parent secret is counted, any other failure alerts.
-func undecryptable(e *events.Message, err error) *client.Undecryptable {
+// undecryptable records a reply or secret edit (isEdit) that could not be
+// read: a missing parent secret is counted, any other failure alerts.
+func undecryptable(e *events.Message, err error, isEdit bool) *client.Undecryptable {
 	u := &client.Undecryptable{
-		Chat: jid(e.Info.Chat), Sender: jid(e.Info.Sender), ID: e.Info.ID, Time: e.Info.Timestamp,
-		Reason: client.ReasonDecryptError, Detail: err.Error(),
+		Chat: jid(e.Info.Chat), Sender: jid(e.Info.Sender), SenderAlt: jid(e.Info.SenderAlt), ID: e.Info.ID,
+		Time: e.Info.Timestamp, IsEdit: isEdit, Reason: client.ReasonDecryptError, Detail: err.Error(),
 	}
 	if errors.Is(err, wm.ErrOriginalMessageSecretNotFound) {
 		u.Reason = client.ReasonMissingParentSecret
