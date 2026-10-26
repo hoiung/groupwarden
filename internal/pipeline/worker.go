@@ -233,7 +233,8 @@ func (w *Worker) purge(ctx context.Context) {
 
 // seenOf is ev's delivery record. A post of its own records its sender (an
 // edit does not: deleting its ID would not delete the post it edits, which
-// its own row names).
+// its own row names), a reply the bot could not decrypt included: a ban
+// deletes it by its ID like any other.
 func seenOf(ev client.Event) store.Seen {
 	switch e := ev.(type) {
 	case *client.Message:
@@ -245,7 +246,11 @@ func seenOf(ev client.Event) store.Seen {
 		}
 		return s
 	case *client.Undecryptable:
-		return store.Seen{Chat: string(e.Chat), MsgID: e.ID, ServerTime: e.Time}
+		s := store.Seen{Chat: string(e.Chat), MsgID: e.ID, ServerTime: e.Time}
+		if !e.IsEdit {
+			s.Sender, s.SenderAlt = string(e.Sender), string(e.SenderAlt)
+		}
+		return s
 	case *client.GroupChange:
 		return store.Seen{Chat: string(e.Group), ServerTime: e.Time}
 	case *client.JoinedGroup:
