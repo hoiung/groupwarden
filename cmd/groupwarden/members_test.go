@@ -351,6 +351,7 @@ type shown struct {
 	Bans      []map[string]any
 	Ledger    []map[string]any
 	Evidence  []map[string]any
+	Posts     []map[string]any
 	Reports   []map[string]any
 	Whatsmeow struct {
 		Contacts []map[string]string `json:"whatsmeow_contacts"`
@@ -364,6 +365,8 @@ type shown struct {
 func TestMemberShowIncludesWhatsmeowContact(t *testing.T) {
 	te := newTestEnv(t, &clienttest.Fake{})
 	s := seed(t, te)
+	seenPost(t, s.st, "k1", "M1", spammerLID, spammerPhone)
+	seenPost(t, s.st, "k2", "M2", memberLID, "")
 	show := func() shown {
 		t.Helper()
 		if code := te.sub("member", "show", spammerLID); code != 0 {
@@ -389,6 +392,10 @@ func TestMemberShowIncludesWhatsmeowContact(t *testing.T) {
 	}
 	if len(rec.Ledger) != 3 || len(rec.Evidence) != 1 || len(rec.Bans) != 1 || len(rec.Reports) != 1 {
 		t.Fatalf("ledger %d evidence %d bans %d reports %d", len(rec.Ledger), len(rec.Evidence), len(rec.Bans), len(rec.Reports))
+	}
+	// The seen table's record of their posts (store migration 12's sender).
+	if len(rec.Posts) != 1 || rec.Posts[0]["MsgID"] != "M1" || rec.Posts[0]["Sender"] != spammerLID {
+		t.Fatalf("posts %+v, want their one post on record", rec.Posts)
 	}
 	if strings.Contains(te.out.String(), "Friend") || strings.Contains(te.out.String(), memberLID) {
 		t.Fatal("another member's records were printed")
@@ -497,5 +504,23 @@ func TestMemberForgetStripsTelegramReports(t *testing.T) {
 	}
 	if again, _ := s.st.ReportEdits(ctx); len(again) != 2 {
 		t.Fatalf("%d edits after a second forget", len(again))
+	}
+}
+
+// seenPost records a decided post of sender (alt: their other address) in
+// the seen table, as the inbox worker does.
+func seenPost(t *testing.T, st *store.Store, key, msgID, sender, alt string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := st.InboxPut(ctx, key, "message", []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.InboxOldest(ctx, 1)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("inbox %+v (%v)", rows, err)
+	}
+	if err := st.Decide(ctx, rows[0], store.Seen{Chat: cmdGroup, MsgID: msgID, ServerTime: time.Now(), Sender: sender,
+		SenderAlt: alt}, func(*sql.Tx) error { return nil }); err != nil {
+		t.Fatal(err)
 	}
 }
