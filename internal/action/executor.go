@@ -387,14 +387,14 @@ func (x *Executor) recheck(ctx context.Context, row store.LedgerRow) (verdict, e
 			return verdict{}, err
 		}
 		if !banned {
-			return verdict{outcome: fail, reason: store.ReasonNotBanned + row.Community}, nil
+			return verdict{outcome: fail, reason: "the member is not banned in " + row.Community}, nil
 		}
 	}
 	// Only a delete has a deadline: act_on_replay_max_age (at most WhatsApp's
 	// admin delete window). A removal is due however long a pause held it.
 	maxAge := time.Duration(cur.Config.ActOnReplayMaxAge)
 	if row.Action == store.ActRevoke && !row.MsgTime.IsZero() && x.Now().Sub(row.MsgTime) > maxAge {
-		why := "the message is older than act_on_replay_max_age (" + maxAge.String() + ")"
+		why := store.ReasonTooOld + " (" + maxAge.String() + ")"
 		return verdict{outcome: fail, reason: why, report: x.notDone(row, why)}, nil
 	}
 	if x.Directory.IsAdmin(member.LID, member.Phone, row.Community, cur.Rules) {
@@ -648,7 +648,7 @@ func (x *Executor) failed(ctx context.Context, row store.LedgerRow, err error) e
 		return x.Store.Retry(ctx, row.ID, now.Add(rateLimitBackoff), msg)
 	case errors.Is(err, client.ErrNotAdmin):
 		x.Log.Warn("the bot is not an admin there", "action", string(row.Action), "chat", mask.IDs(row.Chat))
-		if _, err := x.Store.Finish(ctx, row.ID, store.Failed, "the bot is not an admin in this group: "+msg, 0, now); err != nil {
+		if _, err := x.Store.Finish(ctx, row.ID, store.Failed, store.ReasonNotAdmin+msg, 0, now); err != nil {
 			return err
 		}
 		if x.NotAdmin != nil {

@@ -74,10 +74,14 @@ type LedgerRow struct {
 	UpdatedAt  time.Time
 }
 
-// ReasonNotBanned starts the reason of an action the executor dropped
-// because its target was no longer banned when it came up (an unban got there
-// first). A later ban plans such a delete again (PostsBy).
-const ReasonNotBanned = "the member is not banned in "
+// The reasons that start a failed delete a later ban never plans again
+// (PostsBy), with one WhatsApp answered with an error (attempts counted): the
+// message was too old for an admin delete, or WhatsApp said the bot is not an
+// admin there.
+const (
+	ReasonTooOld   = "the message is older than act_on_replay_max_age"
+	ReasonNotAdmin = "the bot is not an admin in this group: "
+)
 
 // Key is the row's unique key. A delete's names its message too: one ban
 // deletes each of the member's posts in a chat, so a key without it would
