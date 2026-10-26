@@ -158,7 +158,7 @@ type Posts struct {
 
 // postsTooOld is why a post older than act_on_replay_max_age is not deleted.
 func postsTooOld(maxAge time.Duration) string {
-	return "the message is older than act_on_replay_max_age (" + maxAge.String() + ")"
+	return store.ReasonTooOld + " (" + maxAge.String() + ")"
 }
 
 // postDeletes plans the delete of every post of m the bot still has a record
