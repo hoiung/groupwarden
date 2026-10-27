@@ -113,18 +113,18 @@ Finding a community or group ID for `assigned`:
   gives a number to someone new once its holder leaves it, so a number the bot
   finds for a person in its records (a post, a ban) counts as theirs unless
   someone else holds it now: the group list pairs it with someone else or, when
-  the group list has no pair for it, the bot's latest record of the number names
-  someone else (the command line reads the saved WhatsApp IDs, then that
-  record). With no record of the number either, of the bans that hold it the one
-  written last names who holds it now. The same goes for the number a ban puts
-  on the list when it names the person by one address ([Add to ban list],
-  `groupwarden ban add <lid>`); [Ban] takes the two addresses the reported post
-  carried. A ban of another WhatsApp ID that holds the person's number (someone
-  who had it before) is not lifted: it stays on that ID and only the number is
-  taken off it, so it no longer covers the person named; [Undo]'s reply and
-  `groupwarden ban remove` count it apart from the bans lifted. A lift of
-  someone who had a number before lifts their own ban alone: the ban of whoever
-  holds the number now keeps it. An admin re-adding a number alone (in a group
-  that lists its members by number) re-adds whoever the bot knows by that number
-  now. `/unban <number>` and `groupwarden ban remove <phone>` name a number and
-  lift every ban of it, whoever's.
+  the group list has no pair for it, the latest the bot recorded of the number
+  (a post, a ban, an entry on the ban list, whichever came last) names someone
+  else (the command line reads the saved WhatsApp IDs, then that). The same goes
+  for the number a ban puts on the list when it names the person by one address
+  ([Add to ban list], `groupwarden ban add <lid>`); [Ban] takes the two
+  addresses the reported post carried. A ban of another WhatsApp ID that holds
+  the person's number (someone who had it before) is not lifted: it stays on
+  that ID and only the number is taken off it, so it no longer covers the person
+  named; [Undo]'s reply and `groupwarden ban remove` count it apart from the
+  bans lifted. A lift of someone who had a number before lifts their own ban
+  alone: the ban of whoever holds the number now keeps it. An admin re-adding a
+  number alone (in a group that lists its members by number) re-adds whoever the
+  bot knows by that number now. `/unban <number>` and
+  `groupwarden ban remove <phone>` name a number and lift every ban of it,
+  whoever's.
