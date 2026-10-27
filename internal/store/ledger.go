@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -359,17 +360,27 @@ const (
 // milliseconds.
 const CLITrigger = "cli:"
 
-// AdminOrdered reports whether a row with trigger was ordered by an admin:
-// from the admin chat or with the ban command on the node.
+// adminTriggers prefix the trigger of a row an admin ordered: from the admin
+// chat, or with the ban command on the node. AdminOrdered and linkRank both
+// read them.
+var adminTriggers = []string{AdminTrigger, CLITrigger}
+
+// AdminOrdered reports whether a row with trigger was ordered by an admin
+// (adminTriggers).
 func AdminOrdered(trigger string) bool {
-	return strings.HasPrefix(trigger, AdminTrigger) || strings.HasPrefix(trigger, CLITrigger)
+	return slices.ContainsFunc(adminTriggers, func(p string) bool { return strings.HasPrefix(trigger, p) })
 }
 
-// adminLinked matches a ban list entry (the bans row named b) whose link is a
-// row an admin ordered (AdminOrdered); a link to a row purged since is not.
-func adminLinked(b string) string {
-	return `EXISTS (SELECT 1 FROM ledger l WHERE l.id = ` + b + `.ledger_id AND (l.trigger_id GLOB '` + AdminTrigger +
-		`*' OR l.trigger_id GLOB '` + CLITrigger + `*'))`
+// linkRank ranks the link of a ban list entry (the bans row named b) as
+// BanEntry.Keeps does: 2 a row an admin ordered (AdminOrdered), 1 the bot's,
+// 0 no row (no link, or its row was purged since).
+func linkRank(b string) string {
+	admin := make([]string, len(adminTriggers))
+	for i, p := range adminTriggers {
+		admin[i] = `l.trigger_id GLOB '` + p + `*'`
+	}
+	return `COALESCE((SELECT CASE WHEN ` + strings.Join(admin, " OR ") + ` THEN 2 ELSE 1 END FROM ledger l
+	WHERE l.id = ` + b + `.ledger_id), 0)`
 }
 
 // BannedPostTrigger prefixes the trigger of a delete of a banned member's
@@ -512,12 +523,22 @@ func (s *Store) PostsOf(ctx context.Context, id int64) ([]int64, error) {
 ORDER BY e.id`, id)
 }
 
+// HeldBanApplied is what ApplyHeldBan did. Applied is false when the row was
+// no longer held. BansAdded counts ban list entries added, LinksMoved the
+// entries the person already had whose link moved to the row (as
+// ledger.Written counts them).
+type HeldBanApplied struct {
+	Applied               bool
+	BansAdded, LinksMoved int
+}
+
 // ApplyHeldBan applies a ban a pause held: its target goes on the ban list in
 // each of scopes (the current config's, for the row's community), one entry
 // per person (PutBan: an entry they have there already is kept), and the row
-// is marked requested. applied is false when the row was no longer held.
-func (s *Store) ApplyHeldBan(ctx context.Context, row LedgerRow, scopes []string) (applied bool, err error) {
-	err = s.Write(ctx, func(tx *sql.Tx) error {
+// is marked requested.
+func (s *Store) ApplyHeldBan(ctx context.Context, row LedgerRow, scopes []string) (HeldBanApplied, error) {
+	var out HeldBanApplied
+	err := s.Write(ctx, func(tx *sql.Tx) error {
 		now := s.now()
 		res, err := tx.ExecContext(ctx, `UPDATE ledger SET status = 'requested', updated_at = ? WHERE id = ? AND status = 'intended'`,
 			now.UnixMilli(), row.ID)
@@ -534,14 +555,24 @@ func (s *Store) ApplyHeldBan(ctx context.Context, row LedgerRow, scopes []string
 			} else {
 				b.Phone = row.Target
 			}
-			if _, _, err := PutBan(ctx, tx, b, b.LID, b.Phone, AdminOrdered(row.TriggerID), now); err != nil {
+			added, moved, err := PutBan(ctx, tx, b, b.LID, b.Phone, AdminOrdered(row.TriggerID), now)
+			if err != nil {
 				return err
 			}
+			if added {
+				out.BansAdded++
+			}
+			if moved {
+				out.LinksMoved++
+			}
 		}
-		applied = true
+		out.Applied = true
 		return nil
 	})
-	return applied, err
+	if err != nil {
+		return HeldBanApplied{}, err
+	}
+	return out, nil
 }
 
 // FailHeldBan fails a ban a pause held: no post it stands for counts any more.
