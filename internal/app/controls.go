@@ -122,7 +122,7 @@ func (c controls) BanNumber(ctx context.Context, phone client.JID, by telegram.A
 	text := fmt.Sprintf("Banned by %s: %s is banned everywhere. %s. ", by.Name, who,
 		upperFirst(postsNote(res.Posts, res.Paused, false)))
 	if res.Already {
-		text = fmt.Sprintf("%s is already banned everywhere, so no ban was added. %s. ", who,
+		text = fmt.Sprintf("%s is already banned everywhere, so they keep their one ban. %s. ", who,
 			upperFirst(postsNote(res.Posts, res.Paused, false)))
 	}
 	if res.Paused != "" {
