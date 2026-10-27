@@ -243,6 +243,10 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		return exitOK
 	}
 	fmt.Fprintf(e.stdout, "unbanned %s%s\n", m.Key(), in)
+	if w.NumbersReleased > 0 {
+		fmt.Fprintf(e.stdout, "%d ban(s) of someone who had their number before stay on that person, without the number\n",
+			w.NumbersReleased)
+	}
 	return exitOK
 }
 
