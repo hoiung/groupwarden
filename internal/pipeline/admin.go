@@ -452,34 +452,36 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 	return out, nil
 }
 
-// numberMember is the member a phone number names, by every address the bot
-// knows (member) and, when it has no record of their LID, the one WhatsApp
-// gives for the number (its own store first, then one lookup): a ban by
-// number then finds the posts of someone who joined since the group list was
-// last read and whose posts came without their number, and an unban by
-// number finds a ban that names them by LID alone. A lookup that finds
-// nothing is logged and the number alone used (for a ban, the sweep looks it
-// up again).
+// numberMember is the member a phone number names, with the LID
+// LIDForNumber finds for it: the group list's pair, the WhatsApp library's
+// saved IDs, one lookup on WhatsApp, then the bot's records. A ban by number
+// then finds the posts of someone who joined since the group list was last
+// read and whose posts came without their number, and an unban by number
+// finds a ban that names them by LID alone. A WhatsApp lookup that fails is
+// logged (Warn when WhatsApp could not be asked, Info when it has no LID for
+// the number) and the records still read; with no LID found the number alone
+// is used (for a ban, the sweep looks it up again).
 func (a *Admin) numberMember(ctx context.Context, phone client.JID) (client.Member, error) {
-	m, err := a.member(ctx, string(phone))
-	if err != nil || m.LID != "" || a.Enforcer == nil || a.Enforcer.Adapter == nil {
-		return m, err
+	src := LIDSources{Pairs: a.Directory, Records: a.Store}
+	if a.Enforcer != nil && a.Enforcer.Adapter != nil {
+		src.Saved, src.Ask = a.Enforcer.Adapter.SavedLID, a.Enforcer.Adapter.ResolvePhoneToLID
 	}
-	lid, err := a.Enforcer.Adapter.ResolvePhoneToLID(ctx, phone)
-	if err == nil && lid.Server() != "lid" {
-		err = fmt.Errorf("%w: WhatsApp returned %s", client.ErrNoLID, mask.IDs(string(lid)))
-	}
+	lid, askErr, err := LIDForNumber(ctx, phone, src)
 	if err != nil {
+		return client.Member{}, err
+	}
+	if askErr != nil {
 		level := slog.LevelWarn // WhatsApp could not be asked
-		if errors.Is(err, client.ErrNoLID) {
+		if errors.Is(askErr, client.ErrNoLID) {
 			level = slog.LevelInfo // it was asked and has none
 		}
-		a.Log.Log(ctx, level, "admin command by number: no LID found for the number; using the number alone",
-			"target", mask.IDs(string(phone)), "err", mask.IDs(err.Error()))
-		return m, nil
+		msg := "admin command by number: no LID found for the number; using the number alone"
+		if lid != "" {
+			msg = "admin command by number: WhatsApp gave no LID for the number; using the one the bot's records pair with it"
+		}
+		a.Log.Log(ctx, level, msg, "target", mask.IDs(string(phone)), "err", mask.IDs(askErr.Error()))
 	}
-	m.LID = lid.Bare()
-	return a.Directory.Complete(m), nil
+	return client.Member{LID: lid, Phone: phone}, nil
 }
 
 // NumberUnbanned is what /unban <number> did.
