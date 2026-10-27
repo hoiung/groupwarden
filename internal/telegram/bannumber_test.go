@@ -928,6 +928,27 @@ func TestBanDeletesPosts(t *testing.T) {
 			t.Fatalf("calls %v, want A1 kept and logged", h.k.Fake.Calls())
 		}
 	})
+	// A spammer's ban, lifted since, paired their old number, which now
+	// belongs to an admin. A ban no longer in force pairs nothing, so their
+	// spam under their LID alone (they joined since the group list was last
+	// read) is deleted and they are removed, not spared as "a current admin".
+	t.Run("old-number-now-an-admin", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		then := client.Member{LID: modtest.Spammer, Phone: modtest.AdminPhone} // the number they held then
+		h.k.Ban(then)
+		h.k.Unban(then)
+		s := h.k.Spam("S1", modtest.G1)
+		s.SenderAlt = ""
+		h.k.Deliver(s)
+		h.k.Fire()
+		spared := h.k.Reports(ledger.KindAdminSpared)
+		if !h.revoked(modtest.G1, "S1") || h.k.Fake.Count("Remove "+string(modtest.G1)+" "+string(modtest.Spammer)) != 1 ||
+			len(spared) != 0 {
+			t.Fatalf("calls %v, rows %v, admin_spared reports %+v; want S1 deleted, them removed and nobody spared",
+				h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM), spared)
+		}
+	})
 }
 
 // TestBanWaitsForGroupList: a ban sent before the bot has read its group
