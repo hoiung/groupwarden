@@ -21,12 +21,15 @@ type Forgotten struct {
 // OtherAddress returns the member's other address as the bot last recorded
 // it beside addr (their phone JID for a LID, their LID for a phone JID; ""
 // when it has none): the sender and sender_alt of a post it decided (seen)
-// or reported (evidence), or the target of a ban row and the phone it keeps
+// or reported (evidence), the target of a ban row and the phone it keeps
 // while that ban is in force (its ban list entry links the row, or a pause
-// holds it). A lifted or undone ban's row pairs nothing: the number may have
-// passed to someone else since. The group list pairs the two only for the
-// members it lists: someone who joined since it was last read is known by
-// their LID alone, as a join names no phone number.
+// holds it), or the LID and number of a ban list entry, as of when it was
+// written. The latest of them wins: WhatsApp gives a number to someone new
+// once its holder leaves it, so of two people paired with one number the one
+// recorded last holds it now. A lifted or undone ban's row pairs nothing: the
+// number may have passed to someone else since. The group list pairs the two
+// only for the members it lists: someone who joined since it was last read is
+// known by their LID alone, as a join names no phone number.
 func (s *Store) OtherAddress(ctx context.Context, addr string) (string, error) {
 	return OtherAddressIn(ctx, s.db, addr)
 }
@@ -79,7 +82,9 @@ func otherAddressQuery(banRows string) string {
 	UNION ALL SELECT address, created_at FROM ledger WHERE action = 'ban' AND target = ?1 AND address NOT IN ('', ?1)
 		AND ` + banRows + `
 	UNION ALL SELECT target, created_at FROM ledger WHERE action = 'ban' AND address = ?1 AND address != ''
-		AND target != ?1 AND ` + banRows + `)
+		AND target != ?1 AND ` + banRows + `
+	UNION ALL SELECT lid, created_at FROM bans WHERE phone = ?1 AND phone != '' AND lid != ''
+	UNION ALL SELECT phone, created_at FROM bans WHERE lid = ?1 AND lid != '' AND phone != '')
 ORDER BY at DESC LIMIT 1`
 }
 
