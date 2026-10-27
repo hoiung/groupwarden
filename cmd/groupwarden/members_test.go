@@ -519,11 +519,11 @@ func TestBanCLIResolvesAtOnce(t *testing.T) {
 			return id, trigger
 		}
 		add(t, te, number, already)
-		resolved(t, st)
 		id, trigger := link(t)
 		if !strings.HasPrefix(trigger, store.CLITrigger) {
-			t.Fatalf("the entry links to a row triggered %q, want the ban command's (%s...)", trigger, store.CLITrigger)
+			t.Errorf("the entry links to a row triggered %q, want the ban command's (%s...)", trigger, store.CLITrigger)
 		}
+		resolved(t, st)
 		// Again, by the LID: the entry keeps the command line's link.
 		add(t, te, spammerLID, already)
 		resolved(t, st)
