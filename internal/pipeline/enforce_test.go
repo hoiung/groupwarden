@@ -474,8 +474,10 @@ func TestPhoneToLIDFailureReported(t *testing.T) {
 	if b, ok, _ := k.Store.FindBan(k.Ctx, []string{string(modtest.Other2)}, ""); !ok || b.Member != string(modtest.Other2) || b.Phone != string(known.Phone) {
 		t.Fatalf("resolved ban %+v", b)
 	}
-	if lines := k.LogLines("ban phone number resolved to a LID"); len(lines) != 1 {
-		t.Fatalf("log lines %q, want one for the number resolved", lines)
+	if lines := k.LogLines("ban phone number resolved to a LID"); len(lines) != 1 ||
+		!strings.Contains(lines[0], " phone=phone…0654") ||
+		strings.Contains(lines[0], strings.TrimSuffix(string(known.Phone), "@s.whatsapp.net")) {
+		t.Fatalf("log lines %q, want one for the number resolved, the number masked", lines)
 	}
 	// A failed lookup is not asked of WhatsApp again: later sweeps look in
 	// the saved WhatsApp IDs alone (TestResolveBansRetriesFailed).
