@@ -49,10 +49,11 @@ func adminTrigger(reportID int64, button string) string {
 // Undone is what [Undo] did.
 type Undone struct {
 	Member client.Member
-	// BansLifted counts the ban list entries that covered the member and no
-	// longer do: their own, lifted, and any of another LID that held their
-	// number, which keeps its ban on that LID without the number.
+	// BansLifted counts the member's ban list entries lifted; BansKept counts
+	// the bans of someone who held their number before, kept on that one's
+	// LID without the number (ledger.Plan Lift).
 	BansLifted int
+	BansKept   int
 	Overturned int64
 	// RemovedFrom lists every group the bot removed the member from: an
 	// admin re-invites them there by hand.
@@ -61,10 +62,10 @@ type Undone struct {
 
 // Undo lifts every ban of the report's member (a ban of someone who held
 // their number before stays on that one's LID and only loses the number:
-// ledger.Plan Lift) and marks the bot's
-// removals, rejections and bans of them overturned (a delete of the
-// report's message still queued is cancelled; one already sent cannot be
-// undone).
+// ledger.Plan Lift) and marks the bot's removals and rejections of them and
+// the rows of the bans it lifted overturned; a ban kept keeps its row (a
+// delete of the report's message still queued is cancelled; one already
+// sent cannot be undone).
 func (a *Admin) Undo(ctx context.Context, reportID int64, actor string) (Undone, error) {
 	r, err := a.report(ctx, reportID)
 	if err != nil {
@@ -82,7 +83,7 @@ func (a *Admin) Undo(ctx context.Context, reportID int64, actor string) (Undone,
 	p := ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonUndo), Target: m, ConfigHash: cur.Hash,
 		Actor: client.JID(actor), Reason: reason, Lift: true, BanCommunity: r.Community}
 	var n int64
-	var bans []store.Ban
+	var w ledger.Written
 	removed := map[client.JID]bool{}
 	now := a.Store.Now()
 	// The reads and the overturn are one transaction, so an action the
@@ -96,19 +97,28 @@ func (a *Admin) Undo(ctx context.Context, reportID int64, actor string) (Undone,
 		if err != nil {
 			return err
 		}
-		if bans, err = store.BansForIn(ctx, tx, m.IDs()); err != nil {
+		bans, err := store.BansForIn(ctx, tx, m.IDs())
+		if err != nil {
 			return err
 		}
-		var ids []int64
+		var ids, banRows []int64
 		for _, row := range rows {
 			switch row.Action {
-			case store.ActRemove, store.ActReject, store.ActBan:
+			case store.ActRemove, store.ActReject:
 				if row.Status == store.Intended || row.Status == store.Requested {
 					ids = append(ids, row.ID)
 				}
 				if row.Action == store.ActRemove && row.Status == store.Requested && row.Mode == store.ModeEnforce {
 					removed[client.JID(row.Chat)] = true
 				}
+			case store.ActBan:
+				banRows = append(banRows, row.ID)
+			}
+		}
+		// The row an entry links names the person it bans by either address.
+		for _, b := range bans {
+			if b.LedgerID != 0 {
+				banRows = append(banRows, b.LedgerID)
 			}
 		}
 		for _, row := range linked {
@@ -116,21 +126,26 @@ func (a *Admin) Undo(ctx context.Context, reportID int64, actor string) (Undone,
 				ids = append(ids, row.ID)
 			}
 		}
-		if _, err := ledger.Write(ctx, tx, p, now); err != nil {
+		if w, err = ledger.Write(ctx, tx, p, now); err != nil {
 			return err
 		}
-		n, err = store.Overturn(ctx, tx, ids, reason, now)
+		// A ban the lift kept is in force: its entry still links its row.
+		lifted, err := store.Unlinked(ctx, tx, banRows)
+		if err != nil {
+			return err
+		}
+		n, err = store.Overturn(ctx, tx, append(ids, lifted...), reason, now)
 		return err
 	}); err != nil {
 		return Undone{}, err
 	}
-	out := Undone{Member: m, BansLifted: len(bans), Overturned: n}
+	out := Undone{Member: m, BansLifted: w.BansLifted, BansKept: w.NumbersReleased, Overturned: n}
 	for g := range removed {
 		out.RemovedFrom = append(out.RemovedFrom, g)
 	}
 	sort.Slice(out.RemovedFrom, func(i, j int) bool { return out.RemovedFrom[i] < out.RemovedFrom[j] })
-	a.Log.Info("undo", "report", reportID, "target", mask.IDs(m.Key()), "bans_lifted", len(bans), "overturned", n,
-		"removed_from", len(out.RemovedFrom), "by", actor)
+	a.Log.Info("undo", "report", reportID, "target", mask.IDs(m.Key()), "bans_lifted", w.BansLifted,
+		"bans_kept", w.NumbersReleased, "overturned", n, "removed_from", len(out.RemovedFrom), "by", actor)
 	return out, nil
 }
 
