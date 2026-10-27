@@ -361,6 +361,68 @@ func TestLiftInOneCommunity(t *testing.T) {
 	}
 }
 
+// TestLiftOfANumbersHolder (#8 Gate 1): a lift that names a person by their
+// LID keeps the ban of someone who held their number before, only in the
+// community it lifts in, taking the number off it there; a lift whose target
+// has no LID keeps nobody apart and lifts every ban of the number. Written
+// counts the entries lifted and kept.
+func TestLiftOfANumbersHolder(t *testing.T) {
+	earlier := client.Member{LID: modtest.Other1, Phone: modtest.SpammerPhone}
+	lift := func(k *modtest.Kit, p ledger.Plan) ledger.Written {
+		t.Helper()
+		p.Trigger, p.ConfigHash, p.Lift, p.Reason = "L1", k.Holder.Current().Hash, true, "lifted"
+		var w ledger.Written
+		if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) (err error) {
+			w, err = ledger.Write(k.Ctx, tx, p, k.Clock.Now())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	t.Run("in-one-community", func(t *testing.T) {
+		k := modtest.New(t, "bans:\n  scope: per_community\n")
+		a, b := string(modtest.Community), modtest.SetB
+		for _, p := range []ledger.Plan{{Trigger: "T1", Target: earlier, Ban: []string{a, b}},
+			{Trigger: "T2", Target: modtest.SpammerM, Ban: []string{a}}} {
+			p.ConfigHash, p.BanEnforce, p.BanCommunity, p.Reason = k.Holder.Current().Hash, true, a, "spam"
+			if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
+				_, err := ledger.Write(k.Ctx, tx, p, k.Clock.Now())
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w := lift(k, ledger.Plan{Target: modtest.SpammerM, LiftIn: a, BanCommunity: a})
+		if w.BansLifted != 1 || w.NumbersReleased != 1 {
+			t.Fatalf("written %+v, want one ban lifted and one kept", w)
+		}
+		bans, err := k.Store.Bans(k.Ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		phones := map[string]string{}
+		for _, ban := range bans {
+			if ban.Member != string(modtest.Other1) {
+				t.Fatalf("bans %+v, want only the earlier holder's", bans)
+			}
+			phones[ban.Scope] = ban.Phone
+		}
+		if len(phones) != 2 || phones[a] != "" || phones[b] != string(modtest.SpammerPhone) {
+			t.Fatalf("the earlier holder's numbers by scope %v, want it off the ban in %s only", phones, a)
+		}
+	})
+	t.Run("no-lid", func(t *testing.T) {
+		k := modtest.New(t, "")
+		k.Ban(earlier)
+		w := lift(k, ledger.Plan{Target: client.Member{Phone: modtest.SpammerPhone}, BanCommunity: string(modtest.Community)})
+		if w.BansLifted != 1 || w.NumbersReleased != 0 || k.Banned(modtest.Other1M, "") {
+			t.Fatalf("written %+v, earlier holder banned %v; want their ban lifted with the number's",
+				w, k.Banned(modtest.Other1M, ""))
+		}
+	})
+}
+
 // TestLedgerStampsConfigHash: every row carries the hash of the config that
 // decided it; a reload changes the stamp on new rows only.
 func TestLedgerStampsConfigHash(t *testing.T) {
