@@ -361,9 +361,11 @@ func (k *Kit) Spam(id string, chat client.JID) *client.Message {
 	return m
 }
 
-// Ban adds member to the ban list (every community), as an admin would. Each
-// call is its own ban order, so a member unbanned in between is banned again
-// (a member still banned keeps their one ban row).
+// Ban adds member to the ban list (every community) as the bot's ban: its
+// trigger is not an admin's (store.AdminOrdered), so an admin's ban outranks
+// it (store.BanEntry.Keeps). Each call is its own ban order, so a member
+// unbanned in between is banned again (a member still banned keeps their one
+// ban row).
 func (k *Kit) Ban(member client.Member) {
 	k.T.Helper()
 	k.banOrders++
