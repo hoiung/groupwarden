@@ -61,7 +61,7 @@ func TestBanSweepsNow(t *testing.T) {
 		a, k := banApp(t)
 		k.Ban(modtest.SpammerM)
 		reply, err := controls{a}.BanNumber(ctx, modtest.SpammerPhone, by)
-		if err != nil || !strings.Contains(reply, "already banned everywhere, so no ban was added") {
+		if err != nil || !strings.Contains(reply, "already banned everywhere, so they keep their one ban") {
 			t.Fatalf("reply %q %v", reply, err)
 		}
 		if len(a.sweepNow) != 1 {
