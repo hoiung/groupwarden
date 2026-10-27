@@ -73,10 +73,7 @@ func (e BanEntry) Keeps(admin bool) bool {
 // entry found by the LID comes first, then one keyed by the number.
 func BanEntryIn(ctx context.Context, q queryer, lid, phone, scope string) (BanEntry, bool, error) {
 	var e BanEntry
-	b, err := scanBan(q.QueryRowContext(ctx, `SELECT `+banCols+` FROM bans WHERE scope = ?3 AND (
-	(?1 != '' AND (member = ?1 OR lid = ?1))
-	OR (?2 != '' AND (phone = ?2 OR member = ?2) AND (?1 = '' OR lid = '')))
-ORDER BY (?1 != '' AND (member = ?1 OR lid = ?1)) DESC, member = ?2 DESC, created_at LIMIT 1`, lid, phone, scope))
+	b, err := scanBan(q.QueryRowContext(ctx, banEntryQuery, lid, phone, scope))
 	if errors.Is(err, sql.ErrNoRows) {
 		return e, false, nil
 	}
@@ -92,6 +89,17 @@ ORDER BY (?1 != '' AND (member = ?1 OR lid = ?1)) DESC, member = ?2 DESC, create
 	}
 	return e, true, nil
 }
+
+// banEntryQuery is BanEntryIn's query: ?1 the LID, ?2 the phone number, ?3
+// the scope. Each of its reads searches an index (the key, bans_lid,
+// bans_phone), ranked in BanEntryIn's order: an entry found by the LID, then
+// one keyed by the number, then one holding it.
+const banEntryQuery = `SELECT ` + banCols + ` FROM (
+	SELECT 0 AS rank, * FROM bans WHERE ?1 != '' AND member = ?1 AND scope = ?3
+	UNION ALL SELECT 0, * FROM bans WHERE ?1 != '' AND lid = ?1 AND scope = ?3
+	UNION ALL SELECT 1, * FROM bans WHERE ?2 != '' AND member = ?2 AND scope = ?3 AND (?1 = '' OR lid = '')
+	UNION ALL SELECT 2, * FROM bans WHERE ?2 != '' AND phone = ?2 AND scope = ?3 AND (?1 = '' OR lid = ''))
+ORDER BY rank, member = ?2 DESC, created_at LIMIT 1`
 
 // PutBan puts b (a scope, the key and addresses of a new entry, its ledger
 // row) on the ban list in tx, one entry per person and scope. The entry the
@@ -203,6 +211,30 @@ func RemoveBans(ctx context.Context, tx *sql.Tx, ids []string, community string)
 	return res.RowsAffected()
 }
 
+// ReleaseNumbers takes the numbers among ids off the bans of everyone but the
+// person whose LID is lid, in tx: a lift that names that person (ledger.Plan
+// LiftByNumber false) leaves alone a ban of another LID that holds one of
+// their numbers, someone who held the number before. That ban stays on its
+// LID, covering what it covered; only the number goes, from its ban list
+// entry and from its ban rows in force or held by a pause (a held row would
+// put the number back on the list when it applies, and either pairs the
+// number with them: OtherAddress), so it no longer covers or names whoever
+// holds the number now. community narrows it as it narrows RemoveBans ("":
+// every scope).
+func ReleaseNumbers(ctx context.Context, tx *sql.Tx, ids []string, lid, community string, now time.Time) error {
+	list := jsonList(nonEmpty(ids))
+	if _, err := tx.ExecContext(ctx, `UPDATE bans SET phone = '' WHERE phone != '' AND phone IN (SELECT value FROM json_each(?1))
+	AND lid != '' AND lid != ?2 AND (?3 = '' OR scope = '*' OR scope = ?3)`, list, lid, community); err != nil {
+		return fmt.Errorf("take a number off a ban: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE ledger SET address = '', updated_at = ?4 WHERE action = 'ban' AND address != ''
+	AND address IN (SELECT value FROM json_each(?1)) AND target GLOB '*@lid' AND target != ?2
+	AND (?3 = '' OR chat = '*' OR chat = ?3) AND `+banInForce, list, lid, community, now.UnixMilli()); err != nil {
+		return fmt.Errorf("take a number off a ban row: %w", err)
+	}
+	return nil
+}
+
 // Bans lists the whole ban list, oldest first.
 func (s *Store) Bans(ctx context.Context) ([]Ban, error) {
 	return s.bans(ctx, `SELECT `+banCols+` FROM bans ORDER BY created_at, member, scope`)
@@ -223,14 +255,21 @@ ORDER BY created_at`, jsonList(nonEmpty(ids)))
 // UnresolvedBans lists bans that have a phone number but no LID and whose
 // lookup has not failed yet (LIDFailedBans lists those whose lookup has).
 func (s *Store) UnresolvedBans(ctx context.Context) ([]Ban, error) {
-	return s.bans(ctx, `SELECT `+banCols+` FROM bans WHERE lid = '' AND phone != '' AND lid_failed = 0 ORDER BY created_at`)
+	return s.phoneOnlyBans(ctx, false)
 }
 
 // LIDFailedBans lists bans that have a phone number but no LID and whose
 // lookup failed (MarkBanLIDFailed): the sweep looks each up again in the
 // saved WhatsApp IDs.
 func (s *Store) LIDFailedBans(ctx context.Context) ([]Ban, error) {
-	return s.bans(ctx, `SELECT `+banCols+` FROM bans WHERE lid = '' AND phone != '' AND lid_failed = 1 ORDER BY created_at`)
+	return s.phoneOnlyBans(ctx, true)
+}
+
+// phoneOnlyBans lists the bans with a phone number and no LID whose lookup
+// failed (failed) or has not, oldest first.
+func (s *Store) phoneOnlyBans(ctx context.Context, failed bool) ([]Ban, error) {
+	return s.bans(ctx, `SELECT `+banCols+` FROM bans WHERE lid = '' AND phone != '' AND lid_failed = ? ORDER BY created_at`,
+		failed)
 }
 
 func (s *Store) bans(ctx context.Context, query string, args ...any) ([]Ban, error) {
@@ -256,8 +295,9 @@ func bans(ctx context.Context, q queryer, query string, args ...any) ([]Ban, err
 
 // ResolveBan records the LID found for a phone-only ban: the entry is re-keyed
 // on the LID (merging with an existing LID entry of the same scope, which
-// keeps an admin's link from either side, the LID entry's when both are an
-// admin's), and a failed lookup it carried (lid_failed) is cleared.
+// keeps an admin's link from either side, else the bot's over a link to no
+// row, and the LID entry's of two of one kind), and a failed lookup it
+// carried (lid_failed) is cleared.
 func (s *Store) ResolveBan(ctx context.Context, phone, lid string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error { return ResolveBanIn(ctx, tx, phone, lid) })
 }
@@ -276,14 +316,14 @@ func ResolveBanIn(ctx context.Context, tx *sql.Tx, phone, lid string) error {
 	AND scope IN (SELECT scope FROM bans WHERE phone = ?1 AND member = phone)`, phone, lid); err != nil {
 		return err
 	}
-	// The kept entry takes the number entry's link when that one is an
-	// admin's and its own is not (the bot's, or a row purged since): an
-	// admin's ban outranks the bot's, as when it is written (PutBan).
+	// The kept entry takes the number entry's link when that one outranks its
+	// own (linkRank), as when a ban is written (PutBan, BanEntry.Keeps): an
+	// admin's row outranks the bot's, and any row outranks none (no link, or
+	// a row purged since). Of two links of one rank, its own is kept.
 	if _, err := tx.ExecContext(ctx, `UPDATE bans SET ledger_id = (
 	SELECT n.ledger_id FROM bans n WHERE n.phone = ?1 AND n.member = n.phone AND n.scope = bans.scope)
-WHERE member = ?2 AND NOT `+adminLinked("bans")+`
-	AND EXISTS (SELECT 1 FROM bans n WHERE n.phone = ?1 AND n.member = n.phone AND n.scope = bans.scope
-		AND `+adminLinked("n")+`)`, phone, lid); err != nil {
+WHERE member = ?2 AND EXISTS (SELECT 1 FROM bans n WHERE n.phone = ?1 AND n.member = n.phone AND n.scope = bans.scope
+	AND `+linkRank("n")+` > `+linkRank("bans")+`)`, phone, lid); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM bans WHERE phone = ? AND member = phone`, phone)
