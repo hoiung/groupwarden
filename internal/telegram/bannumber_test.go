@@ -79,7 +79,8 @@ func (h *harness) post(id string, chat, sender, alt client.JID) {
 }
 
 // cliBan bans the kit spammer's phone number everywhere as `groupwarden ban
-// add <phone>` does: keyed by the number, with no sweep asked for.
+// add <phone>` does when neither the saved WhatsApp IDs nor groupwarden's
+// records give its LID: keyed by the number, with no sweep asked for.
 func (h *harness) cliBan() {
 	h.t.Helper()
 	h.cliBanOf(client.Member{Phone: modtest.SpammerPhone})
@@ -1149,7 +1150,8 @@ func TestBanRecentJoiner(t *testing.T) {
 	})
 	// A rate-limited LID lookup does not hold up the groups: the sweep checks
 	// them first, then looks up again; the next sweep removes them. (WhatsApp
-	// has no LID for the number at /ban, so the ban waits for the sweep's.)
+	// has no LID for the number at /ban, so only the sweep's lookup resolves
+	// the ban.)
 	t.Run("sweep-checks-groups-when-lookup-rate-limited", func(t *testing.T) {
 		h := newHarness(t, "")
 		recentJoiner(h)
