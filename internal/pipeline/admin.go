@@ -74,21 +74,23 @@ func (a *Admin) Undo(ctx context.Context, reportID int64, actor string) (Undone,
 	if r.Subject == "" {
 		return Undone{}, fmt.Errorf("report #%d is not about a member", reportID)
 	}
-	m, err := a.member(ctx, r.Subject)
-	if err != nil {
-		return Undone{}, err
-	}
 	cur := a.Config.Current()
 	reason := "undone in the admin chat by " + actor
-	p := ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonUndo), Target: m, ConfigHash: cur.Hash,
-		Actor: client.JID(actor), Reason: reason, Lift: true, BanCommunity: r.Community}
+	var m client.Member
 	var n int64
 	var w ledger.Written
 	removed := map[client.JID]bool{}
 	now := a.Store.Now()
 	// The reads and the overturn are one transaction, so an action the
-	// executor settles meanwhile is either listed here or overturned after.
+	// executor settles meanwhile is either listed here or overturned after,
+	// and who holds the member's number is read as the lift writes.
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
+		var err error
+		if m, err = Identify(ctx, a.Directory, a.Store, tx, client.MemberOf(client.JID(r.Subject))); err != nil {
+			return err
+		}
+		p := ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonUndo), Target: m, ConfigHash: cur.Hash,
+			Actor: client.JID(actor), Reason: reason, Lift: true, BanCommunity: r.Community}
 		rows, err := store.LedgerForTargetsIn(ctx, tx, m.IDs())
 		if err != nil {
 			return err
@@ -297,7 +299,7 @@ func (a *Admin) Ban(ctx context.Context, reportID int64, actor string) (Banned, 
 			Address: client.JID(ev.Sender), MsgID: ev.TargetID, MsgTime: sent}
 	}
 	out, err := a.banPlan(ctx, ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonBan), Target: m, Rule: ev.Rule,
-		Reason: "banned in the admin chat by " + actor}, r.Community, client.JID(ev.Chat), del, ev.TargetID, actor)
+		Reason: "banned in the admin chat by " + actor}, "", r.Community, client.JID(ev.Chat), del, ev.TargetID, actor)
 	out.TooOld = tooOld
 	return out, err
 }
@@ -313,20 +315,18 @@ func (a *Admin) AddToBanList(ctx context.Context, reportID int64, actor string) 
 		return Banned{}, fmt.Errorf("only a human-removal report can be acted on with [Add to ban list]; #%d is a %s report",
 			reportID, r.Kind)
 	}
-	m, err := a.member(ctx, r.Subject)
-	if err != nil {
-		return Banned{}, err
-	}
-	return a.banPlan(ctx, ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonAddToBanList), Target: m,
-		Reason: "added to the ban list in the admin chat by " + actor}, r.Community, "", nil, "", actor)
+	return a.banPlan(ctx, ledger.Plan{Trigger: adminTrigger(reportID, ledger.ButtonAddToBanList),
+		Reason: "added to the ban list in the admin chat by " + actor}, client.JID(r.Subject), r.Community, "", nil, "", actor)
 }
 
 // banPlan completes p with the removals and the ban for community (plus the
 // delete of the reported post reported in inChat, when given) and the
 // deletes of the member's other posts the bot still has a record of, and
-// writes it.
-func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, inChat client.JID, del *ledger.Intent,
-	reported, actor string) (Banned, error) {
+// writes it. With subject set, p.Target is the member identified from it
+// inside the write's transaction, so who holds their number is read as the
+// ban is written; without, p.Target is taken as given.
+func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, subject client.JID, community string, inChat client.JID,
+	del *ledger.Intent, reported, actor string) (Banned, error) {
 	if !a.Directory.IsLoaded() {
 		return Banned{}, errGroupsNotLoaded
 	}
@@ -337,11 +337,6 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 		return Banned{}, fmt.Errorf("%s is no longer a configured community", community)
 	}
 	enforce := mode == rules.Enforce
-	removals, spared := a.Enforcer.Removals(p.Target, rs.BanTargets(community), inChat, rs)
-	if slices.Contains(spared, community) {
-		a.Log.Info("admin ban skipped: the member is a current admin", "target", mask.IDs(p.Target.Key()), "by", actor)
-		return Banned{Member: p.Target, Spared: true}, nil
-	}
 	if del != nil {
 		del.Enforce = enforce
 	}
@@ -350,7 +345,21 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 	var w ledger.Written
 	var paused store.Scope
 	var posts Posts
+	var removals []ledger.Intent
+	var spared bool
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
+		if subject != "" {
+			m, err := Identify(ctx, a.Directory, a.Store, tx, client.MemberOf(subject))
+			if err != nil {
+				return err
+			}
+			p.Target = m
+		}
+		var sparedIn []string
+		removals, sparedIn = a.Enforcer.Removals(p.Target, rs.BanTargets(community), inChat, rs)
+		if spared = slices.Contains(sparedIn, community); spared {
+			return nil
+		}
 		paused = pausedScope(ctx, tx, a.Store)
 		deletes, n, err := a.postDeletes(ctx, tx, p.Target, p.Ban, enforce, inChat, reported)
 		if err != nil {
@@ -365,6 +374,10 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 		return err
 	}); err != nil {
 		return Banned{}, err
+	}
+	if spared {
+		a.Log.Info("admin ban skipped: the member is a current admin", "target", mask.IDs(p.Target.Key()), "by", actor)
+		return Banned{Member: p.Target, Spared: true}, nil
 	}
 	if w.Queued > 0 {
 		a.Enforcer.wake()
@@ -600,10 +613,4 @@ func (a *Admin) report(ctx context.Context, id int64) (store.Report, error) {
 		return r, fmt.Errorf("there is no report #%d (it may have been purged)", id)
 	}
 	return r, nil
-}
-
-// member is a report subject by every address the bot knows (Identify). A
-// ban written for them then carries both, and a lookup by either finds it.
-func (a *Admin) member(ctx context.Context, key string) (client.Member, error) {
-	return Identify(ctx, a.Directory, a.Store, nil, client.MemberOf(client.JID(key)))
 }
