@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -339,6 +340,77 @@ func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m 
 	// No second Complete: the member only gained addresses since the first,
 	// and Complete only fills a missing one from the same group list.
 	return m, nil
+}
+
+// LIDSources are where LIDForNumber looks for a phone number's LID, in its
+// order; each caller sets the ones it reads, and a nil one is skipped.
+type LIDSources struct {
+	Pairs   *Directory                                                      // 1. the group list's pair
+	Saved   func(ctx context.Context, phone client.JID) (client.JID, error) // 2. the WhatsApp library's saved IDs
+	Ask     func(ctx context.Context, phone client.JID) (client.JID, error) // 3. one lookup on WhatsApp
+	Records *store.Store                                                    // 4. groupwarden's records (RecordedPair)
+}
+
+// LIDForNumber finds the LID of a phone number, the current sources first and
+// groupwarden's records last: the records can pair a number with someone who
+// held it before. It returns the first LID found ("" when none is), and,
+// when WhatsApp was asked and gave none, its error: one wrapping
+// client.ErrNoLID when it answered that the number has no LID (any answer
+// that is not a LID included), any other when it could not be asked. That
+// error does not end the lookup: the records are read after it. err is a
+// failed read of the saved IDs or the records.
+func LIDForNumber(ctx context.Context, phone client.JID, src LIDSources) (lid client.JID, askErr, err error) {
+	if src.Pairs != nil {
+		if lid = src.Pairs.Complete(client.Member{Phone: phone}).LID; lid != "" {
+			return lid.Bare(), nil, nil
+		}
+	}
+	if src.Saved != nil {
+		if lid, err = src.Saved(ctx, phone); err != nil || lid != "" {
+			return lid.Bare(), nil, err
+		}
+	}
+	if src.Ask != nil {
+		lid, askErr = src.Ask(ctx, phone)
+		if askErr == nil && lid.Server() == "lid" {
+			return lid.Bare(), nil, nil
+		}
+		if askErr == nil {
+			askErr = fmt.Errorf("%w: WhatsApp returned %s", client.ErrNoLID, mask.IDs(string(lid)))
+		}
+	}
+	if src.Records != nil {
+		if lid, err = RecordedPair(ctx, src.Records, phone); err != nil || lid.Server() == "lid" {
+			return lid.Bare(), askErr, err
+		}
+	}
+	return "", askErr, nil
+}
+
+// RecordedPair is the address groupwarden's records pair with addr, either
+// way round ("" when none): the other address the bot recorded beside it
+// (store.OtherAddress: a post it decided or reported, a ban row while the ban
+// is in force), else the other address of a ban list entry that names addr.
+// It takes one step from addr, never a second.
+func RecordedPair(ctx context.Context, st *store.Store, addr client.JID) (client.JID, error) {
+	other, err := st.OtherAddress(ctx, string(addr))
+	if err != nil || other != "" {
+		return client.JID(other), err
+	}
+	bans, err := st.BansFor(ctx, []string{string(addr)})
+	if err != nil {
+		return "", err
+	}
+	for _, b := range bans {
+		m := client.MemberOf(client.JID(b.LID), client.JID(b.Phone))
+		switch {
+		case addr.Server() == "lid" && m.Phone != "":
+			return m.Phone, nil
+		case addr.Server() != "lid" && m.LID != "":
+			return m.LID, nil
+		}
+	}
+	return "", nil
 }
 
 // Complete fills in the address the directory knows for a member given by
