@@ -67,12 +67,13 @@ func otherAddress(ctx context.Context, q queryer, addr, banRows string) (string,
 }
 
 // otherAddressQuery is otherAddress's query, ?1 the address, taking the ban
-// rows banRows selects. Each read searches an index (migration 13). Beside
-// the column it matches with ?1 a read also asks that column not to be
-// empty: the column's index is partial (empty values left out), and SQLite
-// uses one only when the query's own terms imply its condition. The address
-// is never empty here (otherAddress returns first), so the extra terms change
-// no result.
+// rows banRows selects. Each read searches the index of the column it
+// matches with ?1 (TestOtherAddressUsesIndexes). The indexes of seen's and
+// evidence's sender columns and of the ledger's address are partial (empty
+// values left out), and SQLite uses one only when the query's own terms imply
+// its condition, so those reads also ask the column not to be empty. The
+// address is never empty here (otherAddress returns first), so the extra
+// terms change no result.
 func otherAddressQuery(banRows string) string {
 	return `SELECT other FROM (
 	SELECT sender_alt AS other, decided_at AS at FROM seen WHERE sender = ?1 AND sender != '' AND sender_alt != ''
