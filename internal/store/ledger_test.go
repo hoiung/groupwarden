@@ -80,7 +80,8 @@ func TestHeldBanSettlesOnce(t *testing.T) {
 
 // TestApplyHeldBanOnEntryAlreadyThere: a held ban applied for someone whose
 // ban list entry links a row purged since adds no entry and moves the link to
-// its own row, and says so.
+// its own row, and says so; in several scopes (bans.scope per_community) it
+// counts each scope's entry added or link moved.
 func TestApplyHeldBanOnEntryAlreadyThere(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
@@ -88,8 +89,10 @@ func TestApplyHeldBanOnEntryAlreadyThere(t *testing.T) {
 	const x = "99999000000444@lid"
 	var row LedgerRow
 	if err := s.Write(ctx, func(tx *sql.Tx) error {
-		if err := AddBan(ctx, tx, Ban{Member: x, Scope: BanEverywhere, LID: x, Reason: "spam", LedgerID: 999}, now); err != nil {
-			return err
+		for _, scope := range []string{BanEverywhere, "c2"} {
+			if err := AddBan(ctx, tx, Ban{Member: x, Scope: scope, LID: x, Reason: "spam", LedgerID: 999}, now); err != nil {
+				return err
+			}
 		}
 		id, _, err := InsertLedger(ctx, tx, LedgerRow{Action: ActBan, Chat: BanEverywhere, Target: x, TriggerID: "T2",
 			Community: "c1", Mode: ModeEnforce, ConfigHash: "h"}, now)
@@ -102,12 +105,18 @@ func TestApplyHeldBanOnEntryAlreadyThere(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res, err := s.ApplyHeldBan(ctx, row, []string{BanEverywhere}); err != nil ||
-		res != (HeldBanApplied{Applied: true, LinksMoved: 1}) {
-		t.Fatalf("applied %+v (%v), want no entry added and one link moved", res, err)
+	if res, err := s.ApplyHeldBan(ctx, row, []string{BanEverywhere, "c2", "c3", "c4"}); err != nil ||
+		res != (HeldBanApplied{Applied: true, BansAdded: 2, LinksMoved: 2}) {
+		t.Fatalf("applied %+v (%v), want the entries in c3 and c4 added and the two links moved", res, err)
 	}
-	if bans, err := s.Bans(ctx); err != nil || len(bans) != 1 || bans[0].LedgerID != row.ID {
-		t.Fatalf("bans %+v (%v), want the one entry linked to row %d", bans, err, row.ID)
+	bans, err := s.Bans(ctx)
+	if err != nil || len(bans) != 4 {
+		t.Fatalf("bans %+v (%v), want one entry in each scope", bans, err)
+	}
+	for _, b := range bans {
+		if b.LedgerID != row.ID {
+			t.Fatalf("bans %+v, want every entry linked to row %d", bans, row.ID)
+		}
 	}
 }
 
