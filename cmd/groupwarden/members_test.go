@@ -490,57 +490,71 @@ func TestBanCLIRemoveOfAnEarlierHolderKeepsTheHoldersBan(t *testing.T) {
 	}
 }
 
-// TestBanCLIRemoveWhenOnlyTheBanListPairsTheNumber (#8 Ralph): an admin
-// banned a number while someone held it and again once it had passed to
-// someone else; both bans resolved to their LIDs and their rows name the
-// number alone, and no saved ID or post pairs it. Of the two bans holding the
-// number, the one written last names who holds it now
-// (pipeline.RecordedPair), so `ban remove <lid>` of either lifts their ban
-// alone, and of the holder takes the number off the earlier one's ban.
-func TestBanCLIRemoveWhenOnlyTheBanListPairsTheNumber(t *testing.T) {
+// TestBanCLIRemoveOfTwoHoldersOfANumber (#8 Ralph): someone was banned with
+// a number while they held it, and once it had passed to someone else an
+// admin banned the number again, which resolved to the new holder's LID. That
+// second ban's row names the number alone, and no saved ID pairs it. The
+// earlier one's ban came either by the number too, or from the bot's own ban
+// of a post that carried both addresses (a ban row in force that pairs the
+// number with them). Either way the record of the number made last, the
+// holder's ban list entry, names who holds it now (pipeline.RecordedPair), so
+// `ban remove <lid>` of either lifts their ban alone, and of the holder takes
+// the number off the earlier one's ban.
+func TestBanCLIRemoveOfTwoHoldersOfANumber(t *testing.T) {
 	const earlier = "99999000000777@lid"
 	ctx := context.Background()
-	for name, c := range map[string]struct {
-		lift, kept, keptPhone, out string
-	}{
-		"earlier": {lift: earlier, kept: spammerLID, keptPhone: spammerPhone, out: "unbanned " + earlier + "\n"},
-		"holder": {lift: spammerLID, kept: earlier, out: "unbanned " + spammerLID + "\n" +
-			"1 ban(s) of someone who had their number before stay on that person, without the number\n"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			te, st := provisionedStore(t)
-			at := time.Now().Add(-48 * time.Hour)
-			for i, lid := range []string{earlier, spammerLID} {
-				p := ledger.Plan{Trigger: store.AdminBanTrigger + strconv.Itoa(i), Target: client.Member{Phone: spammerPhone},
-					Person: client.Member{LID: client.JID(lid), Phone: spammerPhone}, ConfigHash: "h",
-					BanCommunity: store.BanEverywhere, Ban: []string{store.BanEverywhere}, BanEnforce: true, Reason: "number ban"}
-				if err := st.Write(ctx, func(tx *sql.Tx) error {
-					if _, err := ledger.Write(ctx, tx, p, at.Add(time.Duration(i)*time.Hour)); err != nil {
-						return err
-					}
-					return store.ResolveBanIn(ctx, tx, spammerPhone, lid)
-				}); err != nil {
-					t.Fatal(err)
+	numberBan := func(i int, lid string) ledger.Plan {
+		return ledger.Plan{Trigger: store.AdminBanTrigger + strconv.Itoa(i), Target: client.Member{Phone: spammerPhone},
+			Person: client.Member{LID: client.JID(lid), Phone: spammerPhone}, ConfigHash: "h",
+			BanCommunity: store.BanEverywhere, Ban: []string{store.BanEverywhere}, BanEnforce: true, Reason: "number ban"}
+	}
+	for _, setup := range []string{"both-by-number", "earlier-by-the-bot"} {
+		for name, c := range map[string]struct {
+			lift, kept, keptPhone, out string
+		}{
+			"earlier": {lift: earlier, kept: spammerLID, keptPhone: spammerPhone, out: "unbanned " + earlier + "\n"},
+			"holder": {lift: spammerLID, kept: earlier, out: "unbanned " + spammerLID + "\n" +
+				"1 ban(s) of someone who had their number before stay on that person, without the number\n"},
+		} {
+			t.Run(setup+"/"+name, func(t *testing.T) {
+				te, st := provisionedStore(t)
+				at := time.Now().Add(-48 * time.Hour)
+				first := numberBan(0, earlier)
+				if setup == "earlier-by-the-bot" {
+					first = ledger.Plan{Trigger: "M1", Target: client.Member{LID: earlier, Phone: spammerPhone}, ConfigHash: "h",
+						BanCommunity: store.BanEverywhere, Ban: []string{store.BanEverywhere}, BanEnforce: true, Reason: "pitch"}
 				}
-			}
-			if bans, err := st.Bans(ctx); err != nil || len(bans) != 2 || bans[0].Member != earlier ||
-				bans[1].Member != spammerLID || bans[0].Phone != spammerPhone || bans[1].Phone != spammerPhone {
-				t.Fatalf("premise: bans %+v (%v), want the earlier holder's then the holder's, both with the number", bans, err)
-			}
-			if other, err := st.OtherAddress(ctx, spammerPhone); err != nil || other != "" {
-				t.Fatalf("premise: a record pairs the number with %q (%v)", other, err)
-			}
-			if code := te.sub("ban", "remove", c.lift); code != 0 || te.out.String() != c.out {
-				t.Fatalf("ban remove %s: exit %d %q %q", c.lift, code, te.out, te.errb)
-			}
-			if _, banned, err := st.FindBan(ctx, []string{c.lift}, ""); err != nil || banned {
-				t.Fatalf("%s is still banned (%v)", c.lift, err)
-			}
-			b, banned, err := st.FindBan(ctx, []string{c.kept}, "")
-			if err != nil || !banned || b.Member != c.kept || b.Phone != c.keptPhone {
-				t.Fatalf("%s's ban %+v, banned %v (%v); want it kept with phone %q", c.kept, b, banned, err, c.keptPhone)
-			}
-		})
+				for i, p := range []ledger.Plan{first, numberBan(1, spammerLID)} {
+					if err := st.Write(ctx, func(tx *sql.Tx) error {
+						if _, err := ledger.Write(ctx, tx, p, at.Add(time.Duration(i)*time.Hour)); err != nil || p.Person.LID == "" {
+							return err
+						}
+						// A ban by the number, resolved on the LID found for it.
+						return store.ResolveBanIn(ctx, tx, spammerPhone, string(p.Person.LID))
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if bans, err := st.Bans(ctx); err != nil || len(bans) != 2 || bans[0].Member != earlier ||
+					bans[1].Member != spammerLID || bans[0].Phone != spammerPhone || bans[1].Phone != spammerPhone {
+					t.Fatalf("premise: bans %+v (%v), want the earlier holder's then the holder's, both with the number", bans,
+						err)
+				}
+				if other, err := st.OtherAddress(ctx, spammerPhone); err != nil || other != spammerLID {
+					t.Fatalf("the number's latest record names %q (%v), want the holder %s", other, err, spammerLID)
+				}
+				if code := te.sub("ban", "remove", c.lift); code != 0 || te.out.String() != c.out {
+					t.Fatalf("ban remove %s: exit %d %q %q", c.lift, code, te.out, te.errb)
+				}
+				if _, banned, err := st.FindBan(ctx, []string{c.lift}, ""); err != nil || banned {
+					t.Fatalf("%s is still banned (%v)", c.lift, err)
+				}
+				b, banned, err := st.FindBan(ctx, []string{c.kept}, "")
+				if err != nil || !banned || b.Member != c.kept || b.Phone != c.keptPhone {
+					t.Fatalf("%s's ban %+v, banned %v (%v); want it kept with phone %q", c.kept, b, banned, err, c.keptPhone)
+				}
+			})
+		}
 	}
 }
 
