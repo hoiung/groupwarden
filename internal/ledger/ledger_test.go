@@ -209,6 +209,58 @@ func TestBanRowWithRemoveIntent(t *testing.T) {
 	}
 }
 
+// TestWriteAdminBanOnBotBan (#8 AC 3.1): an admin's ban of someone the bot
+// already banned writes the admin's ban row and moves their entry's link to
+// it, with the number the entry lacked filled in; no entry is added, so the
+// plan's "ban added" report is not written, and a ban a pause holds for them
+// there is settled, as an added ban settles it.
+func TestWriteAdminBanOnBotBan(t *testing.T) {
+	k := modtest.New(t, "")
+	write := func(p ledger.Plan) ledger.Written {
+		t.Helper()
+		p.ConfigHash, p.BanCommunity = k.Holder.Current().Hash, store.BanEverywhere
+		p.Ban, p.BanEnforce = []string{store.BanEverywhere}, true
+		var w ledger.Written
+		if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) (err error) {
+			w, err = ledger.Write(k.Ctx, tx, p, k.Clock.Now())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	if w := write(ledger.Plan{Trigger: "M1", Target: client.Member{LID: modtest.Spammer}, Reason: "spam post"}); w.BansAdded != 1 {
+		t.Fatalf("the bot's ban: %+v, want one entry added", w)
+	}
+	var held int64
+	if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) (err error) {
+		held, _, err = store.InsertLedger(k.Ctx, tx, store.LedgerRow{Action: store.ActBan, Chat: store.BanEverywhere,
+			Target: string(modtest.Spammer), TriggerID: "M2", Mode: store.ModeEnforce}, k.Clock.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := write(ledger.Plan{Trigger: store.CLITrigger + "1", Target: modtest.SpammerM, Actor: "cli",
+		Reason: "added with the ban command", Reports: []store.Report{{Kind: ledger.KindBanCLI,
+			Community: store.BanEverywhere, Text: "A ban was added with the ban command."}}})
+	if w.BansAdded != 0 || w.LinksMoved != 1 || w.New != 1 || len(w.ReportIDs) != 0 {
+		t.Fatalf("written %+v, want no entry added, one link moved to the one new row, no report", w)
+	}
+	bans, err := k.Store.Bans(k.Ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bans) != 1 || bans[0].LedgerID != w.LedgerIDs[0] || bans[0].Phone != string(modtest.SpammerPhone) {
+		t.Fatalf("bans %+v, want one entry linked to the admin's row %d, with the number", bans, w.LedgerIDs[0])
+	}
+	if reps := k.Reports(ledger.KindBanCLI); len(reps) != 0 {
+		t.Fatalf("reports %+v, want no \"ban added\" report", reps)
+	}
+	if row, err := k.Store.Ledger(k.Ctx, held); err != nil || row.Status != store.Requested {
+		t.Fatalf("held ban %+v (%v), want it settled", row, err)
+	}
+}
+
 // TestLiftInOneCommunity: a lift narrowed to one community removes only the
 // bans covering it, applied or held by a pause, and its unban row names that
 // community; a lift with no community removes every ban.
