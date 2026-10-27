@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -597,6 +598,160 @@ func TestMemberForgetStripsTelegramReports(t *testing.T) {
 	if again, _ := s.st.ReportEdits(ctx); len(again) != 2 {
 		t.Fatalf("%d edits after a second forget", len(again))
 	}
+}
+
+// TestKnownIDsOneHop: the command line acts on the one person named. `ban
+// remove` takes the address given and its pair: the saved WhatsApp IDs'
+// first, else the bot's records'. `member show|forget` gather one step from
+// the address given (its saved pair, its record pair over every ban row of
+// theirs, the addresses on the ban entries that name it) and never a second,
+// so a number that passed from one person to another reaches only one of
+// them, and a lifted ban still leads `member forget` to their records.
+func TestKnownIDsOneHop(t *testing.T) {
+	const (
+		x, y     = "99999000000777@lid", "99999000000888@lid"
+		old, now = "447700900456@s.whatsapp.net", "447700900789@s.whatsapp.net"
+	)
+	ctx := context.Background()
+	open := func(t *testing.T) (*testEnv, *store.Store) {
+		t.Helper()
+		te := newTestEnv(t, &clienttest.Fake{})
+		te.provision(t)
+		st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		return te, st
+	}
+	write := func(t *testing.T, st *store.Store, p ledger.Plan) {
+		t.Helper()
+		p.ConfigHash, p.BanCommunity = "h", cmdCommunity
+		if err := st.Write(ctx, func(tx *sql.Tx) error {
+			_, err := ledger.Write(ctx, tx, p, time.Now())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ban := func(t *testing.T, st *store.Store, trigger string, m client.Member) {
+		t.Helper()
+		write(t, st, ledger.Plan{Trigger: trigger, Target: m, Ban: []string{store.BanEverywhere}, BanEnforce: true, Reason: "test"})
+	}
+	banned := func(t *testing.T, st *store.Store, id string) bool {
+		t.Helper()
+		_, ok, err := st.FindBan(ctx, []string{id}, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	// moved: x held old, was banned and lifted, and holds now, banned again
+	// by LID; y holds old now, banned, with a reported post under their LID
+	// alone. The session store pairs each LID with the number it holds now.
+	moved := func(t *testing.T) (*testEnv, *store.Store) {
+		t.Helper()
+		te, st := open(t)
+		ban(t, st, "X1", client.Member{LID: x, Phone: old})
+		write(t, st, ledger.Plan{Trigger: "X2", Target: client.Member{LID: x, Phone: old}, Lift: true, Reason: "lifted"})
+		ban(t, st, "X3", client.Member{LID: x})
+		write(t, st, ledger.Plan{Trigger: "Y1", Target: client.Member{LID: y, Phone: old}, Rule: "pitch",
+			Evidence: &store.Evidence{Chat: cmdGroup, Community: cmdCommunity, Sender: y, MsgID: "Y1", TargetID: "Y1",
+				MsgTime: time.Now(), Fields: `[]`, Normalised: `[]`},
+			Ban: []string{store.BanEverywhere}, BanEnforce: true, Reason: "pitch"})
+		db := sessiontest.Create(t, filepath.Join(te.dir, "data", "whatsmeow.db"))
+		sessiontest.Exec(t, db, `INSERT INTO whatsmeow_lid_map (lid, pn) VALUES ('99999000000777', '447700900789'), ('99999000000888', '447700900456')`)
+		return te, st
+	}
+	t.Run("saved-ids-win", func(t *testing.T) {
+		te, st := moved(t)
+		seenPost(t, st, "k1", "M1", x, old) // the bot's latest record pairs old with x
+		if code := te.sub("ban", "remove", old); code != 0 {
+			t.Fatalf("exit %d: %s", code, te.errb)
+		}
+		if banned(t, st, y) || !banned(t, st, x) {
+			t.Fatalf("y banned %v, x banned %v; want only y, who holds the number now, lifted", banned(t, st, y), banned(t, st, x))
+		}
+	})
+	t.Run("other-entry-ignored", func(t *testing.T) {
+		te, _ := moved(t)
+		if code := te.sub("member", "show", x); code != 0 {
+			t.Fatalf("exit %d: %s", code, te.errb)
+		}
+		var rec shown
+		if err := json.Unmarshal([]byte(te.out.String()), &rec); err != nil {
+			t.Fatalf("%v\n%s", err, te.out)
+		}
+		if slices.Contains(rec.Addresses, y) || !slices.Contains(rec.Addresses, old) || !slices.Contains(rec.Addresses, now) {
+			t.Fatalf("addresses %v, want x's own (its saved pair %s, its old number %s) and not %s", rec.Addresses, now, old, y)
+		}
+	})
+	t.Run("ban-remove-lifts-one-person", func(t *testing.T) {
+		te, st := moved(t)
+		if code := te.sub("ban", "remove", x); code != 0 {
+			t.Fatalf("exit %d: %s", code, te.errb)
+		}
+		if banned(t, st, x) || !banned(t, st, y) {
+			t.Fatalf("x banned %v, y banned %v; want only x lifted", banned(t, st, x), banned(t, st, y))
+		}
+	})
+	t.Run("member-forget-keeps-other-person", func(t *testing.T) {
+		te, st := moved(t)
+		if code := te.sub("member", "forget", x); code != 0 {
+			t.Fatalf("exit %d: %s", code, te.errb)
+		}
+		evs, err := st.EvidenceFor(ctx, []string{y})
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := st.LedgerForTargets(ctx, []string{y})
+		if err != nil || len(evs) != 1 || len(rows) == 0 {
+			t.Fatalf("y's evidence %d, action-log rows %d (%v); want y's records kept", len(evs), len(rows), err)
+		}
+	})
+	// The bot banned them by LID and number, the ban was lifted, and there is
+	// no session store: `member forget <phone>` still finds their LID through
+	// the lifted ban's row.
+	t.Run("member-forget-after-lift", func(t *testing.T) {
+		te, st := open(t)
+		ban(t, st, "M1", client.Member{LID: spammerLID, Phone: spammerPhone})
+		if code := te.sub("ban", "remove", spammerLID); code != 0 {
+			t.Fatalf("ban remove: exit %d: %s", code, te.errb)
+		}
+		if code := te.sub("member", "forget", spammerPhone); code != 0 {
+			t.Fatalf("member forget: exit %d: %s", code, te.errb)
+		}
+		db, err := sql.Open("sqlite", filepath.Join(te.dir, "data", "groupwarden.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if n := count(t, db, `SELECT COUNT(*) FROM ledger WHERE target = ?`, spammerLID); n != 0 {
+			t.Fatalf("%d action-log rows under the LID left", n)
+		}
+		if n := count(t, db, `SELECT COUNT(*) FROM ledger WHERE address = ?`, spammerPhone); n != 0 {
+			t.Fatalf("%d action-log rows holding the number left", n)
+		}
+	})
+	// A post reported under their LID alone, then a number ban resolved on
+	// the LID: only the ban entry pairs the two (the ban's row is keyed by
+	// the number), and `member forget <phone>` reaches the post through it.
+	t.Run("member-forget-entry-only-pair", func(t *testing.T) {
+		te, st := open(t)
+		write(t, st, ledger.Plan{Trigger: "M1", Target: client.Member{LID: spammerLID}, Rule: "watch",
+			Evidence: &store.Evidence{Chat: cmdGroup, Community: cmdCommunity, Sender: spammerLID, MsgID: "M1", TargetID: "M1",
+				MsgTime: time.Now(), Fields: `[]`, Normalised: `[]`}})
+		ban(t, st, "C1", client.Member{Phone: spammerPhone})
+		if err := st.ResolveBan(ctx, spammerPhone, spammerLID); err != nil {
+			t.Fatal(err)
+		}
+		if code := te.sub("member", "forget", spammerPhone); code != 0 {
+			t.Fatalf("exit %d: %s", code, te.errb)
+		}
+		if evs, err := st.EvidenceFor(ctx, []string{spammerLID}); err != nil || len(evs) != 0 {
+			t.Fatalf("%d evidence rows under the LID left (%v)", len(evs), err)
+		}
+	})
 }
 
 // seenPost records a decided post of sender (alt: their other address) in
