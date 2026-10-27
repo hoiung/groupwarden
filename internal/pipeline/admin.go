@@ -394,7 +394,7 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, subject client.JID, 
 type NumberBanned struct {
 	// Member is the number, with the LID the bot knows or found for it.
 	Member client.Member
-	// Already: the number is banned everywhere already, so no ban was added
+	// Already: the number is banned everywhere already, so no entry was added
 	// (its posts are still deleted, a ban of the number is still resolved on
 	// the LID known, the entry records this admin's ban when it was the
 	// bot's, and the caller still asks for a sweep).
