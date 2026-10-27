@@ -349,6 +349,7 @@ func ResolveBanIn(ctx context.Context, tx *sql.Tx, phone, lid string) error {
 	// own (linkRank), as when a ban is written (PutBan, BanEntry.Keeps): an
 	// admin's row outranks the bot's, and any row outranks none (no link, or
 	// a row purged since). Of two links of one rank, its own is kept.
+	// #nosec G202 -- linkRank's text is fixed; the values are parameters.
 	if _, err := tx.ExecContext(ctx, `UPDATE bans SET ledger_id = (
 	SELECT n.ledger_id FROM bans n WHERE n.phone = ?1 AND n.member = n.phone AND n.scope = bans.scope)
 WHERE member = ?2 AND EXISTS (SELECT 1 FROM bans n WHERE n.phone = ?1 AND n.member = n.phone AND n.scope = bans.scope
