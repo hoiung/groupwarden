@@ -124,9 +124,16 @@ ORDER BY created_at`, jsonList(nonEmpty(ids)))
 }
 
 // UnresolvedBans lists bans that have a phone number but no LID and whose
-// lookup has not failed yet.
+// lookup has not failed yet (LIDFailedBans lists those whose lookup has).
 func (s *Store) UnresolvedBans(ctx context.Context) ([]Ban, error) {
 	return s.bans(ctx, `SELECT `+banCols+` FROM bans WHERE lid = '' AND phone != '' AND lid_failed = 0 ORDER BY created_at`)
+}
+
+// LIDFailedBans lists bans that have a phone number but no LID and whose
+// lookup failed (MarkBanLIDFailed): the sweep looks each up again in the
+// saved WhatsApp IDs.
+func (s *Store) LIDFailedBans(ctx context.Context) ([]Ban, error) {
+	return s.bans(ctx, `SELECT `+banCols+` FROM bans WHERE lid = '' AND phone != '' AND lid_failed = 1 ORDER BY created_at`)
 }
 
 func (s *Store) bans(ctx context.Context, query string, args ...any) ([]Ban, error) {
@@ -151,14 +158,15 @@ func bans(ctx context.Context, q queryer, query string, args ...any) ([]Ban, err
 }
 
 // ResolveBan records the LID found for a phone-only ban: the entry is re-keyed
-// on the LID (merging with an existing LID entry of the same scope).
+// on the LID (merging with an existing LID entry of the same scope), and a
+// failed lookup it carried (lid_failed) is cleared.
 func (s *Store) ResolveBan(ctx context.Context, phone, lid string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error { return ResolveBanIn(ctx, tx, phone, lid) })
 }
 
 // ResolveBanIn is ResolveBan inside tx.
 func ResolveBanIn(ctx context.Context, tx *sql.Tx, phone, lid string) error {
-	if _, err := tx.ExecContext(ctx, `UPDATE bans SET lid = ? WHERE phone = ? AND lid = ''`, lid, phone); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE bans SET lid = ?, lid_failed = 0 WHERE phone = ? AND lid = ''`, lid, phone); err != nil {
 		return err
 	}
 	// Re-key; where the LID already has an entry for that scope, keep it,
@@ -176,9 +184,10 @@ func ResolveBanIn(ctx context.Context, tx *sql.Tx, phone, lid string) error {
 
 // MarkBanLIDFailed records that the phone number of a ban could not be
 // resolved to a LID (the ban stays keyed on the phone number) and stores the
-// report r about it, in one transaction: once marked, the ban is never looked
-// up again, so a report written apart could be lost for good. The report is
-// written only when a ban was marked; reported says whether it was.
+// report r about it, in one transaction: once marked, the ban is looked up
+// again only in the saved WhatsApp IDs and never reported again, so a report
+// written apart could be lost for good. The report is written only when a ban
+// was marked; reported says whether it was.
 func (s *Store) MarkBanLIDFailed(ctx context.Context, phone string, r Report) (reported bool, err error) {
 	err = s.Write(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE bans SET lid_failed = 1 WHERE phone = ? AND lid = ''`, phone)
