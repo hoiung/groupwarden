@@ -464,6 +464,7 @@ func (e *Enforcer) ResolveBans(ctx context.Context) error {
 			if err := e.Store.ResolveBan(ctx, b.Phone, string(lid)); err != nil {
 				return err
 			}
+			e.Log.Info("ban phone number resolved to a LID", "phone", mask.IDs(b.Phone))
 			continue
 		}
 		// Only WhatsApp's answer that the number has no LID settles the ban as
