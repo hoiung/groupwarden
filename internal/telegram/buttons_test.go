@@ -93,7 +93,8 @@ func watchOnly(t *testing.T, h *harness) store.Report {
 }
 
 // TestBanFromWatchOnlyReport: [Ban] on a "would have acted" report deletes
-// the message, removes the sender everywhere and bans them.
+// the message, removes the sender everywhere and bans them, and logs the
+// entry it added.
 func TestBanFromWatchOnlyReport(t *testing.T) {
 	h := newHarness(t, "")
 	r := watchOnly(t, h)
@@ -101,6 +102,9 @@ func TestBanFromWatchOnlyReport(t *testing.T) {
 	h.k.Fire()
 	if !h.k.Banned(modtest.SpammerM, "") {
 		t.Fatal("not banned after [Ban]")
+	}
+	if lines := h.k.LogLines("admin ban"); len(lines) != 1 || !strings.Contains(lines[0], " bans_added=1 links_moved=0 ") {
+		t.Fatalf("log lines %q, want one saying the ban added their entry", lines)
 	}
 	if h.k.Fake.Count("Revoke "+string(modtest.G1)) != 1 || h.k.Fake.Count("Remove") != 2 {
 		t.Fatalf("calls %v, want the delete and 2 removals", h.k.Fake.Calls())
