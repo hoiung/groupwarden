@@ -68,7 +68,8 @@ VALUES ('msg|P1', ?, 'P1', ?, ?, ?, ?)`, group, at.UnixMilli(), at.UnixMilli(), 
 // while the ban is in force (its ban list entry links the row, or a pause
 // holds it); the row of a ban since lifted or undone pairs nothing, as the
 // number may have passed to someone else. OtherAddressEver still reads it,
-// for `member show|forget`.
+// for `member show|forget`. The entry names the LID alone, so the pair comes
+// from the row: an entry with both addresses pairs them on its own.
 func TestOtherAddressBanRows(t *testing.T) {
 	ctx := context.Background()
 	const (
@@ -96,7 +97,7 @@ func TestOtherAddressBanRows(t *testing.T) {
 					return err
 				}
 				if c.listed {
-					if err := AddBan(ctx, tx, Ban{Member: lid, Scope: BanEverywhere, LID: lid, Phone: phone, LedgerID: id}, now); err != nil {
+					if err := AddBan(ctx, tx, Ban{Member: lid, Scope: BanEverywhere, LID: lid, LedgerID: id}, now); err != nil {
 						return err
 					}
 				}
@@ -176,7 +177,7 @@ func TestOtherAddressBanListEntries(t *testing.T) {
 			want: map[string]string{number: holder, holder: number}},
 		"later-entry-beats-earlier-ban-row": {writes: []func(context.Context, *sql.Tx) error{banRow(earlier, t0),
 			entry(holder, t1)}, want: map[string]string{number: holder}},
-		"later-ban-row-beats-earlier-entry": {writes: []func(context.Context, *sql.Tx) error{entry(holder, t0),
+		"later-bot-ban-beats-earlier-entry": {writes: []func(context.Context, *sql.Tx) error{entry(holder, t0),
 			banRow(earlier, t1)}, want: map[string]string{number: earlier}},
 		"later-post-beats-earlier-entry": {writes: []func(context.Context, *sql.Tx) error{entry(holder, t0),
 			post(earlier, t1)}, want: map[string]string{number: earlier}},
