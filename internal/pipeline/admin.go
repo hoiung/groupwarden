@@ -48,7 +48,10 @@ func adminTrigger(reportID int64, button string) string {
 
 // Undone is what [Undo] did.
 type Undone struct {
-	Member     client.Member
+	Member client.Member
+	// BansLifted counts the ban list entries that covered the member and no
+	// longer do: their own, lifted, and any of another LID that held their
+	// number, which keeps its ban on that LID without the number.
 	BansLifted int
 	Overturned int64
 	// RemovedFrom lists every group the bot removed the member from: an
@@ -56,7 +59,9 @@ type Undone struct {
 	RemovedFrom []client.JID
 }
 
-// Undo lifts every ban of the report's member and marks the bot's
+// Undo lifts every ban of the report's member (a ban of someone who held
+// their number before stays on that one's LID and only loses the number:
+// ledger.Plan Lift) and marks the bot's
 // removals, rejections and bans of them overturned (a delete of the
 // report's message still queued is cancelled; one already sent cannot be
 // undone).
@@ -351,7 +356,8 @@ func (a *Admin) banPlan(ctx context.Context, p ledger.Plan, community string, in
 	}
 	a.Log.Info("admin ban", "trigger", p.Trigger, "target", mask.IDs(p.Target.Key()), "delete", del != nil,
 		"removals", len(removals), "posts_deleting", posts.Deleting, "posts_refused", posts.Refused,
-		"posts_shadow", posts.Shadow, "posts_spared", posts.Spared, "queued", w.Queued, "enforce", enforce, "by", actor)
+		"posts_shadow", posts.Shadow, "posts_spared", posts.Spared, "queued", w.Queued, "enforce", enforce,
+		"bans_added", w.BansAdded, "links_moved", w.LinksMoved, "by", actor)
 	return Banned{Member: p.Target, Deleting: del != nil && enforce, Removals: len(removals), Shadow: !enforce,
 		Paused: paused, Posts: posts}, nil
 }
@@ -447,8 +453,9 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 		a.Enforcer.wake()
 	}
 	a.Log.Info("admin ban by number", "trigger", p.Trigger, "target", mask.IDs(m.Key()), "already", out.Already,
-		"lid_known", m.LID != "", "posts_deleting", out.Posts.Deleting, "posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow,
-		"posts_spared", out.Posts.Spared, "queued", w.Queued, "by", actor)
+		"links_moved", w.LinksMoved, "lid_known", m.LID != "", "posts_deleting", out.Posts.Deleting,
+		"posts_refused", out.Posts.Refused, "posts_shadow", out.Posts.Shadow, "posts_spared", out.Posts.Spared,
+		"queued", w.Queued, "by", actor)
 	return out, nil
 }
 
@@ -516,7 +523,7 @@ func (a *Admin) UnbanNumber(ctx context.Context, phone client.JID, actor string)
 	reason := "unbanned in the admin chat by " + actor
 	p := ledger.Plan{Trigger: store.AdminUnbanTrigger + strconv.FormatInt(now.UnixMilli(), 10), Target: m,
 		ConfigHash: a.Config.Current().Hash, Actor: client.JID(actor), Reason: reason,
-		Lift: true, BanCommunity: store.BanEverywhere}
+		Lift: true, LiftByNumber: true, BanCommunity: store.BanEverywhere}
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
 		bans, err := store.BansForIn(ctx, tx, m.IDs())
 		if err != nil {
