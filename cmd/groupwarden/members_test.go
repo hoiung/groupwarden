@@ -404,6 +404,39 @@ func TestBanCLIRemoveByPhoneFindsLIDBan(t *testing.T) {
 	}
 }
 
+// TestBanCLIRemoveKeepsAnEarlierHoldersBan (#8, Expected Behavior 5): with
+// the saved WhatsApp IDs pairing the spammer's LID with a number another LID
+// held when it was banned, `ban remove <lid>` lifts what covers the person
+// named and leaves the earlier holder banned on their LID, without the
+// number; `ban remove <phone>` names the number and lifts every ban of it.
+func TestBanCLIRemoveKeepsAnEarlierHoldersBan(t *testing.T) {
+	const earlier = "99999000000777@lid"
+	ctx := context.Background()
+	for name, c := range map[string]struct {
+		arg           string
+		earlierBanned bool
+	}{"by-lid": {arg: spammerLID, earlierBanned: true}, "by-phone": {arg: spammerPhone}} {
+		t.Run(name, func(t *testing.T) {
+			te, st := provisionedStore(t)
+			db := sessiontest.Create(t, filepath.Join(te.dir, "data", "whatsmeow.db"))
+			sessiontest.Exec(t, db, `INSERT INTO whatsmeow_lid_map (lid, pn) VALUES ('99999000000444', '447700900123')`)
+			writePlan(t, st, ledger.Plan{Trigger: "M1", Target: client.Member{LID: earlier, Phone: spammerPhone},
+				Ban: []string{store.BanEverywhere}, BanEnforce: true, Reason: "pitch"})
+			if code := te.sub("ban", "remove", c.arg); code != 0 || te.out.String() != "unbanned "+c.arg+"\n" {
+				t.Fatalf("ban remove %s: exit %d %q %q", c.arg, code, te.out, te.errb)
+			}
+			if _, banned, err := st.FindBan(ctx, []string{spammerLID, spammerPhone}, ""); err != nil || banned {
+				t.Fatalf("the person named is still banned (%v)", err)
+			}
+			b, banned, err := st.FindBan(ctx, []string{earlier}, "")
+			if err != nil || banned != c.earlierBanned || banned && b.Phone != "" {
+				t.Fatalf("earlier holder's ban %+v, banned %v (%v); want banned %v, without the number", b, banned, err,
+					c.earlierBanned)
+			}
+		})
+	}
+}
+
 // TestBanCLIResolvesAtOnce: `ban add` pairs the address given with the other
 // through the command line's steps of pipeline.LIDForNumber (the WhatsApp
 // session store's saved IDs, then groupwarden's records; one hop) and writes
@@ -413,17 +446,7 @@ func TestBanCLIRemoveByPhoneFindsLIDBan(t *testing.T) {
 func TestBanCLIResolvesAtOnce(t *testing.T) {
 	const other = "99999000000777@lid"
 	ctx := context.Background()
-	open := func(t *testing.T) (*testEnv, *store.Store) {
-		t.Helper()
-		te := newTestEnv(t, &clienttest.Fake{})
-		te.provision(t)
-		st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = st.Close() })
-		return te, st
-	}
+	open := provisionedStore
 	// saved pairs the spammer's LID and number in the WhatsApp session store.
 	saved := func(t *testing.T, te *testEnv) {
 		t.Helper()
@@ -432,13 +455,8 @@ func TestBanCLIResolvesAtOnce(t *testing.T) {
 	}
 	ban := func(t *testing.T, st *store.Store, p ledger.Plan) {
 		t.Helper()
-		p.ConfigHash, p.BanCommunity, p.Ban, p.BanEnforce, p.Reason = "h", cmdCommunity, []string{store.BanEverywhere}, true, "pitch"
-		if err := st.Write(ctx, func(tx *sql.Tx) error {
-			_, err := ledger.Write(ctx, tx, p, time.Now())
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
+		p.Ban, p.BanEnforce, p.Reason = []string{store.BanEverywhere}, true, "pitch"
+		writePlan(t, st, p)
 	}
 	add := func(t *testing.T, te *testEnv, arg, want string) {
 		t.Helper()
@@ -755,27 +773,7 @@ func TestKnownIDsOneHop(t *testing.T) {
 		old, now = "447700900456@s.whatsapp.net", "447700900789@s.whatsapp.net"
 	)
 	ctx := context.Background()
-	open := func(t *testing.T) (*testEnv, *store.Store) {
-		t.Helper()
-		te := newTestEnv(t, &clienttest.Fake{})
-		te.provision(t)
-		st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = st.Close() })
-		return te, st
-	}
-	write := func(t *testing.T, st *store.Store, p ledger.Plan) {
-		t.Helper()
-		p.ConfigHash, p.BanCommunity = "h", cmdCommunity
-		if err := st.Write(ctx, func(tx *sql.Tx) error {
-			_, err := ledger.Write(ctx, tx, p, time.Now())
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
+	open, write := provisionedStore, writePlan
 	ban := func(t *testing.T, st *store.Store, trigger string, m client.Member) {
 		t.Helper()
 		write(t, st, ledger.Plan{Trigger: trigger, Target: m, Ban: []string{store.BanEverywhere}, BanEnforce: true, Reason: "test"})
@@ -894,6 +892,32 @@ func TestKnownIDsOneHop(t *testing.T) {
 			t.Fatalf("%d evidence rows under the LID left (%v)", len(evs), err)
 		}
 	})
+}
+
+// provisionedStore is a provisioned test environment and its groupwarden.db,
+// open (closed when the test ends).
+func provisionedStore(t *testing.T) (*testEnv, *store.Store) {
+	t.Helper()
+	te := newTestEnv(t, &clienttest.Fake{})
+	te.provision(t)
+	st, err := store.Open(context.Background(), filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return te, st
+}
+
+// writePlan writes p to st, counting towards cmdCommunity.
+func writePlan(t *testing.T, st *store.Store, p ledger.Plan) {
+	t.Helper()
+	p.ConfigHash, p.BanCommunity = "h", cmdCommunity
+	if err := st.Write(context.Background(), func(tx *sql.Tx) error {
+		_, err := ledger.Write(context.Background(), tx, p, time.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // seenPost records a decided post of sender (alt: their other address) in
