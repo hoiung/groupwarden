@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/hoiung/groupwarden/internal/client"
 	"github.com/hoiung/groupwarden/internal/config"
 	"github.com/hoiung/groupwarden/internal/ledger"
+	"github.com/hoiung/groupwarden/internal/pipeline"
 	"github.com/hoiung/groupwarden/internal/rules"
 	"github.com/hoiung/groupwarden/internal/store"
 )
@@ -184,9 +184,9 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		p.Ban, p.BanEnforce, p.Reason = []string{scope}, true, "added with the ban command"
 		p.Reports = []store.Report{{Kind: ledger.KindBanCLI, Community: scope, Text: "A ban was added with the ban command."}}
 	case "remove":
-		// By every address the stores know: a ban that names them by the
-		// address not given (by LID alone, for someone who joined since the
-		// group list was last read) is found by the number too.
+		// By the address given and its pair (banMember): a ban that names them
+		// by the address not given (by LID alone, for someone who joined since
+		// the group list was last read) is found by the number too.
 		if p.Target, err = e.banMember(ctx, st, cfg, m); err != nil {
 			fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
 			return exitFail
@@ -228,8 +228,8 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 	return exitOK
 }
 
-// banMember is m by every address the stores know (knownIDs), as /unban
-// <number> finds them.
+// banMember is m with the address paired with the one given (pair), as
+// /unban <number> finds them.
 func (e *env) banMember(ctx context.Context, st *store.Store, cfg *config.Config, m client.Member) (client.Member, error) {
 	session, err := openSession(ctx, cfg, e.now)
 	if err != nil {
@@ -238,16 +238,49 @@ func (e *env) banMember(ctx context.Context, st *store.Store, cfg *config.Config
 	if session != nil {
 		defer session.Close()
 	}
-	ids, err := knownIDs(ctx, st, session, m)
+	other, err := pair(ctx, st, session, m)
 	if err != nil {
 		return m, err
 	}
-	sort.Strings(ids)
-	all := []client.JID{m.LID, m.Phone}
-	for _, id := range ids {
-		all = append(all, client.JID(id))
+	return client.MemberOf(m.LID, m.Phone, other), nil
+}
+
+// pair is the address paired with m's one address, one step from it and never
+// a second: the WhatsApp library's saved pair, else the one groupwarden's
+// records give (pipeline.LIDForNumber's steps for the command line, for a
+// LID the same two the other way round).
+func pair(ctx context.Context, st *store.Store, session *store.Session, m client.Member) (client.JID, error) {
+	saved := func(ctx context.Context, addr client.JID) (client.JID, error) { return savedPair(ctx, session, addr) }
+	if m.LID == "" {
+		lid, _, err := pipeline.LIDForNumber(ctx, m.Phone, pipeline.LIDSources{Saved: saved, Records: st})
+		return lid, err
 	}
-	return client.MemberOf(all...), nil
+	if phone, err := saved(ctx, m.LID); err != nil || phone != "" {
+		return phone, err
+	}
+	return pipeline.RecordedPair(ctx, st, m.LID)
+}
+
+// savedPair is the address the WhatsApp session store's LID map pairs with
+// addr ("" when it has none, or there is no session store): one row per LID
+// and per number.
+func savedPair(ctx context.Context, session *store.Session, addr client.JID) (client.JID, error) {
+	if session == nil {
+		return "", nil
+	}
+	sm, err := session.Member(ctx, []string{string(addr)})
+	if err != nil {
+		return "", err
+	}
+	for _, row := range sm.LIDMap {
+		switch {
+		case addr.Server() == "lid" && row["lid"] == addr.User():
+			return client.JID(row["pn"] + "@s.whatsapp.net"), nil
+		case addr.Server() != "lid" && row["pn"] == addr.User():
+			return client.JID(row["lid"] + "@lid"), nil
+		}
+	}
+	return "", nil
 }
 
 func dash(s string) string {
@@ -257,45 +290,41 @@ func dash(s string) string {
 	return s
 }
 
-// knownIDs gathers every address the stores know for m: the other address
-// the bot recorded beside the one given (store.OtherAddress, as the bot's
-// own lookups do: someone who joined since the group list was last read is
-// known there by their LID alone), the ban list and the WhatsApp session
-// store's LID-to-phone map.
+// knownIDs gathers the addresses `member show|forget` act on for m, one step
+// from the address given and never a second, so they reach no second person:
+// the WhatsApp session store's pair of it, the other address the bot
+// recorded beside it over every ban row of theirs (store.OtherAddressEver: a
+// ban lifted or undone since still names them; someone who joined since the
+// group list was last read is known there by their LID alone), and the
+// addresses on the ban list entries that name it.
 func knownIDs(ctx context.Context, st *store.Store, session *store.Session, m client.Member) ([]string, error) {
 	ids := map[string]bool{}
+	add := func(id string) {
+		if id != "" {
+			ids[id] = true
+		}
+	}
 	for _, id := range m.IDs() {
-		ids[id] = true
+		add(id)
 	}
-	if (m.LID == "") != (m.Phone == "") {
-		other, err := st.OtherAddress(ctx, m.Key())
-		if err != nil {
-			return nil, err
-		}
-		if other != "" {
-			ids[other] = true
-		}
+	saved, err := savedPair(ctx, session, client.JID(m.Key()))
+	if err != nil {
+		return nil, err
 	}
-	bans, err := st.BansFor(ctx, keys(ids))
+	add(string(saved))
+	other, err := st.OtherAddressEver(ctx, m.Key())
+	if err != nil {
+		return nil, err
+	}
+	add(other)
+	bans, err := st.BansFor(ctx, m.IDs())
 	if err != nil {
 		return nil, err
 	}
 	for _, b := range bans {
-		for _, id := range []string{b.Member, b.LID, b.Phone} {
-			if id != "" {
-				ids[id] = true
-			}
-		}
-	}
-	if session != nil {
-		sm, err := session.Member(ctx, keys(ids))
-		if err != nil {
-			return nil, err
-		}
-		for _, row := range sm.LIDMap {
-			ids[row["lid"]+"@lid"] = true
-			ids[row["pn"]+"@s.whatsapp.net"] = true
-		}
+		add(b.Member)
+		add(b.LID)
+		add(b.Phone)
 	}
 	return keys(ids), nil
 }
