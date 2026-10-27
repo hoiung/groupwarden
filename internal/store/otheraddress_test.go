@@ -109,9 +109,9 @@ func BenchmarkOtherAddress(b *testing.B) {
 // check that a ban row's ban is in force included, searches an index: no
 // line of its query plan scans seen, evidence, ledger or bans.
 func TestOtherAddressUsesIndexes(t *testing.T) {
-	// Two reads each of seen, evidence and ledger, and the ban list under
-	// each ledger read.
-	searchesOnly(t, map[string]int{"seen": 2, "evidence": 2, "ledger": 2, "bans": 2},
+	// Two reads each of seen, evidence and ledger, the ban list under each
+	// ledger read, and the ban list's entries by number and by LID.
+	searchesOnly(t, map[string]int{"seen": 2, "evidence": 2, "ledger": 2, "bans": 4},
 		otherAddressQuery(banInForce), "99999000000555@lid")
 }
 
