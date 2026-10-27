@@ -139,6 +139,7 @@ func TestOtherAddressBanListEntries(t *testing.T) {
 		earlier = "99999000000777@lid" // synthetic IDs, listed in .secret-pii-allowlist
 		holder  = "99999000000888@lid"
 		number  = "447700900321@s.whatsapp.net"
+		moved   = "447700900123@s.whatsapp.net"
 	)
 	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 	t1 := t0.Add(time.Hour)
@@ -194,6 +195,12 @@ func TestOtherAddressBanListEntries(t *testing.T) {
 			func(ctx context.Context, tx *sql.Tx) error {
 				return AddBan(ctx, tx, Ban{Member: holder, Scope: BanEverywhere, LID: holder, Reason: "r"}, t1)
 			}}, want: map[string]string{holder: number}},
+		// Someone who changed their number: the entry written later names the
+		// number they have now.
+		"a-later-entry-gives-a-lid-its-new-number": {writes: []func(context.Context, *sql.Tx) error{post(holder, t0),
+			func(ctx context.Context, tx *sql.Tx) error {
+				return AddBan(ctx, tx, Ban{Member: holder, Scope: BanEverywhere, LID: holder, Phone: moved, Reason: "r"}, t1)
+			}}, want: map[string]string{holder: moved}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			now := t1
