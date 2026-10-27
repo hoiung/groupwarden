@@ -67,15 +67,23 @@ func TestLIDForNumber(t *testing.T) {
 // TestIdentifyKeepsANumberItsHolderHoldsNow (#8 Gate 1): WhatsApp gives a
 // number to someone new once its holder leaves it. A number Identify finds
 // for a LID in the bot's records or on the ban list is kept only when the
-// number's own pair, the group list's or else the one recorded last, is that
-// LID or none; read with and without a transaction.
+// number's own pair, the group list's, else the one recorded last, else the
+// ban list's (of the bans holding it, the one written last), is that LID or
+// none; a number given alone takes the ban list's LID the same way, and so
+// does the records' step of LIDForNumber (RecordedPair). Read with and
+// without a transaction.
 func TestIdentifyKeepsANumberItsHolderHoldsNow(t *testing.T) {
 	const free = client.JID("447700900321@s.whatsapp.net") // nobody in the group list holds it
 	type post struct{ lid, phone client.JID }
+	ban := func(lid, phone client.JID) store.Ban {
+		return store.Ban{Member: string(lid), Scope: store.BanEverywhere, LID: string(lid), Phone: string(phone)}
+	}
 	for name, c := range map[string]struct {
-		posts []post    // in the order they were recorded
-		ban   store.Ban // a ban list entry with no ledger row, when it has a member
+		posts []post      // in the order they were recorded
+		bans  []store.Ban // ban list entries with no ledger row, in the order they were written
 		want  map[client.JID]client.Member
+		// recordsSay is LIDForNumber(free) through the records alone, when set
+		recordsSay client.JID
 	}{
 		"recorded-number-nobody-else-holds": {posts: []post{{modtest.Other1, free}},
 			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1, Phone: free}}},
@@ -84,12 +92,26 @@ func TestIdentifyKeepsANumberItsHolderHoldsNow(t *testing.T) {
 		"recorded-later-with-another": {posts: []post{{modtest.Other1, free}, {modtest.Other2, free}},
 			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1},
 				modtest.Other2: {LID: modtest.Other2, Phone: free}}},
-		"ban-list-number-the-group-list-pairs-with-another": {ban: store.Ban{Member: string(modtest.Other1),
-			Scope: store.BanEverywhere, LID: string(modtest.Other1), Phone: string(modtest.SpammerPhone)},
+		"ban-list-number-the-group-list-pairs-with-another": {bans: []store.Ban{ban(modtest.Other1, modtest.SpammerPhone)},
 			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1}}},
-		"ban-list-number-nobody-else-holds": {ban: store.Ban{Member: string(modtest.Other1),
-			Scope: store.BanEverywhere, LID: string(modtest.Other1), Phone: string(free)},
-			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1, Phone: free}}},
+		"ban-list-number-nobody-else-holds": {bans: []store.Ban{ban(modtest.Other1, free)},
+			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1, Phone: free},
+				free: {LID: modtest.Other1, Phone: free}}, recordsSay: modtest.Other1},
+		// Two people's bans hold the number and nothing else pairs it: the
+		// later ban names who holds it now, whichever order the LIDs sort in.
+		"ban-list-two-holders-the-later-holds-it": {bans: []store.Ban{ban(modtest.Other1, free), ban(modtest.Other2, free)},
+			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1},
+				modtest.Other2: {LID: modtest.Other2, Phone: free}, free: {LID: modtest.Other2, Phone: free}},
+			recordsSay: modtest.Other2},
+		"ban-list-two-holders-written-the-other-way": {bans: []store.Ban{ban(modtest.Other2, free), ban(modtest.Other1, free)},
+			want: map[client.JID]client.Member{modtest.Other2: {LID: modtest.Other2},
+				modtest.Other1: {LID: modtest.Other1, Phone: free}, free: {LID: modtest.Other1, Phone: free}},
+			recordsSay: modtest.Other1},
+		// A record of the number decides before the ban list does.
+		"record-beats-the-ban-list": {posts: []post{{modtest.Other1, free}},
+			bans: []store.Ban{ban(modtest.Other1, free), ban(modtest.Other2, free)},
+			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1, Phone: free},
+				modtest.Other2: {LID: modtest.Other2}}, recordsSay: modtest.Other1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			k := modtest.New(t, "")
@@ -104,23 +126,32 @@ func TestIdentifyKeepsANumberItsHolderHoldsNow(t *testing.T) {
 						return err
 					}
 				}
-				if c.ban.Member == "" {
-					return nil
+				for i, b := range c.bans {
+					b.Reason = "test"
+					if err := store.AddBan(k.Ctx, tx, b, k.Clock.Now().Add(time.Duration(i)*time.Minute)); err != nil {
+						return err
+					}
 				}
-				return store.AddBan(k.Ctx, tx, c.ban, k.Clock.Now())
+				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}
-			for lid, want := range c.want {
-				got, err := pipeline.Identify(k.Ctx, k.Dir, k.Store, nil, client.Member{LID: lid})
+			for addr, want := range c.want {
+				got, err := pipeline.Identify(k.Ctx, k.Dir, k.Store, nil, client.MemberOf(addr))
 				if err != nil || got != want {
-					t.Fatalf("Identify(%s) = %+v, %v; want %+v", lid, got, err, want)
+					t.Fatalf("Identify(%s) = %+v, %v; want %+v", addr, got, err, want)
 				}
 				if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
-					got, err = pipeline.Identify(k.Ctx, k.Dir, k.Store, tx, client.Member{LID: lid})
+					got, err = pipeline.Identify(k.Ctx, k.Dir, k.Store, tx, client.MemberOf(addr))
 					return err
 				}); err != nil || got != want {
-					t.Fatalf("Identify(%s) in a transaction = %+v, %v; want %+v", lid, got, err, want)
+					t.Fatalf("Identify(%s) in a transaction = %+v, %v; want %+v", addr, got, err, want)
+				}
+			}
+			if c.recordsSay != "" {
+				if lid, _, err := pipeline.LIDForNumber(k.Ctx, free, pipeline.LIDSources{Records: k.Store}); err != nil ||
+					lid != c.recordsSay {
+					t.Fatalf("LIDForNumber(%s) through the records = %q, %v; want %q", free, lid, err, c.recordsSay)
 				}
 			}
 		})
