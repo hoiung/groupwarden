@@ -143,6 +143,11 @@ type Written struct {
 	LinksMoved int
 	EvidenceID int64
 	ReportIDs  []int64
+	// BansLifted counts ban list entries a lift removed; NumbersReleased
+	// counts entries of someone who held the target's number before that it
+	// kept, taking the number off them (Plan Lift).
+	BansLifted      int
+	NumbersReleased int
 }
 
 // sweepPrefix marks sweep triggers, whose retries are one episode.
@@ -353,13 +358,17 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 			return w, err
 		}
 		if lid := string(p.Target.LID); lid != "" && !p.LiftByNumber {
-			if err := store.ReleaseNumbers(ctx, tx, p.Target.IDs(), lid, p.LiftIn, now); err != nil {
+			n, err := store.ReleaseNumbers(ctx, tx, p.Target.IDs(), lid, p.LiftIn, now)
+			if err != nil {
 				return w, err
 			}
+			w.NumbersReleased = int(n)
 		}
-		if _, err := store.RemoveBans(ctx, tx, p.Target.IDs(), p.LiftIn); err != nil {
+		n, err := store.RemoveBans(ctx, tx, p.Target.IDs(), p.LiftIn)
+		if err != nil {
 			return w, err
 		}
+		w.BansLifted = int(n)
 		if err := store.DropHeldBans(ctx, tx, p.Target.IDs(), p.LiftIn, "unbanned before a pause let the ban apply", now); err != nil {
 			return w, err
 		}
