@@ -428,47 +428,88 @@ func enforced(rs *rules.Ruleset, community string) bool {
 	return mode == rules.Enforce
 }
 
-// ResolveBans looks up the LID of every ban known only by a phone number. A
-// failed lookup keeps the phone key and raises a priority report.
+// ResolveBans looks up the LID of every ban known only by a phone number:
+// the group list's pair, the saved WhatsApp IDs, then one lookup on WhatsApp
+// (LIDForNumber; not the bot's records, which can pair a number with someone
+// who held it before). WhatsApp's answer that the number has no LID keeps the
+// phone key, marks the ban and raises a priority report; any other WhatsApp
+// error is returned, so the sweep looks again. A ban so marked is looked up
+// again at each sweep in the saved WhatsApp IDs alone (retryFailedBans).
 func (e *Enforcer) ResolveBans(ctx context.Context) error {
-	bans, err := e.Store.UnresolvedBans(ctx)
-	if err != nil {
+	if err := e.retryFailedBans(ctx); err != nil {
 		return err
 	}
+	bans, err := e.Store.UnresolvedBans(ctx)
+	if err != nil || len(bans) == 0 {
+		return err
+	}
+	src := LIDSources{Pairs: e.Directory, Saved: e.Adapter.SavedLID, Ask: e.Adapter.ResolvePhoneToLID}
 	looked := map[string]bool{} // one lookup per phone: each settles every ban on it
 	for _, b := range bans {
 		if looked[b.Phone] {
 			continue
 		}
 		looked[b.Phone] = true
-		lid, err := e.Adapter.ResolvePhoneToLID(ctx, client.JID(b.Phone))
-		if err == nil && lid.Server() == "lid" {
-			if err := e.Store.ResolveBan(ctx, b.Phone, string(lid.Bare())); err != nil {
+		lid, askErr, err := LIDForNumber(ctx, client.JID(b.Phone), src)
+		if err != nil {
+			return err
+		}
+		if lid != "" {
+			if err := e.Store.ResolveBan(ctx, b.Phone, string(lid)); err != nil {
 				return err
 			}
 			continue
-		}
-		if err == nil {
-			err = fmt.Errorf("%w: WhatsApp returned %s", client.ErrNoLID, mask.IDs(string(lid)))
 		}
 		// Only WhatsApp's answer that the number has no LID settles the ban as
 		// unresolved; anything else (a rate limit, no connection, no answer in
 		// time) says nothing about the number, so the next sweep asks again
 		// (the sweep logs the error).
-		if !errors.Is(err, client.ErrNoLID) {
-			return err
+		if !errors.Is(askErr, client.ErrNoLID) {
+			return askErr
 		}
-		e.Log.Warn("ban phone number not resolved to a LID", "phone", mask.IDs(b.Phone), "err", mask.IDs(err.Error()))
+		e.Log.Warn("ban phone number not resolved to a LID", "phone", mask.IDs(b.Phone), "err", mask.IDs(askErr.Error()))
 		reported, err := e.Store.MarkBanLIDFailed(ctx, b.Phone, store.Report{Kind: ledger.KindLIDUnresolved, Priority: true,
 			Subject: b.Member, Text: "A banned phone number could not be matched to its WhatsApp ID (LID). The ban is kept " +
-				"on the phone number; someone who joins under their LID alone matches it when the group list or the " +
-				"record of a post of theirs pairs the two."})
+				"on the phone number, and each sweep looks for the number again in the saved WhatsApp IDs, the pairs the " +
+				"bot's WhatsApp connection has seen. Until it is found, someone who joins under their LID alone matches " +
+				"the ban when the group list or the record of a post of theirs pairs the two."})
 		if err != nil {
 			return err
 		}
 		if reported {
 			e.wake()
 		}
+	}
+	return nil
+}
+
+// retryFailedBans looks up each ban whose WhatsApp lookup failed in the saved
+// WhatsApp IDs alone: the library saves a number's LID when it sees the pair
+// (a message's sender, a group list read), so such a ban is resolved once it
+// has, with no call to WhatsApp and no second report.
+func (e *Enforcer) retryFailedBans(ctx context.Context) error {
+	bans, err := e.Store.LIDFailedBans(ctx)
+	if err != nil {
+		return err
+	}
+	looked := map[string]bool{}
+	for _, b := range bans {
+		if looked[b.Phone] {
+			continue
+		}
+		looked[b.Phone] = true
+		lid, err := e.Adapter.SavedLID(ctx, client.JID(b.Phone))
+		if err != nil {
+			return err
+		}
+		if lid.Server() != "lid" {
+			continue
+		}
+		if err := e.Store.ResolveBan(ctx, b.Phone, string(lid.Bare())); err != nil {
+			return err
+		}
+		e.Log.Info("ban phone number resolved to a LID from the saved WhatsApp IDs after a failed lookup",
+			"phone", mask.IDs(b.Phone))
 	}
 	return nil
 }
