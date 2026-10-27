@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"maps"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -201,6 +203,125 @@ func TestRemoveBansInCommunity(t *testing.T) {
 	}
 	if got := left(); len(got) != 1 || !hasKey(got, other+" "+a) {
 		t.Fatalf("bans left %v, want only the other member's", got)
+	}
+}
+
+// TestReleaseNumbers (#8 Gate 1): a lift naming 444 by its LID takes the
+// numbers among its IDs off the bans of other LIDs covering the community it
+// lifts in (an everywhere ban included), from their entry and from their ban
+// row in force, and counts the entries. It leaves alone their ban in another
+// community, a ban holding another number, and a ban row no longer in force
+// (lifted: what member show reads). Unlinked lists, once each, the rows no
+// entry links.
+func TestReleaseNumbers(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t, Options{})
+	const holder, phone, earlier = "99999000000444@lid", "447700900123@s.whatsapp.net", "99999000000777@lid"
+	const other, otherPhone = "99999000000888@lid", "447700900321@s.whatsapp.net"
+	const a, b = "99999000000111@g.us", "99999000000222@g.us"
+	now := time.Now()
+	rows := map[string]int64{}
+	if err := s.Write(ctx, func(tx *sql.Tx) error {
+		for _, r := range []struct {
+			name, target, address, chat string
+			status                      Status
+			ban                         bool // an entry in chat's scope links it
+		}{
+			{"everywhere", earlier, phone, BanEverywhere, Requested, true},
+			{"other-community", earlier, phone, b, Requested, true},
+			{"another-number", other, otherPhone, BanEverywhere, Requested, true},
+			{"lifted", earlier, phone, BanEverywhere, Overturned, false},
+		} {
+			id, _, err := InsertLedger(ctx, tx, LedgerRow{Action: ActBan, Chat: r.chat, Target: r.target, Address: r.address,
+				TriggerID: "T" + r.name, Mode: ModeEnforce, Status: r.status}, now)
+			if err != nil {
+				return err
+			}
+			rows[r.name] = id
+			if r.ban {
+				if err := AddBan(ctx, tx, Ban{Member: r.target, Scope: r.chat, LID: r.target, Phone: r.address,
+					LedgerID: id}, now); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var n int64
+	if err := s.Write(ctx, func(tx *sql.Tx) (err error) {
+		n, err = ReleaseNumbers(ctx, tx, []string{holder, phone, ""}, holder, a, now)
+		return err
+	}); err != nil || n != 1 {
+		t.Fatalf("released %d entries (%v), want the everywhere ban only", n, err)
+	}
+	all, err := s.Bans(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, ban := range all {
+		got[ban.Member+" "+ban.Scope] = ban.Phone
+	}
+	if want := map[string]string{earlier + " " + BanEverywhere: "", earlier + " " + b: phone,
+		other + " " + BanEverywhere: otherPhone}; !maps.Equal(got, want) {
+		t.Fatalf("numbers by entry %v, want %v", got, want)
+	}
+	for name, want := range map[string]string{"everywhere": "", "other-community": phone, "another-number": otherPhone,
+		"lifted": phone} {
+		if r, err := s.Ledger(ctx, rows[name]); err != nil || r.Address != want {
+			t.Errorf("row %s address %q (%v), want %q", name, r.Address, err, want)
+		}
+	}
+	var unlinked []int64
+	if err := s.Write(ctx, func(tx *sql.Tx) (err error) {
+		unlinked, err = Unlinked(ctx, tx, []int64{rows["lifted"], rows["everywhere"], rows["lifted"]})
+		return err
+	}); err != nil || !slices.Equal(unlinked, []int64{rows["lifted"]}) {
+		t.Fatalf("unlinked %v (%v), want the lifted row once", unlinked, err)
+	}
+	if none, err := Unlinked(ctx, s.db, nil); err != nil || none != nil {
+		t.Fatalf("unlinked of no rows %v (%v), want none", none, err)
+	}
+}
+
+// TestBanEntryInOrderAndScope (#8 Gate 1): BanEntryIn reads one scope only,
+// whichever way it finds the entry, and an entry found by the LID comes
+// before one keyed by the number, which comes before another holding it.
+func TestBanEntryInOrderAndScope(t *testing.T) {
+	ctx := context.Background()
+	s, _ := openTemp(t, Options{})
+	const lid, phone, earlier = "99999000000444@lid", "447700900123@s.whatsapp.net", "99999000000777@lid"
+	const a, b = "99999000000111@g.us", "99999000000222@g.us"
+	now := time.Now()
+	if err := s.Write(ctx, func(tx *sql.Tx) error {
+		for _, ban := range []Ban{
+			{Member: phone, Scope: BanEverywhere, Phone: phone},
+			{Member: lid, Scope: BanEverywhere, LID: lid},
+			{Member: earlier, Scope: a, LID: earlier, Phone: phone},
+			{Member: phone, Scope: a, Phone: phone},
+		} {
+			if err := AddBan(ctx, tx, ban, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		lid, scope, want string // want "": none found
+	}{
+		{lid: lid, scope: BanEverywhere, want: lid},
+		{scope: a, want: phone},
+		{scope: b},
+		{lid: lid, scope: b},
+	} {
+		e, ok, err := BanEntryIn(ctx, s.db, c.lid, phone, c.scope)
+		if err != nil || ok != (c.want != "") || ok && e.Member != c.want {
+			t.Errorf("BanEntryIn(%q, %q, %q) = %q, %v (%v); want %q", c.lid, phone, c.scope, e.Member, ok, err, c.want)
+		}
 	}
 }
 
