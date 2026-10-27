@@ -77,6 +77,48 @@ func TestMigrationsFromEmpty(t *testing.T) {
 	}
 }
 
+// TestMigrate12To13: a database at schema version 12 (the release before the
+// other-address indexes) opened by this binary reads version 13, has every
+// index migration 13 adds and keeps its rows.
+func TestMigrate12To13(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "groupwarden.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range append(append([]string{`CREATE TABLE schema_version (version INTEGER NOT NULL)`}, migrations[:12]...),
+		`INSERT INTO schema_version (version) VALUES (12)`,
+		`INSERT INTO seen (dedupe_key, chat, msg_id, server_time, decided_at, sender, sender_alt)
+VALUES ('msg|P1', '99999000000111@g.us', 'P1', 1, 1, '99999000000444@lid', '')`) {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(ctx, path, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	var version, posts int
+	if err := s.db.QueryRowContext(ctx, `SELECT version FROM schema_version`).Scan(&version); err != nil || version != 13 {
+		t.Fatalf("schema version %d (%v), want 13", version, err)
+	}
+	for _, index := range []string{"seen_sender_alt", "evidence_sender", "evidence_sender_alt", "ledger_address", "bans_ledger"} {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?`, index).
+			Scan(&n); err != nil || n != 1 {
+			t.Errorf("index %s: %d (%v), want it created", index, n, err)
+		}
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM seen`).Scan(&posts); err != nil || posts != 1 {
+		t.Fatalf("%d posts (%v), want the one written at version 12 kept", posts, err)
+	}
+}
+
 // TestConcurrentOpenMigratesOnce: processes opening the same new database at
 // once (healthcheck beside a starting run) all succeed and the schema is
 // applied exactly once.
