@@ -115,7 +115,7 @@ func TestLiftOfAnEarlierHolderKeepsTheHoldersBan(t *testing.T) {
 			h.drain()
 			h.press(adminUser, "undo", id)
 			if reply := h.lastReply(); !strings.Contains(reply, "(1 ban(s) lifted, ") || strings.Contains(reply, "stay on that person") {
-				t.Fatalf("reply %q, want one ban lifted and none kept", reply)
+				h.t.Fatalf("reply %q, want one ban lifted and none kept", reply)
 			}
 		},
 		"human-re-add": func(h *harness) {
