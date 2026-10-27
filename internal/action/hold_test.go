@@ -60,8 +60,8 @@ func TestPauseHoldsBanUntilResume(t *testing.T) {
 	if r := status(t, k, modtest.SpammerM, store.ActBan, store.BanEverywhere); r.Status != store.Requested {
 		t.Fatalf("held ban row after [Resume]: %s", r.Status)
 	}
-	if n := k.Logged("held ban applied"); n != 1 {
-		t.Fatalf("%d log lines for the held ban, want 1", n)
+	if lines := k.LogLines("held ban applied"); len(lines) != 1 || !strings.Contains(lines[0], " bans_added=1 links_moved=0 ") {
+		t.Fatalf("log lines for the held ban %q, want one saying it added their entry", lines)
 	}
 }
 
