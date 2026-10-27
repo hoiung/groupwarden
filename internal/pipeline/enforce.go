@@ -484,28 +484,30 @@ func (e *Enforcer) ResolveBans(ctx context.Context) error {
 }
 
 // retryFailedBans looks up each ban whose WhatsApp lookup failed in the saved
-// WhatsApp IDs alone: the library saves a number's LID when it sees the pair
-// (a message's sender, a group list read), so such a ban is resolved once it
-// has, with no call to WhatsApp and no second report.
+// WhatsApp IDs alone (LIDForNumber's step 2): the library saves a number's
+// LID when it sees the pair (a message's sender, a group list read), so such
+// a ban is resolved once it has, with no call to WhatsApp and no second
+// report.
 func (e *Enforcer) retryFailedBans(ctx context.Context) error {
 	bans, err := e.Store.LIDFailedBans(ctx)
 	if err != nil {
 		return err
 	}
+	src := LIDSources{Saved: e.Adapter.SavedLID}
 	looked := map[string]bool{}
 	for _, b := range bans {
 		if looked[b.Phone] {
 			continue
 		}
 		looked[b.Phone] = true
-		lid, err := e.Adapter.SavedLID(ctx, client.JID(b.Phone))
+		lid, _, err := LIDForNumber(ctx, client.JID(b.Phone), src)
 		if err != nil {
 			return err
 		}
-		if lid.Server() != "lid" {
+		if lid == "" {
 			continue
 		}
-		if err := e.Store.ResolveBan(ctx, b.Phone, string(lid.Bare())); err != nil {
+		if err := e.Store.ResolveBan(ctx, b.Phone, string(lid)); err != nil {
 			return err
 		}
 		e.Log.Info("ban phone number resolved to a LID from the saved WhatsApp IDs after a failed lookup",
