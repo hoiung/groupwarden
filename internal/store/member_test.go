@@ -185,6 +185,15 @@ func TestOtherAddressBanListEntries(t *testing.T) {
 			func(ctx context.Context, tx *sql.Tx) error {
 				return AddBan(ctx, tx, Ban{Member: number, Scope: BanEverywhere, Phone: number, Reason: "r"}, t0)
 			}}, want: map[string]string{number: ""}},
+		// An entry that knows one address, written later, hides no pair.
+		"a-later-number-keyed-entry-hides-nothing": {writes: []func(context.Context, *sql.Tx) error{post(earlier, t0),
+			func(ctx context.Context, tx *sql.Tx) error {
+				return AddBan(ctx, tx, Ban{Member: number, Scope: BanEverywhere, Phone: number, Reason: "r"}, t1)
+			}}, want: map[string]string{number: earlier}},
+		"a-later-lid-only-entry-hides-nothing": {writes: []func(context.Context, *sql.Tx) error{post(holder, t0),
+			func(ctx context.Context, tx *sql.Tx) error {
+				return AddBan(ctx, tx, Ban{Member: holder, Scope: BanEverywhere, LID: holder, Reason: "r"}, t1)
+			}}, want: map[string]string{holder: number}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			now := t1
