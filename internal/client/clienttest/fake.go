@@ -31,7 +31,11 @@ type Fake struct {
 	OnConnect func(f *Fake)
 	// Requests are the pending join requests per group.
 	Requests map[client.JID][]client.JoinRequest
-	// LIDs maps a phone JID to its LID for ResolvePhoneToLID.
+	// Saved maps a phone JID to the LID the WhatsApp library saved for it
+	// (SavedLID, and ResolvePhoneToLID before it asks WhatsApp).
+	Saved map[client.JID]client.JID
+	// LIDs maps a phone JID to the LID WhatsApp gives for it
+	// (ResolvePhoneToLID).
 	LIDs map[client.JID]client.JID
 	// Results sets a member's outcome in Remove and RejectJoinRequests
 	// (default done).
@@ -340,6 +344,18 @@ func (f *Fake) SetDevices(d []client.JID) {
 	f.mu.Unlock()
 }
 
+// SavedLID is recorded as "SavedLID <phone>" (not a ResolvePhoneToLID call:
+// it never asks WhatsApp).
+func (f *Fake) SavedLID(_ context.Context, phone client.JID) (client.JID, error) {
+	f.record("SavedLID " + string(phone))
+	if err := f.nextErr("SavedLID"); err != nil {
+		return "", err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Saved[phone], nil
+}
+
 func (f *Fake) ResolvePhoneToLID(_ context.Context, phone client.JID) (client.JID, error) {
 	f.record("ResolvePhoneToLID " + string(phone))
 	if err := f.nextErr("ResolvePhoneToLID"); err != nil {
@@ -347,6 +363,9 @@ func (f *Fake) ResolvePhoneToLID(_ context.Context, phone client.JID) (client.JI
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if lid, ok := f.Saved[phone]; ok {
+		return lid, nil
+	}
 	if lid, ok := f.LIDs[phone]; ok {
 		return lid, nil
 	}
