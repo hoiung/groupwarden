@@ -297,18 +297,17 @@ func (d *Directory) IsAdmin(member, alt client.JID, community string, rs *rules.
 }
 
 // Identify is m by every address the bot knows: the group list's pair
-// (Complete), the other address the bot recorded beside the one it has
-// (store.OtherAddress: someone who joined since the group list was last read
-// is known there by their LID alone, as a join names no phone number), and
-// the ban list's. A lookup of a member's bans or posts starts here, so it
-// finds what the bot holds under either address. WhatsApp gives a number to
-// someone new once its holder leaves it, so a number found for a LID this way
-// is kept only when the number's own pair, the group list's, else the one the
-// bot recorded last, else the ban list's (banListHolder), is that LID (or
-// none): otherwise someone else holds it now. A number given alone takes the
-// ban list's LID the same way. tx is the transaction the caller reads in, nil
-// for none: the store has one connection, so a read beside an open
-// transaction would wait on it.
+// (Complete), else the other address the bot recorded last beside the one it
+// has (store.OtherAddress: a post, a ban row in force, a ban list entry;
+// someone who joined since the group list was last read is known there by
+// their LID alone, as a join names no phone number). A lookup of a member's
+// bans or posts starts here, so it finds what the bot holds under either
+// address. WhatsApp gives a number to someone new once its holder leaves it,
+// so a number found for a LID this way is kept only when the number's own
+// pair, the group list's or else the one the bot recorded last, is that LID
+// (or none): otherwise someone else holds it now. tx is the transaction the
+// caller reads in, nil for none: the store has one connection, so a read
+// beside an open transaction would wait on it.
 func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m client.Member) (client.Member, error) {
 	m = d.Complete(m)
 	if (m.LID == "") == (m.Phone == "") {
@@ -326,27 +325,9 @@ func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m 
 		return m, err
 	}
 	m = client.MemberOf(m.LID, m.Phone, client.JID(other))
-	var bans []store.Ban
-	if tx != nil {
-		bans, err = store.BansForIn(ctx, tx, m.IDs())
-	} else {
-		bans, err = st.BansFor(ctx, m.IDs())
-	}
-	if err != nil {
-		return m, err
-	}
-	for _, b := range bans {
-		if m.Phone == "" && b.Phone != "" {
-			m.Phone = client.JID(b.Phone)
-		}
-	}
-	if m.LID == "" {
-		// A number alone (no record gave its LID): bans are the number's.
-		m.LID = banListHolder(bans)
-	}
 	if lidOnly && m.Phone != "" {
 		// LIDForNumber's steps 1 and 4; its records step reads outside tx, so
-		// the latest record and the ban list are read here.
+		// the latest record is read here.
 		holder, _, err := LIDForNumber(ctx, m.Phone, LIDSources{Pairs: d})
 		if err != nil {
 			return m, err
@@ -357,19 +338,6 @@ func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m 
 				return m, err
 			}
 			holder = client.JID(h)
-		}
-		if holder == "" {
-			// The bans holding the number, whoever's: a read about the number.
-			var held []store.Ban
-			if tx != nil {
-				held, err = store.BansForIn(ctx, tx, []string{string(m.Phone)})
-			} else {
-				held, err = st.BansFor(ctx, []string{string(m.Phone)})
-			}
-			if err != nil {
-				return m, err
-			}
-			holder = banListHolder(held)
 		}
 		if holder.Server() == "lid" && holder.Bare() != m.LID.Bare() {
 			m.Phone = ""
@@ -426,41 +394,13 @@ func LIDForNumber(ctx context.Context, phone client.JID, src LIDSources) (lid cl
 }
 
 // RecordedPair is the address groupwarden's records pair with addr, either
-// way round ("" when none): the other address the bot recorded beside it
-// (store.OtherAddress: a post it decided or reported, a ban row while the ban
-// is in force), else the ban list's: for a number, the LID of the entry
-// holding it written last (banListHolder); for a LID, the number on its
-// entry. It takes one step from addr, never a second.
+// way round ("" when none): the other address the bot recorded last beside
+// it (store.OtherAddress: a post it decided or reported, a ban row while the
+// ban is in force, a ban list entry). It takes one step from addr, never a
+// second.
 func RecordedPair(ctx context.Context, st *store.Store, addr client.JID) (client.JID, error) {
 	other, err := st.OtherAddress(ctx, string(addr))
-	if err != nil || other != "" {
-		return client.JID(other), err
-	}
-	bans, err := st.BansFor(ctx, []string{string(addr)})
-	if err != nil || addr.Server() != "lid" {
-		return banListHolder(bans), err
-	}
-	for _, b := range bans {
-		if m := client.MemberOf(client.JID(b.LID), client.JID(b.Phone)); m.Phone != "" {
-			return m.Phone, nil
-		}
-	}
-	return "", nil
-}
-
-// banListHolder is the LID of the ban written last among bans, the ban list
-// entries of one number (BansFor of it, oldest first), "" when none has a
-// LID. WhatsApp gives a number to someone new once its holder leaves it, so
-// of two people's bans holding one number the later one names who holds it
-// now. An entry that took the number after it was written counts from when it
-// was written.
-func banListHolder(bans []store.Ban) client.JID {
-	for i := len(bans) - 1; i >= 0; i-- {
-		if bans[i].LID != "" {
-			return client.JID(bans[i].LID).Bare()
-		}
-	}
-	return ""
+	return client.JID(other), err
 }
 
 // Complete fills in the address the directory knows for a member given by
