@@ -43,8 +43,11 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
                what the admins were told ► changes reported; absent linked groups
                ► joined by the bot itself, else /enable asked for; a refused
                admin-only call ► group marked not covered at once
-               bans still keyed by a phone number ► their LID looked up first
-               (rate limited ► looked up again after the groups);
+               bans still keyed by a phone number ► their LID looked up first:
+               the group list's pair, the saved WhatsApp IDs, then WhatsApp
+               (rate limited ► looked up again after the groups; no LID ►
+               reported once, then looked for in the saved WhatsApp IDs at
+               every sweep);
                banned members present ► removed; their join requests ► rejected
 
            internal/telegram: the stored reports and alerts ► the private admin
