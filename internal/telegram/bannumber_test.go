@@ -552,6 +552,18 @@ func TestBanDeletesPosts(t *testing.T) {
 					t.Fatalf("the entry links to %+v (%v), want an admin's ban row", row, err)
 				}
 			}
+			// The admin chat's ban of someone already on the list logs the
+			// link it took from the bot's ban.
+			if c.adminBan || c.button {
+				msg := "admin ban by number"
+				if c.button {
+					msg = "admin ban"
+				}
+				lines := h.k.LogLines(msg)
+				if want := !c.pause; len(lines) != 1 || strings.Contains(lines[0], " links_moved=1 ") != want {
+					t.Fatalf("log lines %q, want one, with links_moved=1: %v", lines, want)
+				}
+			}
 			if !c.pause {
 				if bans, err := h.k.Store.BansFor(h.k.Ctx, modtest.SpammerM.IDs()); err != nil || len(bans) == 0 {
 					t.Fatalf("bans %v (%v), want the bot's own ban on the list", bans, err)
@@ -1622,6 +1634,12 @@ func TestBanRecentJoiner(t *testing.T) {
 			bans[0].Phone != string(modtest.SpammerPhone) {
 			t.Fatalf("bans %+v, want the number's ban resolved on their LID", bans)
 		}
+		// The failed lookup is a Warn that says the records' LID is used.
+		lines := h.k.LogLines("admin command by number: WhatsApp gave no LID for the number; " +
+			"using the one the bot's records pair with it")
+		if len(lines) != 1 || !strings.Contains(lines[0], " level=WARN ") {
+			t.Fatalf("log lines %q, want one at WARN", lines)
+		}
 	})
 	t.Run("unban-number-whatsapp-down-uses-record", func(t *testing.T) {
 		h := newHarness(t, "")
@@ -1671,6 +1689,23 @@ func TestBanRecentJoiner(t *testing.T) {
 			if !h.revoked(modtest.G1, "S1") ||
 				h.k.Fake.Count("Remove "+string(modtest.G1)+" "+string(modtest.Spammer)) != 1 {
 				t.Fatalf("calls %v, rows %v; want S1 deleted and them removed", h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
+			}
+			// The held ban, the bot's, applied when the pause ended: it never
+			// takes the entry's link from the admin's ban (BanEntry.Keeps).
+			if held, err := h.k.Store.HeldBan(h.k.Ctx, []string{string(modtest.Spammer)}, ""); err != nil || held {
+				t.Fatalf("held %v (%v) after the pause ended, want the held ban applied", held, err)
+			}
+			bans := h.bans()
+			if len(bans) != 1 {
+				t.Fatalf("bans %+v, want their one entry", bans)
+			}
+			if row, err := h.k.Store.Ledger(h.k.Ctx, bans[0].LedgerID); err != nil ||
+				!strings.HasPrefix(row.TriggerID, store.AdminBanTrigger) {
+				t.Fatalf("the entry links to %+v (%v), want the admin's /ban row", row, err)
+			}
+			if lines := h.k.LogLines("held ban applied"); len(lines) != 1 ||
+				!strings.Contains(lines[0], " bans_added=0 links_moved=0 ") {
+				t.Fatalf("log lines %q, want one saying the held ban added no entry and moved no link", lines)
 			}
 		})
 	}
