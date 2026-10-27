@@ -490,13 +490,13 @@ func (x *Executor) settleHeldBan(ctx context.Context) (settled bool, err error) 
 			}
 		}
 	}
-	applied, err := x.Store.ApplyHeldBan(ctx, row, scopes)
+	res, err := x.Store.ApplyHeldBan(ctx, row, scopes)
 	if err != nil {
 		return false, err
 	}
-	if applied {
+	if res.Applied {
 		x.Log.Info("held ban applied", "target", mask.IDs(row.Target), "ledger", row.ID, "scopes", scopes,
-			"config", "v"+cur.Hash)
+			"bans_added", res.BansAdded, "links_moved", res.LinksMoved, "config", "v"+cur.Hash)
 	}
 	return true, nil
 }
