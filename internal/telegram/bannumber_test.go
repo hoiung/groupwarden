@@ -172,7 +172,7 @@ func TestBanByNumber(t *testing.T) {
 		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
 		h.k.Ban(client.Member{LID: modtest.Spammer})
 		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
-		if got := h.lastReply(); !strings.HasPrefix(got, "phone…0123 is already banned everywhere, so no ban was added. "+
+		if got := h.lastReply(); !strings.HasPrefix(got, "phone…0123 is already banned everywhere, so they keep their one ban. "+
 			"Their posts on record: 1 being deleted, 0 too old to delete. The bot sweeps every group now") {
 			t.Fatalf("reply %q", got)
 		}
