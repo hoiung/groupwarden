@@ -127,4 +127,7 @@ Finding a community or group ID for `assigned`:
   number alone (in a group that lists its members by number) re-adds whoever the
   bot knows by that number now. `/unban <number>` and
   `groupwarden ban remove <phone>` name a number and lift every ban of it,
-  whoever's.
+  whoever's. The bot goes no further than that: when two people who held one
+  number at different times were both banned, the latest it recorded of the
+  number decides whose it is, and that can be out of date. After lifting either
+  of them, `groupwarden ban list` shows which ban still carries the number.
