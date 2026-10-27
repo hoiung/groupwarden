@@ -551,7 +551,8 @@ func TestNonLIDAnswerLeavesTheBanUnresolved(t *testing.T) {
 // group list, the saved WhatsApp IDs and WhatsApp, never in the bot's
 // records, which can pair the number with someone who held it before: with
 // only a record of a post pairing it with another LID and WhatsApp answering
-// that it has none, the ban stays on the number, marked failed.
+// that it has none, the ban stays on the number, marked failed, and the next
+// sweep's look in the saved IDs (retryFailedBans) leaves it there too.
 func TestResolveBansNeverReadsRecords(t *testing.T) {
 	k := modtest.New(t, "")
 	m := client.Member{Phone: "447700900321@s.whatsapp.net"}
@@ -568,14 +569,37 @@ func TestResolveBansNeverReadsRecords(t *testing.T) {
 		t.Fatalf("premise: the records pair the number with %q (%v), want %s", lid, err, modtest.Other1)
 	}
 	k.Ban(m)
-	if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if b, ok, _ := k.Store.FindBan(k.Ctx, m.IDs(), ""); !ok || b.Member != string(m.Phone) || b.LID != "" || !b.LIDFailed {
 		t.Fatalf("ban %+v, want it kept on the number and marked failed", b)
 	}
 	if k.Banned(modtest.Other1M, "") {
 		t.Fatalf("%s, whom only the records pair with the number, is banned", modtest.Other1)
+	}
+}
+
+// TestRetryStopsWhenSavedIDsUnreadable: a failed read of the saved WhatsApp
+// IDs while the sweep looks a failed ban up again ends the sweep with that
+// error; the ban stays marked failed for the next one.
+func TestRetryStopsWhenSavedIDsUnreadable(t *testing.T) {
+	k := modtest.New(t, "")
+	m := client.Member{Phone: "447700900321@s.whatsapp.net"}
+	k.Ban(m)
+	if reported, err := k.Store.MarkBanLIDFailed(k.Ctx, string(m.Phone), store.Report{Kind: ledger.KindLIDUnresolved,
+		Priority: true, Subject: string(m.Phone), Text: "not matched"}); err != nil || !reported {
+		t.Fatalf("mark failed: %v %v", reported, err)
+	}
+	cause := errors.New("read the saved LID: disk I/O error")
+	k.Fake.FailNext("SavedLID", cause)
+	if err := k.Enforcer.ResolveBans(k.Ctx); !errors.Is(err, cause) {
+		t.Fatalf("resolve: %v, want %v", err, cause)
+	}
+	if b, ok, _ := k.Store.FindBan(k.Ctx, m.IDs(), ""); !ok || b.LID != "" || !b.LIDFailed {
+		t.Fatalf("ban %+v, want it still on the number, marked failed", b)
 	}
 }
 
