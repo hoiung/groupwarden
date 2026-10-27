@@ -21,10 +21,12 @@ type Forgotten struct {
 // OtherAddress returns the member's other address as the bot last recorded
 // it beside addr (their phone JID for a LID, their LID for a phone JID; ""
 // when it has none): the sender and sender_alt of a post it decided (seen)
-// or reported (evidence), or the target of a ban row and the phone it keeps.
-// The group list pairs the two only for the members it lists: someone who
-// joined since it was last read is known by their LID alone, as a join names
-// no phone number.
+// or reported (evidence), or the target of a ban row and the phone it keeps
+// while that ban is in force (its ban list entry links the row, or a pause
+// holds it). A lifted or undone ban's row pairs nothing: the number may have
+// passed to someone else since. The group list pairs the two only for the
+// members it lists: someone who joined since it was last read is known by
+// their LID alone, as a join names no phone number.
 func (s *Store) OtherAddress(ctx context.Context, addr string) (string, error) {
 	return OtherAddressIn(ctx, s.db, addr)
 }
@@ -32,6 +34,21 @@ func (s *Store) OtherAddress(ctx context.Context, addr string) (string, error) {
 // OtherAddressIn is OtherAddress read through q: a caller inside a
 // transaction reads through it, as the store has one connection.
 func OtherAddressIn(ctx context.Context, q queryer, addr string) (string, error) {
+	return otherAddress(ctx, q, addr, banInForce)
+}
+
+// OtherAddressEver is OtherAddress over every ban row of addr, a lifted or
+// undone ban's too: `member show|forget` reach everything recorded of the
+// person, as they did before a lift.
+func (s *Store) OtherAddressEver(ctx context.Context, addr string) (string, error) {
+	return otherAddress(ctx, s.db, addr, "true")
+}
+
+// banInForce selects the ban rows whose ban is in force: linked from a ban
+// list entry, or held by a pause.
+const banInForce = `(EXISTS (SELECT 1 FROM bans WHERE bans.ledger_id = ledger.id) OR ` + heldBan + `)`
+
+func otherAddress(ctx context.Context, q queryer, addr, banRows string) (string, error) {
 	if addr == "" {
 		return "", nil
 	}
@@ -42,7 +59,8 @@ func OtherAddressIn(ctx context.Context, q queryer, addr string) (string, error)
 	UNION ALL SELECT sender_alt, created_at FROM evidence WHERE sender = ?1 AND sender_alt != ''
 	UNION ALL SELECT sender, created_at FROM evidence WHERE sender_alt = ?1
 	UNION ALL SELECT address, created_at FROM ledger WHERE action = 'ban' AND target = ?1 AND address NOT IN ('', ?1)
-	UNION ALL SELECT target, created_at FROM ledger WHERE action = 'ban' AND address = ?1 AND target != ?1)
+		AND `+banRows+`
+	UNION ALL SELECT target, created_at FROM ledger WHERE action = 'ban' AND address = ?1 AND target != ?1 AND `+banRows+`)
 ORDER BY at DESC LIMIT 1`, addr).Scan(&other)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
