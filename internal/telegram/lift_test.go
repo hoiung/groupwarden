@@ -152,15 +152,19 @@ func TestLiftOfAnEarlierHolderKeepsTheHoldersBan(t *testing.T) {
 	}
 }
 
-// TestLiftWhenOnlyTheBanListPairsTheNumber (#8 Ralph): someone who held a
-// number before and its holder now are both banned with it, and neither the
-// group list nor any record pairs it. Of the two bans the one written last
-// names who holds the number now (pipeline.Identify), so a lift of either by
-// LID ([Undo], an admin re-adding them by hand) lifts their ban alone, a lift
-// of the holder takes the number off the earlier one's ban, and an admin
-// re-adding the number alone re-adds its holder. The re-add's log line and
-// [Undo]'s reply count the kept ban.
-func TestLiftWhenOnlyTheBanListPairsTheNumber(t *testing.T) {
+// TestLiftOfTwoHoldersOfANumber (#8 Ralph): someone who held a number before
+// and its holder now are both banned with it, and the group list does not
+// pair it. The holder's ban was written later, with no other record pairing
+// them (a ban by the number names the number alone); the earlier one's ban
+// is either on the list alone too, or the bot's own ban of a post that
+// carried both addresses, whose row in force pairs the number with them. The
+// record of the number made last, the holder's ban list entry, names who
+// holds it now (store.OtherAddress through pipeline.Identify), so a lift of
+// either by LID ([Undo], an admin re-adding them by hand) lifts their ban
+// alone, a lift of the holder takes the number off the earlier one's ban, and
+// an admin re-adding the number alone re-adds its holder. The re-add's log
+// line and [Undo]'s reply count the kept ban.
+func TestLiftOfTwoHoldersOfANumber(t *testing.T) {
 	const free = client.JID("447700900321@s.whatsapp.net") // nobody in the group list holds it
 	earlier, holder := modtest.Other1, modtest.Other2
 	undo := func(who client.JID) func(h *harness) {
@@ -192,44 +196,53 @@ func TestLiftWhenOnlyTheBanListPairsTheNumber(t *testing.T) {
 		"re-add-holder": {lift: reAdd(holder), lifted: holder, kept: earlier, logCounted: " bans_lifted=1 bans_kept=1"},
 		"re-add-number": {lift: reAdd(free), lifted: holder, kept: earlier, logCounted: " bans_lifted=1 bans_kept=1"},
 	} {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, "")
-			if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
-				for i, lid := range []client.JID{earlier, holder} {
-					if err := store.AddBan(h.k.Ctx, tx, store.Ban{Member: string(lid), Scope: store.BanEverywhere,
-						LID: string(lid), Phone: string(free), Reason: "number ban"},
-						h.k.Clock.Now().Add(time.Duration(i-2)*time.Hour)); err != nil {
-						return err
+		for _, setup := range []string{"both-on-the-list", "earlier-banned-by-the-bot"} {
+			t.Run(setup+"/"+name, func(t *testing.T) {
+				h := newHarness(t, "")
+				listed := []client.JID{earlier, holder}
+				if setup == "earlier-banned-by-the-bot" {
+					h.k.Ban(client.Member{LID: earlier, Phone: free})
+					h.k.Clock.Advance(time.Minute)
+					listed = listed[1:]
+				}
+				if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
+					for i, lid := range listed {
+						if err := store.AddBan(h.k.Ctx, tx, store.Ban{Member: string(lid), Scope: store.BanEverywhere,
+							LID: string(lid), Phone: string(free), Reason: "number ban"},
+							h.k.Clock.Now().Add(time.Duration(i)*time.Minute)); err != nil {
+							return err
+						}
+					}
+					return nil
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if other, err := h.k.Store.OtherAddress(h.k.Ctx, string(free)); err != nil || other != string(holder) {
+					t.Fatalf("the number's latest record names %q (%v), want the holder %s", other, err, holder)
+				}
+				h.k.Clock.Advance(time.Minute)
+				c.lift(h)
+				if h.k.Banned(client.Member{LID: c.lifted}, "") {
+					t.Fatalf("%s is still banned; bans %+v", c.lifted, h.bans())
+				}
+				b, banned, err := h.k.Store.FindBan(h.k.Ctx, []string{string(c.kept)}, "")
+				if err != nil || !banned || b.Member != string(c.kept) || b.Phone != string(c.keptPhone) {
+					t.Fatalf("%s's ban %+v, banned %v (%v); want it kept with phone %q", c.kept, b, banned, err, c.keptPhone)
+				}
+				if c.reply != "" {
+					if reply := h.lastReply(); !strings.Contains(reply, c.reply) ||
+						c.keptPhone != "" && strings.Contains(reply, "stay on that person") {
+						t.Fatalf("reply %q, want it to contain %q", reply, c.reply)
 					}
 				}
-				return nil
-			}); err != nil {
-				t.Fatal(err)
-			}
-			if other, err := h.k.Store.OtherAddress(h.k.Ctx, string(free)); err != nil || other != "" {
-				t.Fatalf("premise: a record pairs the number with %q (%v)", other, err)
-			}
-			c.lift(h)
-			if h.k.Banned(client.Member{LID: c.lifted}, "") {
-				t.Fatalf("%s is still banned; bans %+v", c.lifted, h.bans())
-			}
-			b, banned, err := h.k.Store.FindBan(h.k.Ctx, []string{string(c.kept)}, "")
-			if err != nil || !banned || b.Member != string(c.kept) || b.Phone != string(c.keptPhone) {
-				t.Fatalf("%s's ban %+v, banned %v (%v); want it kept with phone %q", c.kept, b, banned, err, c.keptPhone)
-			}
-			if c.reply != "" {
-				if reply := h.lastReply(); !strings.Contains(reply, c.reply) ||
-					c.keptPhone != "" && strings.Contains(reply, "stay on that person") {
-					t.Fatalf("reply %q, want it to contain %q", reply, c.reply)
+				if c.logCounted != "" {
+					if lines := h.k.LogLines("ban lifted: a human admin re-added a banned member"); len(lines) != 1 ||
+						!strings.Contains(lines[0], c.logCounted) {
+						t.Fatalf("lift log lines %q, want one with %q", lines, c.logCounted)
+					}
 				}
-			}
-			if c.logCounted != "" {
-				if lines := h.k.LogLines("ban lifted: a human admin re-added a banned member"); len(lines) != 1 ||
-					!strings.Contains(lines[0], c.logCounted) {
-					t.Fatalf("lift log lines %q, want one with %q", lines, c.logCounted)
-				}
-			}
-		})
+			})
+		}
 	}
 }
 
