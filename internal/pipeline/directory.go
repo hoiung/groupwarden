@@ -336,7 +336,9 @@ func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m 
 			m.Phone = client.JID(b.Phone)
 		}
 	}
-	return d.Complete(m), nil
+	// No second Complete: the member only gained addresses since the first,
+	// and Complete only fills a missing one from the same group list.
+	return m, nil
 }
 
 // Complete fills in the address the directory knows for a member given by
