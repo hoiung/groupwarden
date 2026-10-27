@@ -209,7 +209,9 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 			fmt.Fprintf(e.stdout, "%s is not banned%s\n", m.Key(), in)
 			return exitFail
 		}
-		p.Lift, p.LiftIn, p.Reason = true, community, "removed with the ban command"
+		// By a phone number, every ban of the number goes; by a LID, a ban of
+		// someone who held their number before stays on that LID (Plan.Lift).
+		p.Lift, p.LiftIn, p.LiftByNumber, p.Reason = true, community, m.LID == "", "removed with the ban command"
 		p.Reports = []store.Report{{Kind: ledger.KindBanCLI, Community: scope, Text: "A ban was lifted with the ban command."}}
 	default:
 		fmt.Fprintln(e.stderr, "usage: groupwarden ban add|remove|list [<lid|phone>]")
@@ -244,8 +246,9 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 	return exitOK
 }
 
-// banMember is m with the address paired with the one given (pair), as
-// /unban <number> finds them.
+// banMember is m with the address paired with the one given (pair: the
+// saved WhatsApp IDs, then groupwarden's records; the command line has no
+// group list and does not ask WhatsApp).
 func (e *env) banMember(ctx context.Context, st *store.Store, cfg *config.Config, m client.Member) (client.Member, error) {
 	session, err := openSession(ctx, cfg, e.now)
 	if err != nil {
