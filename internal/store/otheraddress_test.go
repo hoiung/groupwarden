@@ -109,10 +109,27 @@ func BenchmarkOtherAddress(b *testing.B) {
 // check that a ban row's ban is in force included, searches an index: no
 // line of its query plan scans seen, evidence, ledger or bans.
 func TestOtherAddressUsesIndexes(t *testing.T) {
+	// Two reads each of seen, evidence and ledger, and the ban list under
+	// each ledger read.
+	searchesOnly(t, map[string]int{"seen": 2, "evidence": 2, "ledger": 2, "bans": 2},
+		otherAddressQuery(banInForce), "99999000000555@lid")
+}
+
+// TestBanEntryInUsesIndexes: each read of BanEntryIn, which every ban written
+// runs, searches an index of the ban list.
+func TestBanEntryInUsesIndexes(t *testing.T) {
+	searchesOnly(t, map[string]int{"bans": 4}, banEntryQuery,
+		"99999000000555@lid", "447700900123@s.whatsapp.net", BanEverywhere)
+}
+
+// searchesOnly checks query's plan: every line naming seen, evidence, ledger
+// or bans searches an index, and want counts the reads of each.
+func searchesOnly(t *testing.T, want map[string]int, query string, args ...any) {
+	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	s := openAt(t, &now)
-	rows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN `+otherAddressQuery(banInForce), "99999000000555@lid")
+	rows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN `+query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,9 +155,7 @@ func TestOtherAddressUsesIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan:\n%s", strings.Join(plan, "\n"))
-	// Two reads each of seen, evidence and ledger, and the ban list under
-	// each ledger read.
-	if want := map[string]int{"seen": 2, "evidence": 2, "ledger": 2, "bans": 2}; fmt.Sprint(read) != fmt.Sprint(want) {
+	if fmt.Sprint(read) != fmt.Sprint(want) {
 		t.Errorf("reads per table %v, want %v", read, want)
 	}
 }
