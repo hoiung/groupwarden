@@ -131,6 +131,9 @@ func TestResolveBanKeepsAdminLink(t *testing.T) {
 		"both-admin":                        {lidSide: chat, numberSide: cli, want: chat},
 		"both-bot":                          {lidSide: bot, numberSide: "M9", want: bot},
 		"number-side-admin-lid-side-purged": {lidSide: purged, numberSide: cli, want: cli},
+		// A link to no row always gives way, as BanEntry.Keeps says.
+		"lid-side-purged-number-side-bot": {lidSide: purged, numberSide: "M9", want: "M9"},
+		"lid-side-bot-number-side-purged": {lidSide: bot, numberSide: purged, want: bot},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := merge(t, c.lidSide, c.numberSide); got != c.want {
