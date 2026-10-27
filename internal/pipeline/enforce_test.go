@@ -427,6 +427,29 @@ func TestBanKeyIsLID(t *testing.T) {
 	}
 }
 
+// TestBotBanOnPurgedLinkLogged: the bot's own ban of someone whose ban list
+// entry links a row purged since keeps that one entry, moves its link to the
+// new ban row, and says so in a log line.
+func TestBotBanOnPurgedLinkLogged(t *testing.T) {
+	k := modtest.New(t, "")
+	k.Deliver(k.Spam("M1", modtest.G1))
+	if n, err := k.Store.PurgeLedger(k.Ctx, k.Clock.Now().Add(time.Second)); err != nil || n == 0 {
+		t.Fatalf("purged %d (%v), want the bot's ban row gone", n, err)
+	}
+	k.Deliver(k.Spam("M2", modtest.G1))
+	lines := k.LogLines("ban list entry kept; its link moved to this ban's row")
+	if len(lines) != 1 || !strings.Contains(lines[0], " links_moved=1") {
+		t.Fatalf("log lines %q, want one saying the entry's link moved", lines)
+	}
+	bans, err := k.Store.BansFor(k.Ctx, modtest.SpammerM.IDs())
+	if err != nil || len(bans) != 1 {
+		t.Fatalf("bans %+v (%v), want their one entry", bans, err)
+	}
+	if row, err := k.Store.Ledger(k.Ctx, bans[0].LedgerID); err != nil || row.TriggerID != "M2" {
+		t.Fatalf("the entry links %+v (%v), want the ban row of M2", row, err)
+	}
+}
+
 // TestPhoneToLIDFailureReported: a ban known only by phone number is
 // resolved to a LID; when that fails the phone key stays and the admins get
 // a priority report saying the bot keeps looking in the saved WhatsApp IDs.
@@ -521,6 +544,62 @@ func TestNonLIDAnswerLeavesTheBanUnresolved(t *testing.T) {
 	}
 	if reps := k.Reports(ledger.KindLIDUnresolved); len(reps) != 1 || !reps[0].Priority {
 		t.Fatalf("reports %+v, want one priority report", reps)
+	}
+}
+
+// TestResolveBansNeverReadsRecords: the sweep looks a ban's number up in the
+// group list, the saved WhatsApp IDs and WhatsApp, never in the bot's
+// records, which can pair the number with someone who held it before: with
+// only a record of a post pairing it with another LID and WhatsApp answering
+// that it has none, the ban stays on the number, marked failed.
+func TestResolveBansNeverReadsRecords(t *testing.T) {
+	k := modtest.New(t, "")
+	m := client.Member{Phone: "447700900321@s.whatsapp.net"}
+	at := k.Clock.Now()
+	if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
+		_, err := store.InsertEvidence(k.Ctx, tx, store.Evidence{Chat: string(modtest.G1), Community: string(modtest.Community),
+			Sender: string(modtest.Other1), SenderAlt: string(m.Phone), Subject: string(modtest.Other1), MsgID: "R1",
+			TargetID: "R1", MsgTime: at, Fields: "{}", Normalised: "{}"}, at)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if lid, err := pipeline.RecordedPair(k.Ctx, k.Store, m.Phone); err != nil || lid != modtest.Other1 {
+		t.Fatalf("premise: the records pair the number with %q (%v), want %s", lid, err, modtest.Other1)
+	}
+	k.Ban(m)
+	if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
+		t.Fatal(err)
+	}
+	if b, ok, _ := k.Store.FindBan(k.Ctx, m.IDs(), ""); !ok || b.Member != string(m.Phone) || b.LID != "" || !b.LIDFailed {
+		t.Fatalf("ban %+v, want it kept on the number and marked failed", b)
+	}
+	if k.Banned(modtest.Other1M, "") {
+		t.Fatalf("%s, whom only the records pair with the number, is banned", modtest.Other1)
+	}
+}
+
+// TestBanLookupStopsWhenSavedIDsUnreadable: a failed read of the saved
+// WhatsApp IDs ends the sweep's lookup with that error, before WhatsApp is
+// asked: the ban is neither marked failed nor reported, and the next sweep
+// looks it up.
+func TestBanLookupStopsWhenSavedIDsUnreadable(t *testing.T) {
+	k := modtest.New(t, "")
+	m := client.Member{Phone: "447700900321@s.whatsapp.net"}
+	k.Ban(m)
+	cause := errors.New("read the saved LID: disk I/O error")
+	k.Fake.FailNext("SavedLID", cause)
+	if err := k.Enforcer.ResolveBans(k.Ctx); !errors.Is(err, cause) {
+		t.Fatalf("resolve: %v, want %v", err, cause)
+	}
+	if n := k.Fake.Count("ResolvePhoneToLID"); n != 0 {
+		t.Fatalf("%d WhatsApp lookups, want none after the saved IDs could not be read", n)
+	}
+	if b, ok, _ := k.Store.FindBan(k.Ctx, m.IDs(), ""); !ok || b.LIDFailed {
+		t.Fatalf("ban %+v, want it still to be looked up", b)
+	}
+	if n := len(k.Reports(ledger.KindLIDUnresolved)); n != 0 {
+		t.Fatalf("%d unresolved reports", n)
 	}
 }
 
