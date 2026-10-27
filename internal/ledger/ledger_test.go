@@ -216,19 +216,7 @@ func TestBanRowWithRemoveIntent(t *testing.T) {
 // there is settled, as an added ban settles it.
 func TestWriteAdminBanOnBotBan(t *testing.T) {
 	k := modtest.New(t, "")
-	write := func(p ledger.Plan) ledger.Written {
-		t.Helper()
-		p.ConfigHash, p.BanCommunity = k.Holder.Current().Hash, store.BanEverywhere
-		p.Ban, p.BanEnforce = []string{store.BanEverywhere}, true
-		var w ledger.Written
-		if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) (err error) {
-			w, err = ledger.Write(k.Ctx, tx, p, k.Clock.Now())
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return w
-	}
+	write := func(p ledger.Plan) ledger.Written { t.Helper(); return writeBan(t, k, p) }
 	if w := write(ledger.Plan{Trigger: "M1", Target: client.Member{LID: modtest.Spammer}, Reason: "spam post"}); w.BansAdded != 1 {
 		t.Fatalf("the bot's ban: %+v, want one entry added", w)
 	}
@@ -259,6 +247,71 @@ func TestWriteAdminBanOnBotBan(t *testing.T) {
 	if row, err := k.Store.Ledger(k.Ctx, held); err != nil || row.Status != store.Requested {
 		t.Fatalf("held ban %+v (%v), want it settled", row, err)
 	}
+}
+
+// writeBan writes p as a ban everywhere, applied at once.
+func writeBan(t *testing.T, k *modtest.Kit, p ledger.Plan) ledger.Written {
+	t.Helper()
+	p.ConfigHash, p.BanCommunity = k.Holder.Current().Hash, store.BanEverywhere
+	p.Ban, p.BanEnforce = []string{store.BanEverywhere}, true
+	var w ledger.Written
+	if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) (err error) {
+		w, err = ledger.Write(k.Ctx, tx, p, k.Clock.Now())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// TestWriteOnAnEntryAlreadyThere: a ban of someone whose entry links an
+// admin's row reuses that row and only fills in the address the entry lacks
+// (Design item 2); and a plan whose only new row is a ban row an entry moved
+// its link to (the entry's row was purged) keeps its evidence copy, which
+// that row names, though it writes no report.
+func TestWriteOnAnEntryAlreadyThere(t *testing.T) {
+	t.Run("admin-link-kept-number-filled", func(t *testing.T) {
+		k := modtest.New(t, "")
+		first := writeBan(t, k, ledger.Plan{Trigger: store.AdminTrigger + "1:ban", Target: client.Member{LID: modtest.Spammer},
+			Reason: "banned in the admin chat"})
+		w := writeBan(t, k, ledger.Plan{Trigger: store.CLITrigger + "1", Target: modtest.SpammerM, Actor: "cli",
+			Reason: "added with the ban command"})
+		if w.BansAdded != 0 || w.LinksMoved != 0 || w.New != 0 {
+			t.Fatalf("written %+v, want the admin's row reused: nothing added, moved or new", w)
+		}
+		bans, err := k.Store.Bans(k.Ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(bans) != 1 || bans[0].LedgerID != first.LedgerIDs[0] || bans[0].Phone != string(modtest.SpammerPhone) {
+			t.Fatalf("bans %+v, want one entry still linked to the admin's row %d, its number filled in", bans,
+				first.LedgerIDs[0])
+		}
+	})
+	t.Run("moved-link-keeps-evidence", func(t *testing.T) {
+		k := modtest.New(t, "")
+		first := writeBan(t, k, ledger.Plan{Trigger: "M1", Target: modtest.SpammerM, Reason: "spam post"})
+		if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(k.Ctx, `DELETE FROM ledger WHERE id = ?`, first.LedgerIDs[0])
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		at := k.Clock.Now()
+		w := writeBan(t, k, ledger.Plan{Trigger: "M2", Target: modtest.SpammerM, Reason: "spam post",
+			Evidence: &store.Evidence{Chat: string(modtest.G1), Community: string(modtest.Community), Sender: string(modtest.Spammer),
+				MsgID: "M2", TargetID: "M2", MsgTime: at, Fields: "{}", Normalised: "{}"},
+			Reports: []store.Report{{Kind: ledger.KindLog, Community: string(modtest.Community), Text: "spam post"}}})
+		if w.BansAdded != 0 || w.LinksMoved != 1 || w.New != 1 || len(w.ReportIDs) != 0 || w.EvidenceID == 0 {
+			t.Fatalf("written %+v, want one link moved to the one new row, no report, the copy kept", w)
+		}
+		if _, ok, err := k.Store.Evidence(k.Ctx, w.EvidenceID); err != nil || !ok {
+			t.Fatalf("evidence %d: %v (%v), want it kept", w.EvidenceID, ok, err)
+		}
+		if row, err := k.Store.Ledger(k.Ctx, w.LedgerIDs[0]); err != nil || row.EvidenceID != w.EvidenceID {
+			t.Fatalf("ban row %+v (%v), want it to name evidence %d", row, err, w.EvidenceID)
+		}
+	})
 }
 
 // TestLiftInOneCommunity: a lift narrowed to one community removes only the
