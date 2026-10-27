@@ -67,11 +67,11 @@ func TestLIDForNumber(t *testing.T) {
 // TestIdentifyKeepsANumberItsHolderHoldsNow (#8 Gate 1): WhatsApp gives a
 // number to someone new once its holder leaves it. A number Identify finds
 // for a LID in the bot's records or on the ban list is kept only when the
-// number's own pair, the group list's, else the one recorded last, else the
-// ban list's (of the bans holding it, the one written last), is that LID or
-// none; a number given alone takes the ban list's LID the same way, and so
-// does the records' step of LIDForNumber (RecordedPair). Read with and
-// without a transaction.
+// number's own pair, the group list's or else the one recorded last (a post,
+// a ban row, a ban list entry: one time-ordered read), is that LID or none; a
+// number given alone takes the LID recorded last the same way, and so does
+// the records' step of LIDForNumber (RecordedPair). Read with and without a
+// transaction.
 func TestIdentifyKeepsANumberItsHolderHoldsNow(t *testing.T) {
 	const free = client.JID("447700900321@s.whatsapp.net") // nobody in the group list holds it
 	type post struct{ lid, phone client.JID }
@@ -79,9 +79,10 @@ func TestIdentifyKeepsANumberItsHolderHoldsNow(t *testing.T) {
 		return store.Ban{Member: string(lid), Scope: store.BanEverywhere, LID: string(lid), Phone: string(phone)}
 	}
 	for name, c := range map[string]struct {
-		posts []post      // in the order they were recorded
-		bans  []store.Ban // ban list entries with no ledger row, in the order they were written
-		want  map[client.JID]client.Member
+		posts  []post        // in the order they were recorded, a minute apart from postAt
+		postAt time.Duration // after the clock's start
+		bans   []store.Ban   // ban list entries with no ledger row, a minute apart from the start
+		want   map[client.JID]client.Member
 		// recordsSay is LIDForNumber(free) through the records alone, when set
 		recordsSay client.JID
 	}{
@@ -107,8 +108,12 @@ func TestIdentifyKeepsANumberItsHolderHoldsNow(t *testing.T) {
 			want: map[client.JID]client.Member{modtest.Other2: {LID: modtest.Other2},
 				modtest.Other1: {LID: modtest.Other1, Phone: free}, free: {LID: modtest.Other1, Phone: free}},
 			recordsSay: modtest.Other1},
-		// A record of the number decides before the ban list does.
-		"record-beats-the-ban-list": {posts: []post{{modtest.Other1, free}},
+		// A post and a ban are records alike: the later one decides.
+		"a-later-ban-beats-an-older-post": {posts: []post{{modtest.Other1, free}},
+			bans: []store.Ban{ban(modtest.Other1, free), ban(modtest.Other2, free)},
+			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1},
+				modtest.Other2: {LID: modtest.Other2, Phone: free}}, recordsSay: modtest.Other2},
+		"a-later-post-beats-an-older-ban": {posts: []post{{modtest.Other1, free}}, postAt: 10 * time.Minute,
 			bans: []store.Ban{ban(modtest.Other1, free), ban(modtest.Other2, free)},
 			want: map[client.JID]client.Member{modtest.Other1: {LID: modtest.Other1, Phone: free},
 				modtest.Other2: {LID: modtest.Other2}}, recordsSay: modtest.Other1},
@@ -117,7 +122,7 @@ func TestIdentifyKeepsANumberItsHolderHoldsNow(t *testing.T) {
 			k := modtest.New(t, "")
 			if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
 				for i, p := range c.posts {
-					at := k.Clock.Now().Add(time.Duration(i) * time.Minute)
+					at := k.Clock.Now().Add(c.postAt + time.Duration(i)*time.Minute)
 					id := "P" + strconv.Itoa(i)
 					if _, err := store.InsertEvidence(k.Ctx, tx, store.Evidence{Chat: string(modtest.G1),
 						Community: string(modtest.Community), Sender: string(p.lid), SenderAlt: string(p.phone),
