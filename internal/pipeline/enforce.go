@@ -144,8 +144,6 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 		p := ledger.Plan{Trigger: trigger, Target: m, ConfigHash: cur.Hash, Actor: actor}
 		switch {
 		case humanAdmin && actor != j.Bare() && client.JID(m.Key()) != actor:
-			e.Log.Info("ban lifted: a human admin re-added a banned member", "community", mask.IDs(community),
-				"group", mask.IDs(string(ch.Group)), "member", mask.IDs(m.Key()), "actor", mask.IDs(string(actor)))
 			p.Lift, p.LiftIn, p.BanCommunity, p.Reason = true, community, community, "ban lifted by human re-add"
 			p.Reports = []store.Report{{Kind: ledger.KindBanLifted, Community: community, Text: fmt.Sprintf(
 				"A human admin re-added a banned member to a group in %s: the ban is lifted (their next spam post is deleted, removed and banned again).",
@@ -174,8 +172,16 @@ func (e *Enforcer) OnGroupChange(ctx context.Context, tx *sql.Tx, ch *client.Gro
 				"enforce", enforced(rs, community))
 			p.Reports = []store.Report{rep}
 		}
-		if _, err := ledger.Write(ctx, tx, p, now); err != nil {
+		w, err := ledger.Write(ctx, tx, p, now)
+		if err != nil {
 			return err
+		}
+		if p.Lift {
+			// bans_kept: bans of someone who had the number before, kept on
+			// them without it (ledger.Written.NumbersReleased).
+			e.Log.Info("ban lifted: a human admin re-added a banned member", "community", mask.IDs(community),
+				"group", mask.IDs(string(ch.Group)), "member", mask.IDs(m.Key()), "actor", mask.IDs(string(actor)),
+				"bans_lifted", w.BansLifted, "bans_kept", w.NumbersReleased)
 		}
 	}
 	if humanAdmin {
