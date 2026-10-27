@@ -100,8 +100,11 @@ func (e *env) ledgerSummary(ctx context.Context, cfg *config.Config) int {
 	return exitOK
 }
 
-// ban is `ban add|remove|list`. A phone number given to `ban add` is stored
-// as the ban key until the running bot resolves it to a LID at its next sweep.
+// ban is `ban add|remove|list`. `ban add` writes the ban on the member's
+// LID, with their number, when the WhatsApp session store's saved IDs or
+// groupwarden's records pair the address given with the other (banMember);
+// a phone number neither pairs is the ban key until the running bot's next
+// sweep looks up its LID.
 func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []string, community string) int {
 	cfg := l.Config
 	st, err := e.openStore(ctx, cfg)
@@ -177,20 +180,22 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 	if community != "" {
 		in = " in " + community
 	}
-	p := ledger.Plan{Trigger: store.CLITrigger + strconv.FormatInt(e.now().UnixMilli(), 10), Target: m, ConfigHash: l.Hash,
+	// By the address given and its pair (banMember): a ban is added on their
+	// LID with the number, as the sweep would resolve it, and a ban that names
+	// them by the address not given (by LID alone, for someone who joined
+	// since the group list was last read) is found by the number too.
+	who, err := e.banMember(ctx, st, cfg, m)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
+		return exitFail
+	}
+	p := ledger.Plan{Trigger: store.CLITrigger + strconv.FormatInt(e.now().UnixMilli(), 10), Target: who, ConfigHash: l.Hash,
 		Actor: "cli", BanCommunity: scope}
 	switch sub {
 	case "add":
 		p.Ban, p.BanEnforce, p.Reason = []string{scope}, true, "added with the ban command"
 		p.Reports = []store.Report{{Kind: ledger.KindBanCLI, Community: scope, Text: "A ban was added with the ban command."}}
 	case "remove":
-		// By the address given and its pair (banMember): a ban that names them
-		// by the address not given (by LID alone, for someone who joined since
-		// the group list was last read) is found by the number too.
-		if p.Target, err = e.banMember(ctx, st, cfg, m); err != nil {
-			fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
-			return exitFail
-		}
 		// A ban a pause holds is lifted too (it would apply once the pause ends).
 		_, banned, err := st.FindBan(ctx, p.Target.IDs(), community)
 		if err == nil && !banned {
@@ -210,16 +215,27 @@ func (e *env) ban(ctx context.Context, l *config.Loaded, sub string, args []stri
 		fmt.Fprintln(e.stderr, "usage: groupwarden ban add|remove|list [<lid|phone>]")
 		return exitUsage
 	}
+	var w ledger.Written
 	if err := st.Write(ctx, func(tx *sql.Tx) error {
-		_, err := ledger.Write(ctx, tx, p, e.now())
-		return err
+		if w, err = ledger.Write(ctx, tx, p, e.now()); err != nil || sub != "add" || who.LID == "" || who.Phone == "" {
+			return err
+		}
+		// A ban of the number already on the list (an earlier `ban add` that
+		// found no LID) is merged into this one, as the sweep would merge it.
+		return store.ResolveBanIn(ctx, tx, string(who.Phone), string(who.LID))
 	}); err != nil {
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
 		return exitFail
 	}
 	if sub == "add" {
-		fmt.Fprintf(e.stdout, "banned %s (scope %s)\n", m.Key(), scope)
-		if m.LID == "" {
+		// Someone already on the list keeps their one entry; an admin's ban
+		// of someone the bot banned is recorded on it (ledger.Written).
+		if w.BansAdded == 0 {
+			fmt.Fprintf(e.stdout, "already banned %s (scope %s)\n", who.Key(), scope)
+			return exitOK
+		}
+		fmt.Fprintf(e.stdout, "banned %s (scope %s)\n", who.Key(), scope)
+		if who.LID == "" {
 			fmt.Fprintln(e.stdout, "the running bot looks up this number's LID at its next sweep")
 		}
 		return exitOK
