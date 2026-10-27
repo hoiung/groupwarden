@@ -87,10 +87,11 @@ type Plan struct {
 	// Ban adds the target to the ban list in each scope (store.BanEverywhere
 	// or a community) with a ban row in the ledger; BanEnforce false records
 	// shadow ban rows only. BanCommunity is the community those rows count
-	// towards. Someone already on the list there keeps their one entry: an
-	// admin's ban (store.AdminOrdered) of someone the bot banned writes its
-	// own ban row and the entry's link moves to it (store.PutBan); any other
-	// ban reuses the row the entry links to.
+	// towards. Someone already on the list there keeps their one entry: a
+	// ban reuses the row the entry links to when the entry keeps its link
+	// (store.BanEntry.Keeps); otherwise (an admin's ban, store.AdminOrdered,
+	// of someone the bot banned, or an entry whose row was purged since) it
+	// writes its own ban row and the entry's link moves to it (store.PutBan).
 	Ban          []string
 	BanEnforce   bool
 	BanCommunity string
@@ -104,9 +105,14 @@ type Plan struct {
 	// admin unbanned them) with an unban row in the ledger. LiftIn narrows it
 	// to the bans covering one community (its own and an everywhere ban, as
 	// store.FindBan matches them), which the unban row names; "" lifts every
-	// ban.
-	Lift   bool
-	LiftIn string
+	// ban. A lift names the target as a person: a ban of another LID that
+	// holds their number (someone who held it before) stays on that LID and
+	// only loses the number (store.ReleaseNumbers). LiftByNumber: it names a
+	// phone number instead (/unban <number>, `ban remove <phone>`), and every
+	// ban holding the number is lifted, whoever's.
+	Lift         bool
+	LiftIn       string
+	LiftByNumber bool
 	// Episode: a sweep retry of the same action on the same target in the same
 	// chat and mode reuses the open row (one row and one report per episode).
 	Episode  bool
@@ -345,6 +351,11 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 		r.Status = store.Requested
 		if _, err := add(r); err != nil {
 			return w, err
+		}
+		if lid := string(p.Target.LID); lid != "" && !p.LiftByNumber {
+			if err := store.ReleaseNumbers(ctx, tx, p.Target.IDs(), lid, p.LiftIn, now); err != nil {
+				return w, err
+			}
 		}
 		if _, err := store.RemoveBans(ctx, tx, p.Target.IDs(), p.LiftIn); err != nil {
 			return w, err
