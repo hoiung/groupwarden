@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -583,7 +582,7 @@ func (x *Executor) adminBanned(ctx context.Context, row store.LedgerRow, member 
 		if err != nil {
 			return false, err
 		}
-		if strings.HasPrefix(r.TriggerID, store.AdminTrigger) || strings.HasPrefix(r.TriggerID, store.CLITrigger) {
+		if store.AdminOrdered(r.TriggerID) {
 			return true, nil
 		}
 	}
