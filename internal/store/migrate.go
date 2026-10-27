@@ -252,6 +252,20 @@ ALTER TABLE seen ADD COLUMN sender_alt TEXT NOT NULL DEFAULT '';
 CREATE INDEX seen_sender ON seen (sender) WHERE sender != '';
 CREATE INDEX ledger_revoke_msg ON ledger (chat, msg_id) WHERE action = 'revoke';
 `,
+	// 13: an index for every read of the other-address lookup
+	// (OtherAddressIn), which runs for a post whose sender the group list does
+	// not pair and for each such member at every sweep: a member's other
+	// address on the posts decided and reported, the ban rows naming their
+	// phone number, and the ban list entries linking a ban row (whether its
+	// ban is in force). Partial, as seen_sender is, where rows without the
+	// address are common.
+	`
+CREATE INDEX seen_sender_alt ON seen (sender_alt) WHERE sender_alt != '';
+CREATE INDEX evidence_sender ON evidence (sender) WHERE sender != '';
+CREATE INDEX evidence_sender_alt ON evidence (sender_alt) WHERE sender_alt != '';
+CREATE INDEX ledger_address ON ledger (address) WHERE address != '';
+CREATE INDEX bans_ledger ON bans (ledger_id);
+`,
 }
 
 // migrate brings the schema up to date in ONE write transaction. Every
