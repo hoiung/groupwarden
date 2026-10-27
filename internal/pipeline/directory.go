@@ -301,21 +301,25 @@ func (d *Directory) IsAdmin(member, alt client.JID, community string, rs *rules.
 // (store.OtherAddress: someone who joined since the group list was last read
 // is known there by their LID alone, as a join names no phone number), and
 // the ban list's. A lookup of a member's bans or posts starts here, so it
-// finds what the bot holds under either address. tx is the transaction the
-// caller reads in, nil for none: the store has one connection, so a read
-// beside an open transaction would wait on it.
+// finds what the bot holds under either address. WhatsApp gives a number to
+// someone new once its holder leaves it, so a number found for a LID this way
+// is kept only when the number's own pair, the group list's or else the one
+// the bot recorded last, is that LID (or none): otherwise someone else holds
+// it now. tx is the transaction the caller reads in, nil for none: the store
+// has one connection, so a read beside an open transaction would wait on it.
 func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m client.Member) (client.Member, error) {
 	m = d.Complete(m)
 	if (m.LID == "") == (m.Phone == "") {
 		return m, nil
 	}
-	var other string
-	var err error
-	if tx != nil {
-		other, err = store.OtherAddressIn(ctx, tx, m.Key())
-	} else {
-		other, err = st.OtherAddress(ctx, m.Key())
+	otherOf := func(addr string) (string, error) {
+		if tx != nil {
+			return store.OtherAddressIn(ctx, tx, addr)
+		}
+		return st.OtherAddress(ctx, addr)
 	}
+	lidOnly := m.Phone == ""
+	other, err := otherOf(m.Key())
 	if err != nil {
 		return m, err
 	}
@@ -335,6 +339,19 @@ func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m 
 		}
 		if m.Phone == "" && b.Phone != "" {
 			m.Phone = client.JID(b.Phone)
+		}
+	}
+	if lidOnly && m.Phone != "" {
+		holder := d.Complete(client.Member{Phone: m.Phone}).LID
+		if holder == "" {
+			h, err := otherOf(string(m.Phone))
+			if err != nil {
+				return m, err
+			}
+			holder = client.JID(h)
+		}
+		if holder.Server() == "lid" && holder.Bare() != m.LID.Bare() {
+			m.Phone = ""
 		}
 	}
 	// No second Complete: the member only gained addresses since the first,
