@@ -845,6 +845,19 @@ func TestResolvePhoneToLID(t *testing.T) {
 	}
 }
 
+// TestSavedLID: the LID the library saved for a number, read with no call to
+// WhatsApp (the fake is offline); none saved is "" and no error.
+func TestSavedLID(t *testing.T) {
+	ctx := context.Background()
+	a := newTestAdapter(t, &fakeWA{offline: true, lids: map[string]types.JID{"447700900123": spammer}}, nil)
+	if lid, err := a.SavedLID(ctx, client.JID(spammerPN.String())); err != nil || lid != client.JID(spammer.String()) {
+		t.Fatalf("saved: %s %v", lid, err)
+	}
+	if lid, err := a.SavedLID(ctx, "447700900456@s.whatsapp.net"); err != nil || lid != "" {
+		t.Fatalf("none saved: %q %v, want none and no error", lid, err)
+	}
+}
+
 // TestEveryCallReportsNotConnected: whichever WhatsApp call is made with no
 // connection, its caller gets client.ErrNotConnected, so it waits for the
 // connection instead of settling a download, a ban lookup or a join as
