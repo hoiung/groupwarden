@@ -72,8 +72,13 @@ type Plan struct {
 	// "sweep:<run>", "cli:<time>", a report and button, or an admin-chat
 	// command naming a phone number (store.AdminBanTrigger,
 	// store.AdminUnbanTrigger).
-	Trigger    string
-	Target     client.Member
+	Trigger string
+	Target  client.Member
+	// Person is the target with every address the caller knows for them,
+	// which finds their ban list entry (one per person and scope); empty: the
+	// target. /ban <number> keeps the number as its target and passes the LID
+	// it found here.
+	Person     client.Member
 	Rule       string
 	ConfigHash string
 	Actor      client.JID
@@ -82,7 +87,10 @@ type Plan struct {
 	// Ban adds the target to the ban list in each scope (store.BanEverywhere
 	// or a community) with a ban row in the ledger; BanEnforce false records
 	// shadow ban rows only. BanCommunity is the community those rows count
-	// towards.
+	// towards. Someone already on the list there keeps their one entry: an
+	// admin's ban (store.AdminOrdered) of someone the bot banned writes its
+	// own ban row and the entry's link moves to it (store.PutBan); any other
+	// ban reuses the row the entry links to.
 	Ban          []string
 	BanEnforce   bool
 	BanCommunity string
@@ -104,16 +112,29 @@ type Plan struct {
 	Episode  bool
 	Evidence *store.Evidence
 	// Reports are linked to every ledger row the plan wrote; a plan whose
-	// rows all already existed writes no report.
+	// rows all already existed, or whose only new rows are ban rows an entry
+	// already on the list moved its link to, writes no report.
 	Reports []store.Report
+}
+
+// person is who the plan's ban list entries belong to (Plan.Person).
+func (p Plan) person() client.Member {
+	if p.Person.Key() == "" {
+		return p.Target
+	}
+	return p.Person
 }
 
 // Written is what Write stored.
 type Written struct {
-	LedgerIDs  []int64 // every row of the plan (new or existing)
-	New        int     // rows inserted now
-	Requeued   int     // failed episode rows put back in the outbox
-	Queued     int     // rows now in the outbox
+	LedgerIDs []int64 // every row of the plan (new or existing)
+	New       int     // rows inserted now
+	Requeued  int     // failed episode rows put back in the outbox
+	Queued    int     // rows now in the outbox
+	// BansAdded counts ban list entries added; LinksMoved counts entries the
+	// person already had whose link moved to the plan's new ban row.
+	BansAdded  int
+	LinksMoved int
 	EvidenceID int64
 	ReportIDs  []int64
 }
@@ -125,17 +146,16 @@ const sweepPrefix = "sweep:"
 // rejection of the member in the same chat (whatever triggered it: two posts,
 // or a post and a sweep, remove once), the delete of the same message (a
 // post and its edit, or two bans naming its author by different addresses,
-// delete it once), the member's ban in that scope already
-// in force or held, or a sweep's row of the same episode in the same mode
-// (an open row, or a failed enforce row to retry).
+// delete it once), the member's ban in that scope already in force (banRow)
+// or held, or a sweep's row of the same episode in the same mode (an open
+// row, or a failed enforce row to retry).
 func existing(ctx context.Context, tx *sql.Tx, p Plan, r store.LedgerRow) (store.LedgerRow, bool, error) {
 	if r.Mode == store.ModeEnforce {
 		switch r.Action {
 		case store.ActRevoke:
 			return store.RevokeOf(ctx, tx, r.Chat, r.MsgID)
 		case store.ActBan:
-			// An admin's ban (applied at once) never folds into a held one.
-			return store.BanRowOf(ctx, tx, r.Target, r.Chat, r.Status != store.Requested)
+			return banRow(ctx, tx, p, r)
 		case store.ActRemove, store.ActReject:
 			if open, ok, err := store.OpenFor(ctx, tx, r.Action, r.Chat, r.Target); err != nil || ok {
 				return open, ok, err
@@ -151,6 +171,26 @@ func existing(ctx context.Context, tx *sql.Tx, p Plan, r store.LedgerRow) (store
 	}
 	reuse := open.Status == store.Intended || (open.Status == store.Failed && r.Mode == store.ModeEnforce)
 	return open, reuse, nil
+}
+
+// banRow is the ban row a ban r of p's person repeats: the one their ban list
+// entry in r's scope links to (found by either address, store.BanEntryIn)
+// when the entry keeps its link (store.BanEntry.Keeps; an admin's ban of
+// someone the bot banned is written, and the link moves to it). Someone with
+// no entry there whose ban a pause holds: a held ban r folds into it; an
+// admin's ban (applied at once) never does.
+func banRow(ctx context.Context, tx *sql.Tx, p Plan, r store.LedgerRow) (store.LedgerRow, bool, error) {
+	who := p.person()
+	e, found, err := store.BanEntryIn(ctx, tx, string(who.LID), string(who.Phone), r.Chat)
+	switch {
+	case err != nil:
+		return store.LedgerRow{}, false, err
+	case found && e.Keeps(store.AdminOrdered(p.Trigger)):
+		return e.Row, true, nil
+	case found || r.Status == store.Requested:
+		return store.LedgerRow{}, false, nil
+	}
+	return store.HeldBanRowOf(ctx, tx, r.Target, r.Chat)
 }
 
 // revokesOnly reports whether p only deletes posts, each with its author's
@@ -257,6 +297,7 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 		}
 	}
 	held := p.BanEnforce && p.BanHeld
+	who := p.person()
 	for _, scope := range p.Ban {
 		r := row(store.ActBan, scope, p.BanCommunity, p.BanEnforce)
 		r.Address = string(p.Target.Phone) // kept for a held ban, applied later
@@ -270,13 +311,29 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 		if err != nil {
 			return w, err
 		}
-		if !p.BanEnforce || held || !inserted {
+		if !p.BanEnforce || held {
+			continue
+		}
+		// One entry per person: an entry they have there already is kept, with
+		// the address it lacks filled in, also when its row is reused.
+		if !inserted {
+			if err := store.FillBan(ctx, tx, string(who.LID), string(who.Phone), scope); err != nil {
+				return w, err
+			}
 			continue
 		}
 		id := w.LedgerIDs[len(w.LedgerIDs)-1]
-		if err := store.AddBan(ctx, tx, store.Ban{Member: target, Scope: scope, LID: string(p.Target.LID),
-			Phone: string(p.Target.Phone), Reason: p.Reason, LedgerID: id}, now); err != nil {
+		added, moved, err := store.PutBan(ctx, tx, store.Ban{Member: target, Scope: scope, LID: string(p.Target.LID),
+			Phone: string(p.Target.Phone), Reason: p.Reason, LedgerID: id}, string(who.LID), string(who.Phone),
+			store.AdminOrdered(p.Trigger), now)
+		if err != nil {
 			return w, err
+		}
+		if added {
+			w.BansAdded++
+		}
+		if moved {
+			w.LinksMoved++
 		}
 		// A ban a pause holds for the member there is in force now too.
 		if err := store.SettleHeldBansIn(ctx, tx, p.Target.IDs(), scope, id, now); err != nil {
@@ -296,12 +353,14 @@ func Write(ctx context.Context, tx *sql.Tx, p Plan, now time.Time) (Written, err
 			return w, err
 		}
 	}
-	if w.New == 0 && (len(p.Intents) > 0 || len(p.Ban) > 0 || p.Lift) {
+	if w.New == w.LinksMoved && (len(p.Intents) > 0 || len(p.Ban) > 0 || p.Lift) {
 		// Every row already existed (a redelivery, an edit of a post already
 		// acted on, or a sweep retrying the same episode): the admins were
 		// already told, and the rows keep the copy they were written with, so
-		// this one is not kept.
-		if w.EvidenceID != 0 {
+		// this one is not kept. Or the only new rows are ban rows of someone
+		// already on the ban list, whose entry moved its link to them: nobody
+		// was added, so no "ban added" report.
+		if w.New == 0 && w.EvidenceID != 0 {
 			if err := store.DeleteEvidence(ctx, tx, w.EvidenceID); err != nil {
 				return w, err
 			}
