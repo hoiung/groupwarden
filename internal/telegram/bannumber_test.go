@@ -405,16 +405,21 @@ func TestBanDeletesPosts(t *testing.T) {
 	// ban can no longer show who made it (its ledger row purged past
 	// retention): the queue goes on, with a Warn. The admin's ban is found
 	// for someone who joined since the group list was last read too: from
-	// the admin chat it is resolved on their LID at once; from the command
-	// line, which asks for no sweep, it names their number, and the post
-	// they sent pairs the two for the bot's row, which names their LID.
-	for name, c := range map[string]struct{ pause, adminBan, cliBan, joiner, purge, deleted bool }{
-		"admin-banned":               {pause: true, adminBan: true, deleted: true},
-		"bot-only":                   {pause: true},
-		"bot-ban-on-list":            {},
-		"admin-ban-ledger-purged":    {pause: true, adminBan: true, purge: true},
-		"admin-banned-recent-joiner": {pause: true, adminBan: true, joiner: true, deleted: true},
-		"cli-banned-recent-joiner":   {pause: true, cliBan: true, joiner: true, deleted: true},
+	// the admin chat it is resolved on their LID at once when their post is
+	// on record; from the admin chat before their post (nothing pairs the
+	// number with their LID yet and WhatsApp has none) and from the command
+	// line, which asks for no sweep, it names their number, and the post they
+	// sent pairs the two for the bot's row, which names their LID.
+	for name, c := range map[string]struct {
+		pause, adminBan, banFirst, cliBan, joiner, purge, deleted bool
+	}{
+		"admin-banned":                          {pause: true, adminBan: true, deleted: true},
+		"bot-only":                              {pause: true},
+		"bot-ban-on-list":                       {},
+		"admin-ban-ledger-purged":               {pause: true, adminBan: true, purge: true},
+		"admin-banned-recent-joiner":            {pause: true, adminBan: true, joiner: true, deleted: true},
+		"admin-banned-unresolved-recent-joiner": {pause: true, adminBan: true, banFirst: true, joiner: true, deleted: true},
+		"cli-banned-recent-joiner":              {pause: true, cliBan: true, joiner: true, deleted: true},
 	} {
 		t.Run("rule-relaxed-while-queued/"+name, func(t *testing.T) {
 			h := newHarness(t, "")
@@ -427,8 +432,14 @@ func TestBanDeletesPosts(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if c.banFirst {
+				h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+				if b := h.bans(); len(b) != 1 || b[0].LID != "" || b[0].Phone != string(modtest.SpammerPhone) {
+					t.Fatalf("bans %+v, want one keyed by the number alone", b)
+				}
+			}
 			h.k.Deliver(h.k.Spam("S1", modtest.G1))
-			if c.adminBan {
+			if c.adminBan && !c.banFirst {
 				h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
 			}
 			if c.cliBan {
