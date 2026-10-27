@@ -362,7 +362,8 @@ type NumberBanned struct {
 	Member client.Member
 	// Already: the number is banned everywhere already, so no ban was added
 	// (its posts are still deleted, a ban of the number is still resolved on
-	// the LID known, and the caller still asks for a sweep).
+	// the LID known, the entry records this admin's ban when it was the
+	// bot's, and the caller still asks for a sweep).
 	// Self: it is the bot's own number. PerCommunity: bans.scope is
 	// per_community, so a ban needs its community (`groupwarden ban add
 	// --community`). Spared: it is a current admin of a community the bot
@@ -383,8 +384,8 @@ type NumberBanned struct {
 // the bot still has a record of, found by the number and by the LID the bot
 // knows or finds for it (numberMember). Removing them from the groups is the
 // sweep's, which the caller asks for. A number already banned everywhere
-// gets no second ban, but its posts are deleted all the same: every /ban
-// cleans up.
+// gets no second entry (its entry records this admin's ban when it was the
+// bot's), and its posts are deleted all the same: every /ban cleans up.
 func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (NumberBanned, error) {
 	if !a.Directory.IsLoaded() {
 		return NumberBanned{}, errGroupsNotLoaded
@@ -411,27 +412,26 @@ func (a *Admin) BanNumber(ctx context.Context, phone client.JID, actor string) (
 		return NumberBanned{Member: m, Spared: true}, nil
 	}
 	now := a.Store.Now()
-	p := ledger.Plan{Trigger: store.AdminBanTrigger + strconv.FormatInt(now.UnixMilli(), 10), Target: target,
+	// The plan names the number; their entry on the ban list is found by the
+	// number and the LID found for it (Person), so someone already banned
+	// everywhere keeps their one entry, with this ban on it (ledger.Write).
+	p := ledger.Plan{Trigger: store.AdminBanTrigger + strconv.FormatInt(now.UnixMilli(), 10), Target: target, Person: m,
 		ConfigHash: cur.Hash, Actor: client.JID(actor), Reason: "banned in the admin chat by " + actor,
 		Ban: []string{store.BanEverywhere}, BanEnforce: true, BanCommunity: store.BanEverywhere}
-	scopes := p.Ban
 	var w ledger.Written
 	if err := a.Store.Write(ctx, func(tx *sql.Tx) error {
-		// Only a ban everywhere is the one this would add; a community's own
-		// ban (from a per_community config before) does not stop it.
-		bans, err := store.BansForIn(ctx, tx, m.IDs())
-		if err != nil {
-			return err
-		}
-		if out.Already = slices.ContainsFunc(bans, func(b store.Ban) bool { return b.Scope == store.BanEverywhere }); out.Already {
-			p.Ban, p.BanEnforce = nil, false
-		}
 		out.Paused = pausedScope(ctx, tx, a.Store)
-		if p.Intents, out.Posts, err = a.postDeletes(ctx, tx, m, scopes, true, "", ""); err != nil {
+		var err error
+		if p.Intents, out.Posts, err = a.postDeletes(ctx, tx, m, p.Ban, true, "", ""); err != nil {
 			return err
 		}
-		if w, err = ledger.Write(ctx, tx, p, now); err != nil || m.LID == "" {
+		if w, err = ledger.Write(ctx, tx, p, now); err != nil {
 			return err
+		}
+		// Only a ban everywhere is the one this adds; a community's own ban
+		// (from a per_community config before) does not stop it.
+		if out.Already = w.BansAdded == 0; m.LID == "" {
+			return nil
 		}
 		// Their LID is known, so a ban of the number (this one, or one already
 		// on the list, from the ban command) is resolved now, as the sweep
