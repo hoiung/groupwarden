@@ -137,6 +137,11 @@ func (m *Moderator) decideMessage(ctx context.Context, tx *sql.Tx, ev *client.Me
 	if err != nil {
 		return err
 	}
+	if w.LinksMoved > 0 {
+		// Their entry's row was purged since: it now links this ban's row.
+		m.Log.Info("ban list entry kept; its link moved to this ban's row", "trigger", p.Trigger,
+			"target", mask.IDs(p.Target.Key()), "links_moved", w.LinksMoved)
+	}
 	if w.Queued > 0 || len(w.ReportIDs) > 0 {
 		m.Enforcer.wake()
 	}
