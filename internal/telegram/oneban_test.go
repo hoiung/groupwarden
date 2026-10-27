@@ -20,8 +20,8 @@ import (
 // holds one line for them, [Undo] replies "(1 ban(s) lifted" and /status
 // shows "Bans: 1". Another person's entry holding the same number (its old
 // owner) stays theirs when the new ban knows the current holder's LID (two
-// entries, one each; [Undo] is not pressed there, as it lifts every ban
-// holding the person's number) and is the one entry when the new ban knows
+// entries, one each; [Undo] is not pressed there: TestLiftKeepsAnEarlierHoldersBan
+// covers a lift beside another person's entry) and is the one entry when the new ban knows
 // only the number. A ban that knows only the address the entry lacks, with
 // nothing pairing the two when it is written, is a second entry until the
 // sweep merges them (the Design's known limit), as is the bot's own ban of a
