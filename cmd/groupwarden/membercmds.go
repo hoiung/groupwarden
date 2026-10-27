@@ -267,17 +267,28 @@ func (e *env) banMember(ctx context.Context, st *store.Store, cfg *config.Config
 // pair is the address paired with m's one address, one step from it and never
 // a second: the WhatsApp library's saved pair, else the one groupwarden's
 // records give (pipeline.LIDForNumber's steps for the command line, for a
-// LID the same two the other way round).
+// LID the same two the other way round). A number the records give a LID is
+// its pair only when that number's own pair (pipeline.LIDForNumber) is the
+// LID or none: otherwise someone else holds the number now (pipeline.Identify).
 func pair(ctx context.Context, st *store.Store, session *store.Session, m client.Member) (client.JID, error) {
-	saved := func(ctx context.Context, addr client.JID) (client.JID, error) { return savedPair(ctx, session, addr) }
+	src := pipeline.LIDSources{Records: st}
+	src.Saved = func(ctx context.Context, addr client.JID) (client.JID, error) { return savedPair(ctx, session, addr) }
 	if m.LID == "" {
-		lid, _, err := pipeline.LIDForNumber(ctx, m.Phone, pipeline.LIDSources{Saved: saved, Records: st})
+		lid, _, err := pipeline.LIDForNumber(ctx, m.Phone, src)
 		return lid, err
 	}
-	if phone, err := saved(ctx, m.LID); err != nil || phone != "" {
+	if phone, err := src.Saved(ctx, m.LID); err != nil || phone != "" {
 		return phone, err
 	}
-	return pipeline.RecordedPair(ctx, st, m.LID)
+	phone, err := pipeline.RecordedPair(ctx, st, m.LID)
+	if err != nil || phone == "" {
+		return phone, err
+	}
+	holder, _, err := pipeline.LIDForNumber(ctx, phone, src)
+	if err != nil || holder != "" && holder != m.LID.Bare() {
+		return "", err
+	}
+	return phone, nil
 }
 
 // savedPair is the address the WhatsApp session store's LID map pairs with
