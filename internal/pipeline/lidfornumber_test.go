@@ -31,11 +31,17 @@ func TestLIDForNumber(t *testing.T) {
 	give := func(lid client.JID, err error) func(context.Context, client.JID) (client.JID, error) {
 		return func(context.Context, client.JID) (client.JID, error) { return lid, err }
 	}
+	unreadable := errors.New("read the saved LID: disk I/O error")
 	for name, c := range map[string]struct {
-		src    pipeline.LIDSources
-		want   client.JID
-		askErr error
+		src         pipeline.LIDSources
+		want        client.JID
+		askErr, err error
 	}{
+		// An answer from the saved IDs that is not a LID counts as none, as
+		// WhatsApp's does; a failed read of them ends the lookup.
+		"non-lid-saved-answer-is-no-lid": {src: pipeline.LIDSources{Saved: give(phone, nil)}},
+		"saved-ids-unreadable": {src: pipeline.LIDSources{Saved: give("", unreadable), Ask: give(modtest.Other2, nil),
+			Records: k.Store}, err: unreadable},
 		"group-list-first": {src: pipeline.LIDSources{Pairs: k.Dir, Saved: give(modtest.Other1, nil),
 			Ask: give(modtest.Other2, nil), Records: k.Store}, want: modtest.Spammer},
 		"saved-ids-next": {src: pipeline.LIDSources{Saved: give(modtest.Other1, nil), Ask: give(modtest.Other2, nil),
@@ -48,8 +54,9 @@ func TestLIDForNumber(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			lid, askErr, err := pipeline.LIDForNumber(k.Ctx, phone, c.src)
-			if err != nil || lid != c.want || (c.askErr == nil) != (askErr == nil) || (c.askErr != nil && !errors.Is(askErr, c.askErr)) {
-				t.Fatalf("LIDForNumber = %q, %v, %v; want %q, %v", lid, askErr, err, c.want, c.askErr)
+			if !errors.Is(err, c.err) || lid != c.want || (c.askErr == nil) != (askErr == nil) ||
+				(c.askErr != nil && !errors.Is(askErr, c.askErr)) {
+				t.Fatalf("LIDForNumber = %q, %v, %v; want %q, %v, %v", lid, askErr, err, c.want, c.askErr, c.err)
 			}
 		})
 	}
