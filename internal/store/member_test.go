@@ -64,6 +64,70 @@ VALUES ('msg|P1', ?, 'P1', ?, ?, ?, ?)`, group, at.UnixMilli(), at.UnixMilli(), 
 	})
 }
 
+// TestOtherAddressBanRows: a ban row pairs a member's two addresses only
+// while the ban is in force (its ban list entry links the row, or a pause
+// holds it); the row of a ban since lifted or undone pairs nothing, as the
+// number may have passed to someone else. OtherAddressEver still reads it,
+// for `member show|forget`.
+func TestOtherAddressBanRows(t *testing.T) {
+	ctx := context.Background()
+	const (
+		lid   = "99999000000444@lid" // synthetic IDs, listed in .secret-pii-allowlist
+		phone = "447700900123@s.whatsapp.net"
+	)
+	for name, c := range map[string]struct {
+		status       Status
+		listed, undo bool // its ban list entry written; [Undo] overturned it
+		lifted       bool // the entry removed again, as a lift and [Undo] remove it
+		pairs        bool
+	}{
+		"in-force-pairs":       {status: Requested, listed: true, pairs: true},
+		"held-pairs":           {status: Intended, pairs: true},
+		"lifted-pairs-nothing": {status: Requested, listed: true, lifted: true},
+		"undone-pairs-nothing": {status: Requested, listed: true, undo: true, lifted: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+			s := openAt(t, &now)
+			if err := s.Write(ctx, func(tx *sql.Tx) error {
+				id, _, err := InsertLedger(ctx, tx, LedgerRow{Action: ActBan, Chat: BanEverywhere, Target: lid, Address: phone,
+					TriggerID: "T", Community: "c", Mode: ModeEnforce, Status: c.status, ConfigHash: "h"}, now)
+				if err != nil {
+					return err
+				}
+				if c.listed {
+					if err := AddBan(ctx, tx, Ban{Member: lid, Scope: BanEverywhere, LID: lid, Phone: phone, LedgerID: id}, now); err != nil {
+						return err
+					}
+				}
+				if c.undo {
+					if _, err := Overturn(ctx, tx, []int64{id}, "undone", now); err != nil {
+						return err
+					}
+				}
+				if c.lifted {
+					_, err = RemoveBans(ctx, tx, []string{lid, phone}, "")
+				}
+				return err
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for addr, other := range map[string]string{lid: phone, phone: lid} {
+				want := ""
+				if c.pairs {
+					want = other
+				}
+				if got, err := s.OtherAddress(ctx, addr); err != nil || got != want {
+					t.Errorf("OtherAddress(%s) = %q (%v), want %q", addr, got, err, want)
+				}
+				if got, err := s.OtherAddressEver(ctx, addr); err != nil || got != other {
+					t.Errorf("OtherAddressEver(%s) = %q (%v), want %q", addr, got, err, other)
+				}
+			}
+		})
+	}
+}
+
 // TestForgetMemberCountsHeldBanByPhone: `member forget <phone>` keeps, and
 // counts, a ban a pause holds that names the member by LID and keeps their
 // phone, as /unban <number> finds it.
