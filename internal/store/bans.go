@@ -220,19 +220,48 @@ func RemoveBans(ctx context.Context, tx *sql.Tx, ids []string, community string)
 // put the number back on the list when it applies, and either pairs the
 // number with them: OtherAddress), so it no longer covers or names whoever
 // holds the number now. community narrows it as it narrows RemoveBans ("":
-// every scope).
-func ReleaseNumbers(ctx context.Context, tx *sql.Tx, ids []string, lid, community string, now time.Time) error {
+// every scope). It returns how many ban list entries lost a number.
+func ReleaseNumbers(ctx context.Context, tx *sql.Tx, ids []string, lid, community string, now time.Time) (int64, error) {
 	list := jsonList(nonEmpty(ids))
-	if _, err := tx.ExecContext(ctx, `UPDATE bans SET phone = '' WHERE phone != '' AND phone IN (SELECT value FROM json_each(?1))
-	AND lid != '' AND lid != ?2 AND (?3 = '' OR scope = '*' OR scope = ?3)`, list, lid, community); err != nil {
-		return fmt.Errorf("take a number off a ban: %w", err)
+	res, err := tx.ExecContext(ctx, `UPDATE bans SET phone = '' WHERE phone != '' AND phone IN (SELECT value FROM json_each(?1))
+	AND lid != '' AND lid != ?2 AND (?3 = '' OR scope = '*' OR scope = ?3)`, list, lid, community)
+	if err != nil {
+		return 0, fmt.Errorf("take a number off a ban: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE ledger SET address = '', updated_at = ?4 WHERE action = 'ban' AND address != ''
 	AND address IN (SELECT value FROM json_each(?1)) AND target GLOB '*@lid' AND target != ?2
 	AND (?3 = '' OR chat = '*' OR chat = ?3) AND `+banInForce, list, lid, community, now.UnixMilli()); err != nil {
-		return fmt.Errorf("take a number off a ban row: %w", err)
+		return 0, fmt.Errorf("take a number off a ban row: %w", err)
 	}
-	return nil
+	return res.RowsAffected()
+}
+
+// Unlinked returns the ledger rows among ids that no ban list entry links,
+// each once, read through q: a ban row an entry links stands for a ban in
+// force.
+func Unlinked(ctx context.Context, q queryer, ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	list, _ := json.Marshal(ids) // an int64 slice always marshals
+	rows, err := q.QueryContext(ctx, `SELECT DISTINCT value FROM json_each(?1)
+	WHERE NOT EXISTS (SELECT 1 FROM bans WHERE bans.ledger_id = value) ORDER BY value`, string(list))
+	if err != nil {
+		return nil, fmt.Errorf("read unlinked rows: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("read unlinked rows: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read unlinked rows: %w", err)
+	}
+	return out, nil
 }
 
 // Bans lists the whole ban list, oldest first.
