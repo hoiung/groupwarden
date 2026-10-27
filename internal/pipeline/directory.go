@@ -342,7 +342,12 @@ func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m 
 		}
 	}
 	if lidOnly && m.Phone != "" {
-		holder := d.Complete(client.Member{Phone: m.Phone}).LID
+		// LIDForNumber's step 1; its records step reads outside tx, so the
+		// latest record is read here.
+		holder, _, err := LIDForNumber(ctx, m.Phone, LIDSources{Pairs: d})
+		if err != nil {
+			return m, err
+		}
 		if holder == "" {
 			h, err := otherOf(string(m.Phone))
 			if err != nil {
