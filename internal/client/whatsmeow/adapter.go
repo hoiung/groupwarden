@@ -636,16 +636,26 @@ func (a *Adapter) LinkedDevices(ctx context.Context) ([]client.JID, error) {
 	return out, nil
 }
 
-// ResolvePhoneToLID finds the LID of a phone number: the local store first,
-// then one lookup on WhatsApp (which records the mapping).
-func (a *Adapter) ResolvePhoneToLID(ctx context.Context, phone client.JID) (client.JID, error) {
-	pn := types.NewJID(phone.User(), types.DefaultUserServer)
-	if lid, err := a.cli.lidForPhone(ctx, pn); err != nil {
-		return "", err
-	} else if !lid.IsEmpty() {
-		return jid(lid), nil
+// SavedLID reads the LID the library saved for a phone number (from a
+// message's sender, a group list read or a lookup); it never asks WhatsApp.
+func (a *Adapter) SavedLID(ctx context.Context, phone client.JID) (client.JID, error) {
+	lid, err := a.cli.lidForPhone(ctx, types.NewJID(phone.User(), types.DefaultUserServer))
+	if err != nil {
+		return "", fmt.Errorf("read the saved LID: %w", err)
 	}
-	resp, err := a.cli.IsOnWhatsApp(ctx, []string{"+" + pn.User})
+	if lid.IsEmpty() {
+		return "", nil
+	}
+	return jid(lid), nil
+}
+
+// ResolvePhoneToLID finds the LID of a phone number: the saved one first,
+// then one lookup on WhatsApp (which saves the mapping).
+func (a *Adapter) ResolvePhoneToLID(ctx context.Context, phone client.JID) (client.JID, error) {
+	if lid, err := a.SavedLID(ctx, phone); err != nil || lid != "" {
+		return lid, err
+	}
+	resp, err := a.cli.IsOnWhatsApp(ctx, []string{"+" + phone.User()})
 	if err != nil {
 		return "", callError(err)
 	}
@@ -655,12 +665,12 @@ func (a *Adapter) ResolvePhoneToLID(ctx context.Context, phone client.JID) (clie
 	if resp[0].JID.Server == types.HiddenUserServer {
 		return jid(resp[0].JID), nil
 	}
-	lid, err := a.cli.lidForPhone(ctx, pn)
+	lid, err := a.SavedLID(ctx, phone)
 	if err != nil {
 		return "", err
 	}
-	if lid.IsEmpty() {
+	if lid == "" {
 		return "", client.ErrNoLID
 	}
-	return jid(lid), nil
+	return lid, nil
 }
