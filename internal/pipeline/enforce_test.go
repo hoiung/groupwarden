@@ -429,12 +429,12 @@ func TestBanKeyIsLID(t *testing.T) {
 
 // TestPhoneToLIDFailureReported: a ban known only by phone number is
 // resolved to a LID; when that fails the phone key stays and the admins get
-// a priority report.
+// a priority report saying the bot keeps looking in the saved WhatsApp IDs.
 func TestPhoneToLIDFailureReported(t *testing.T) {
 	k := modtest.New(t, "")
-	unknown := client.Member{Phone: "447700900456@s.whatsapp.net"}
+	unknown := client.Member{Phone: "447700900321@s.whatsapp.net"}
 	k.Ban(unknown)
-	known := client.Member{Phone: "447700900789@s.whatsapp.net"}
+	known := client.Member{Phone: "447700900654@s.whatsapp.net"}
 	k.Ban(known)
 	k.Fake.LIDs = map[client.JID]client.JID{known.Phone: modtest.Other2}
 	if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
@@ -445,13 +445,14 @@ func TestPhoneToLIDFailureReported(t *testing.T) {
 		t.Fatalf("failed lookup: %+v", b)
 	}
 	reps := k.Reports(ledger.KindLIDUnresolved)
-	if len(reps) != 1 || !reps[0].Priority {
-		t.Fatalf("reports %+v", reps)
+	if len(reps) != 1 || !reps[0].Priority || !strings.Contains(reps[0].Text, "saved WhatsApp IDs") {
+		t.Fatalf("reports %+v, want one priority report saying the bot looks in the saved WhatsApp IDs", reps)
 	}
 	if b, ok, _ := k.Store.FindBan(k.Ctx, []string{string(modtest.Other2)}, ""); !ok || b.Member != string(modtest.Other2) || b.Phone != string(known.Phone) {
 		t.Fatalf("resolved ban %+v", b)
 	}
-	// A failed lookup is not retried on every sweep.
+	// A failed lookup is not asked of WhatsApp again: later sweeps look in
+	// the saved WhatsApp IDs alone (TestResolveBansRetriesFailed).
 	if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -460,12 +461,55 @@ func TestPhoneToLIDFailureReported(t *testing.T) {
 	}
 }
 
+// TestResolveBansRetriesFailed: at each sweep a ban whose WhatsApp lookup
+// failed is looked up again in the saved WhatsApp IDs alone, with no call to
+// WhatsApp: once they hold the number it is resolved (and no longer marked
+// failed); until then it stays as it is, with no second report.
+func TestResolveBansRetriesFailed(t *testing.T) {
+	for name, saved := range map[string]bool{"found-in-saved-ids": true, "still-unknown": false} {
+		t.Run(name, func(t *testing.T) {
+			k := modtest.New(t, "")
+			m := client.Member{Phone: "447700900321@s.whatsapp.net"}
+			k.Ban(m)
+			if reported, err := k.Store.MarkBanLIDFailed(k.Ctx, string(m.Phone), store.Report{Kind: ledger.KindLIDUnresolved,
+				Priority: true, Subject: string(m.Phone), Text: "not matched"}); err != nil || !reported {
+				t.Fatalf("mark failed: %v %v", reported, err)
+			}
+			if saved {
+				k.Fake.Saved = map[client.JID]client.JID{m.Phone: modtest.Other2}
+			}
+			asked := k.Fake.Count("ResolvePhoneToLID")
+			for range 2 {
+				if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if n := k.Fake.Count("ResolvePhoneToLID") - asked; n != 0 {
+				t.Fatalf("%d WhatsApp lookups, want none", n)
+			}
+			b, ok, err := k.Store.FindBan(k.Ctx, m.IDs(), "")
+			if err != nil || !ok {
+				t.Fatalf("ban %+v %v %v", b, ok, err)
+			}
+			if saved && (b.LID != string(modtest.Other2) || b.Member != string(modtest.Other2) || b.LIDFailed) {
+				t.Fatalf("ban %+v, want it resolved on %s and no longer marked failed", b, modtest.Other2)
+			}
+			if !saved && (b.LID != "" || !b.LIDFailed) {
+				t.Fatalf("ban %+v, want it still keyed by the number and marked failed", b)
+			}
+			if reps := k.Reports(ledger.KindLIDUnresolved); len(reps) != 1 {
+				t.Fatalf("%d lid_unresolved reports, want the one written when it was marked", len(reps))
+			}
+		})
+	}
+}
+
 // TestNonLIDAnswerLeavesTheBanUnresolved: WhatsApp answering the lookup with
 // something other than a LID (here the phone number itself) is an answer that
 // the number has no LID: the phone key stays and the admins get one report.
 func TestNonLIDAnswerLeavesTheBanUnresolved(t *testing.T) {
 	k := modtest.New(t, "")
-	m := client.Member{Phone: "447700900456@s.whatsapp.net"}
+	m := client.Member{Phone: "447700900321@s.whatsapp.net"}
 	k.Ban(m)
 	k.Fake.LIDs = map[client.JID]client.JID{m.Phone: m.Phone}
 	if err := k.Enforcer.ResolveBans(k.Ctx); err != nil {
@@ -489,7 +533,7 @@ func TestBanLookupNotFailedWhenWhatsAppCannotAnswer(t *testing.T) {
 		"timed out": errors.New("info query timed out")} {
 		t.Run(name, func(t *testing.T) {
 			k := modtest.New(t, "")
-			m := client.Member{Phone: "447700900456@s.whatsapp.net"}
+			m := client.Member{Phone: "447700900321@s.whatsapp.net"}
 			k.Ban(m)
 			k.Fake.FailNext("ResolvePhoneToLID", fmt.Errorf("usync: %w", cause))
 			if err := k.Enforcer.ResolveBans(k.Ctx); !errors.Is(err, cause) {
@@ -517,7 +561,7 @@ func TestBanLookupNotFailedWhenWhatsAppCannotAnswer(t *testing.T) {
 // reported (there is nothing left to keep on the phone number).
 func TestLIDFailureReportedOncePerPhone(t *testing.T) {
 	k := modtest.New(t, "")
-	phone := client.JID("447700900456@s.whatsapp.net")
+	phone := client.JID("447700900321@s.whatsapp.net")
 	for _, scope := range []string{store.BanEverywhere, string(modtest.Community)} {
 		if err := k.Store.Write(k.Ctx, func(tx *sql.Tx) error {
 			return store.AddBan(k.Ctx, tx, store.Ban{Member: string(phone), Scope: scope, Phone: string(phone),
@@ -536,7 +580,7 @@ func TestLIDFailureReportedOncePerPhone(t *testing.T) {
 		t.Fatalf("%d reports, want one for the phone number", n)
 	}
 
-	lifted := client.Member{Phone: "447700900789@s.whatsapp.net"}
+	lifted := client.Member{Phone: "447700900654@s.whatsapp.net"}
 	k.Ban(lifted)
 	k.Fake.OnCall = func(call string) {
 		if call == "ResolvePhoneToLID "+string(lifted.Phone) {
