@@ -19,7 +19,7 @@ import (
 // repeated, since the next step decides it again); once both can, the state
 // changes and the admins get exactly one report.
 func TestStateChangeAndItsReportTogether(t *testing.T) {
-	unknown := client.Member{Phone: "447700900456@s.whatsapp.net"}
+	unknown := client.Member{Phone: "447700900321@s.whatsapp.net"}
 	removal := func(k *modtest.Kit, m client.Member) store.LedgerRow {
 		t.Helper()
 		rows := k.Find(m, store.ActRemove, modtest.G1)
