@@ -359,6 +359,19 @@ const (
 // milliseconds.
 const CLITrigger = "cli:"
 
+// AdminOrdered reports whether a row with trigger was ordered by an admin:
+// from the admin chat or with the ban command on the node.
+func AdminOrdered(trigger string) bool {
+	return strings.HasPrefix(trigger, AdminTrigger) || strings.HasPrefix(trigger, CLITrigger)
+}
+
+// adminLinked matches a ban list entry (the bans row named b) whose link is a
+// row an admin ordered (AdminOrdered); a link to a row purged since is not.
+func adminLinked(b string) string {
+	return `EXISTS (SELECT 1 FROM ledger l WHERE l.id = ` + b + `.ledger_id AND (l.trigger_id GLOB '` + AdminTrigger +
+		`*' OR l.trigger_id GLOB '` + CLITrigger + `*'))`
+}
+
 // BannedPostTrigger prefixes the trigger of a delete of a banned member's
 // post ("banned:<message ID>"), so its row never shares a key with the
 // shadow row a watch-only match of the same post writes.
@@ -449,15 +462,12 @@ const heldBan = `(action = 'ban' AND status = 'intended' AND mode = 'enforce')`
 const banRowOf = `(target IN (SELECT value FROM json_each(?1))
 	OR (address != '' AND address IN (SELECT value FROM json_each(?1))))`
 
-// BanRowOf returns the ledger row of target's ban in scope when the ban is in
-// force (its ban list entry) or, when orHeld, held by a pause (ok false when
-// neither). A ban meant to apply at once (an admin's) passes orHeld false: a
-// held ban must not swallow it.
-func BanRowOf(ctx context.Context, tx *sql.Tx, target, scope string, orHeld bool) (LedgerRow, bool, error) {
-	return oneRow(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE id = COALESCE(
-	(SELECT ledger_id FROM bans WHERE member = ?1 AND scope = ?2 AND ledger_id IS NOT NULL),
-	(SELECT id FROM ledger WHERE ?3 AND `+heldBan+` AND target = ?1 AND chat = ?2 ORDER BY id LIMIT 1))`,
-		target, scope, orHeld))
+// HeldBanRowOf returns the oldest ban a pause holds for target in scope (ok
+// false when none): a held ban of someone with no ban list entry there folds
+// into it (ledger.Write; BanEntryIn finds an entry).
+func HeldBanRowOf(ctx context.Context, tx *sql.Tx, target, scope string) (LedgerRow, bool, error) {
+	return oneRow(tx.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE `+heldBan+`
+	AND target = ? AND chat = ? ORDER BY id LIMIT 1`, target, scope))
 }
 
 func oneRow(row *sql.Row) (LedgerRow, bool, error) {
@@ -503,7 +513,8 @@ ORDER BY e.id`, id)
 }
 
 // ApplyHeldBan applies a ban a pause held: its target goes on the ban list in
-// each of scopes (the current config's, for the row's community) and the row
+// each of scopes (the current config's, for the row's community), one entry
+// per person (PutBan: an entry they have there already is kept), and the row
 // is marked requested. applied is false when the row was no longer held.
 func (s *Store) ApplyHeldBan(ctx context.Context, row LedgerRow, scopes []string) (applied bool, err error) {
 	err = s.Write(ctx, func(tx *sql.Tx) error {
@@ -523,7 +534,7 @@ func (s *Store) ApplyHeldBan(ctx context.Context, row LedgerRow, scopes []string
 			} else {
 				b.Phone = row.Target
 			}
-			if err := AddBan(ctx, tx, b, now); err != nil {
+			if _, _, err := PutBan(ctx, tx, b, b.LID, b.Phone, AdminOrdered(row.TriggerID), now); err != nil {
 				return err
 			}
 		}
