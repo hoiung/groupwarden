@@ -82,7 +82,13 @@ func (h *harness) post(id string, chat, sender, alt client.JID) {
 // add <phone>` does: keyed by the number, with no sweep asked for.
 func (h *harness) cliBan() {
 	h.t.Helper()
-	p := ledger.Plan{Trigger: store.CLITrigger + "1", Target: client.Member{Phone: modtest.SpammerPhone}, Actor: "cli",
+	h.cliBanOf(client.Member{Phone: modtest.SpammerPhone})
+}
+
+// cliBanOf bans m everywhere as `groupwarden ban add` does with m's address.
+func (h *harness) cliBanOf(m client.Member) {
+	h.t.Helper()
+	p := ledger.Plan{Trigger: store.CLITrigger + "1", Target: m, Actor: "cli",
 		BanCommunity: store.BanEverywhere, Ban: []string{store.BanEverywhere}, BanEnforce: true,
 		Reason: "added with the ban command"}
 	if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
@@ -117,8 +123,9 @@ func (h *harness) revoked(chat client.JID, id string) bool {
 // the group list) resolves the ban at once, as the sweep would. A
 // number of fewer than 8 or more than 15 digits, or with letters, gets the
 // usage text and bans nobody; a number already banned everywhere gets a reply
-// saying so and no second ban, but its posts are still deleted (every /ban
-// cleans up); /ban as a reply to a report works as before.
+// saying so and no second entry (the admin's ban is recorded on it), and its
+// posts are still deleted (every /ban cleans up); /ban as a reply to a report
+// works as before.
 func TestBanByNumber(t *testing.T) {
 	phone := string(modtest.SpammerPhone)
 	for name, number := range spellings() {
@@ -157,23 +164,28 @@ func TestBanByNumber(t *testing.T) {
 			}
 		})
 	}
+	// The bot banned them (the kit's ban is not an admin's): the admin's ban
+	// is recorded on their one entry, which carries the number.
 	t.Run("already-banned-still-cleans-up", func(t *testing.T) {
 		h := newHarness(t, "")
 		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
-		h.k.Ban(modtest.SpammerM)
-		bans := h.bans()
+		h.k.Ban(client.Member{LID: modtest.Spammer})
 		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
 		if got := h.lastReply(); !strings.HasPrefix(got, "phone…0123 is already banned everywhere, so no ban was added. "+
 			"Their posts on record: 1 being deleted, 0 too old to delete. The bot sweeps every group now") {
 			t.Fatalf("reply %q", got)
 		}
-		if after := h.bans(); len(after) != len(bans) || after[0] != bans[0] {
-			t.Fatalf("the ban list changed: %+v → %+v", bans, after)
+		bans := h.bans()
+		if len(bans) != 1 || bans[0].Member != string(modtest.Spammer) || bans[0].Phone != string(modtest.SpammerPhone) {
+			t.Fatalf("bans %+v, want their one entry with the number", bans)
 		}
-		for _, r := range h.k.Rows(client.Member{Phone: modtest.SpammerPhone}) {
-			if r.Action == store.ActBan {
-				t.Fatalf("a second ban row %+v for a number already banned", r)
-			}
+		if row, err := h.k.Store.Ledger(h.k.Ctx, bans[0].LedgerID); err != nil ||
+			!strings.HasPrefix(row.TriggerID, store.AdminBanTrigger) {
+			t.Fatalf("the entry links to %+v (%v), want the admin's ban row (%s…)", row, err, store.AdminBanTrigger)
+		}
+		if b, ok, err := h.k.Store.FindBan(h.k.Ctx, []string{string(modtest.SpammerPhone)}, ""); err != nil || !ok ||
+			b.Member != bans[0].Member {
+			t.Fatalf("FindBan by the number alone: %+v %v (%v), want their entry", b, ok, err)
 		}
 		h.k.Fire()
 		if !h.revoked(modtest.G1, "P1") {
@@ -449,9 +461,14 @@ func TestBanDeletesPosts(t *testing.T) {
 	// on record; from the admin chat before their post (nothing pairs the
 	// number with their LID yet and WhatsApp has none) and from the command
 	// line, which asks for no sweep, it names their number, and the post they
-	// sent pairs the two for the bot's row, which names their LID.
+	// sent pairs the two for the bot's row, which names their LID. An admin's
+	// ban of someone the bot had already banned (no pause: the bot's ban is on
+	// the list) is recorded on their entry, from the admin chat, [Ban] and the
+	// command line, also when the bot's ban row was purged (#8 AC 3.1, 3.3);
+	// so is the command line's ban by number that the sweep merges with the
+	// bot's ban of a post sent under their LID alone (#8 AC 3.2).
 	for name, c := range map[string]struct {
-		pause, adminBan, banFirst, cliBan, joiner, purge, deleted bool
+		pause, adminBan, banFirst, cliBan, cliFirst, cliLID, button, joiner, lidOnly, merge, purgeFirst, purge, deleted bool
 	}{
 		"admin-banned":                          {pause: true, adminBan: true, deleted: true},
 		"bot-only":                              {pause: true},
@@ -460,6 +477,11 @@ func TestBanDeletesPosts(t *testing.T) {
 		"admin-banned-recent-joiner":            {pause: true, adminBan: true, joiner: true, deleted: true},
 		"admin-banned-unresolved-recent-joiner": {pause: true, adminBan: true, banFirst: true, joiner: true, deleted: true},
 		"cli-banned-recent-joiner":              {pause: true, cliBan: true, joiner: true, deleted: true},
+		"chat-after-bot-ban":                    {adminBan: true, deleted: true},
+		"button-after-bot-ban":                  {button: true, deleted: true},
+		"cli-after-bot-ban":                     {cliLID: true, deleted: true},
+		"chat-after-bot-ban-row-purged":         {purgeFirst: true, adminBan: true, deleted: true},
+		"cli-number-ban-then-bot-ban-merged":    {cliFirst: true, joiner: true, lidOnly: true, merge: true, deleted: true},
 	} {
 		t.Run("rule-relaxed-while-queued/"+name, func(t *testing.T) {
 			h := newHarness(t, "")
@@ -478,12 +500,56 @@ func TestBanDeletesPosts(t *testing.T) {
 					t.Fatalf("bans %+v, want one keyed by the number alone", b)
 				}
 			}
-			h.k.Deliver(h.k.Spam("S1", modtest.G1))
+			if c.cliFirst {
+				h.cliBan()
+			}
+			var watched store.Report
+			if c.button {
+				watched = watchOnly(t, h)
+			}
+			spam := h.k.Spam("S1", modtest.G1)
+			if c.lidOnly {
+				spam.SenderAlt = ""
+			}
+			h.k.Deliver(spam)
+			if c.purgeFirst {
+				if n, err := h.k.Store.PurgeLedger(h.k.Ctx, h.k.Clock.Now().Add(time.Second)); err != nil || n == 0 {
+					t.Fatalf("purged %d (%v), want the bot's ban row gone", n, err)
+				}
+			}
 			if c.adminBan && !c.banFirst {
 				h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
 			}
 			if c.cliBan {
 				h.cliBan()
+			}
+			if c.cliLID {
+				h.cliBanOf(client.Member{LID: modtest.Spammer})
+			}
+			if c.button {
+				h.press(adminUser, "ban", watched.ID)
+			}
+			if c.merge {
+				// The command line's ban names the number, the bot's their LID:
+				// two entries until the sweep finds the LID in the saved IDs.
+				if b := h.bans(); len(b) != 2 {
+					t.Fatalf("bans %+v, want the number's and the LID's", b)
+				}
+				h.k.Fake.Saved = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+				if _, err := h.app.Sweep.Run(h.k.Ctx, "r1"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.adminBan || c.cliLID || c.button || c.merge {
+				// Their one entry, linked to the admin's ban row.
+				b := h.bans()
+				if len(b) != 1 {
+					t.Fatalf("bans %+v, want their one entry", b)
+				}
+				if row, err := h.k.Store.Ledger(h.k.Ctx, b[0].LedgerID); err != nil ||
+					!strings.HasPrefix(row.TriggerID, store.AdminTrigger) && !strings.HasPrefix(row.TriggerID, store.CLITrigger) {
+					t.Fatalf("the entry links to %+v (%v), want an admin's ban row", row, err)
+				}
 			}
 			if !c.pause {
 				if bans, err := h.k.Store.BansFor(h.k.Ctx, modtest.SpammerM.IDs()); err != nil || len(bans) == 0 {
