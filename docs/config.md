@@ -117,9 +117,10 @@ Finding a community or group ID for `assigned`:
   (a post, a ban, an entry on the ban list, whichever came last) names someone
   else (the command line reads the saved WhatsApp IDs, then that). The same goes
   for the number a ban puts on the list when it names the person by one address
-  ([Add to ban list], `groupwarden ban add <lid>`); [Ban] takes the two
-  addresses the reported post carried. A ban of another WhatsApp ID that holds
-  the person's number (someone who had it before) is not lifted: it stays on
+  ([Add to ban list], `groupwarden ban add <lid>`, and [Ban] when the reported
+  post carried one address; with both, [Ban] takes the two). A ban of another
+  WhatsApp ID that holds the person's number (someone who had it before) is not
+  lifted: it stays on
   that ID and only the number is taken off it, so it no longer covers the person
   named; [Undo]'s reply and `groupwarden ban remove` count it apart from the
   bans lifted. A lift of someone who had a number before lifts their own ban
