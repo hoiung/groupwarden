@@ -404,6 +404,148 @@ func TestBanCLIRemoveByPhoneFindsLIDBan(t *testing.T) {
 	}
 }
 
+// TestBanCLIResolvesAtOnce: `ban add` pairs the address given with the other
+// through the command line's steps of pipeline.LIDForNumber (the WhatsApp
+// session store's saved IDs, then groupwarden's records; one hop) and writes
+// the ban on the LID with the number at once; with no LID known the number is
+// the key until the sweep. Someone already on the list keeps their one entry,
+// and the command line's ban is recorded on it when it was the bot's.
+func TestBanCLIResolvesAtOnce(t *testing.T) {
+	const other = "99999000000777@lid"
+	ctx := context.Background()
+	open := func(t *testing.T) (*testEnv, *store.Store) {
+		t.Helper()
+		te := newTestEnv(t, &clienttest.Fake{})
+		te.provision(t)
+		st, err := store.Open(ctx, filepath.Join(te.dir, "data", "groupwarden.db"), store.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		return te, st
+	}
+	// saved pairs the spammer's LID and number in the WhatsApp session store.
+	saved := func(t *testing.T, te *testEnv) {
+		t.Helper()
+		db := sessiontest.Create(t, filepath.Join(te.dir, "data", "whatsmeow.db"))
+		sessiontest.Exec(t, db, `INSERT INTO whatsmeow_lid_map (lid, pn) VALUES ('99999000000444', '447700900123')`)
+	}
+	ban := func(t *testing.T, st *store.Store, p ledger.Plan) {
+		t.Helper()
+		p.ConfigHash, p.BanCommunity, p.Ban, p.BanEnforce, p.Reason = "h", cmdCommunity, []string{store.BanEverywhere}, true, "pitch"
+		if err := st.Write(ctx, func(tx *sql.Tx) error {
+			_, err := ledger.Write(ctx, tx, p, time.Now())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add := func(t *testing.T, te *testEnv, arg, want string) {
+		t.Helper()
+		if code := te.sub("ban", "add", arg); code != 0 || te.out.String() != want {
+			t.Fatalf("ban add %s: exit %d %q %q, want %q", arg, code, te.out, te.errb, want)
+		}
+	}
+	// resolved: the one entry is keyed by the LID, with the number.
+	resolved := func(t *testing.T, st *store.Store) {
+		t.Helper()
+		bans, err := st.Bans(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(bans) != 1 || bans[0].Member != spammerLID || bans[0].LID != spammerLID || bans[0].Phone != spammerPhone ||
+			bans[0].Scope != store.BanEverywhere {
+			t.Fatalf("bans %+v, want one keyed by %s with %s, everywhere", bans, spammerLID, spammerPhone)
+		}
+	}
+	const number = "+44 7700 900123"
+	banned, already := "banned "+spammerLID+" (scope *)\n", "already banned "+spammerLID+" (scope *)\n"
+	unknown := "banned " + spammerPhone + " (scope *)\nthe running bot looks up this number's LID at its next sweep\n"
+	t.Run("from-saved-ids", func(t *testing.T) {
+		for _, arg := range []string{number, spammerLID} {
+			te, st := open(t)
+			saved(t, te)
+			add(t, te, arg, banned)
+			resolved(t, st)
+		}
+	})
+	t.Run("from-record", func(t *testing.T) {
+		for _, arg := range []string{number, spammerLID} {
+			te, st := open(t)
+			seenPost(t, st, "k1", "M1", spammerLID, spammerPhone) // a post it decided
+			add(t, te, arg, banned)
+			resolved(t, st)
+		}
+	})
+	t.Run("from-held-ban", func(t *testing.T) {
+		te, st := open(t)
+		ban(t, st, ledger.Plan{Trigger: "S1", Target: client.Member{LID: spammerLID, Phone: spammerPhone}, BanHeld: true})
+		add(t, te, number, banned)
+		resolved(t, st)
+		// The ban the pause held is in force now, as an added ban settles it.
+		if held, err := st.HeldBans(ctx); err != nil || len(held) != 0 {
+			t.Fatalf("held bans %+v (%v), want the held one settled", held, err)
+		}
+	})
+	t.Run("saved-ids-win", func(t *testing.T) {
+		te, st := open(t)
+		saved(t, te)
+		seenPost(t, st, "k1", "M1", other, spammerPhone) // the records pair the number with someone else
+		add(t, te, number, banned)
+		resolved(t, st)
+	})
+	t.Run("unknown-waits-for-sweep", func(t *testing.T) {
+		te, st := open(t)
+		add(t, te, number, unknown)
+		if bans, err := st.Bans(ctx); err != nil || len(bans) != 1 || bans[0].Member != spammerPhone || bans[0].LID != "" {
+			t.Fatalf("bans %+v (%v), want one keyed by the number", bans, err)
+		}
+	})
+	t.Run("already-banned", func(t *testing.T) {
+		te, st := open(t)
+		saved(t, te)
+		ban(t, st, ledger.Plan{Trigger: "M1", Target: client.Member{LID: spammerLID}}) // the bot's, by LID alone
+		db, err := sql.Open("sqlite", filepath.Join(te.dir, "data", "groupwarden.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		link := func(t *testing.T) (id int64, trigger string) {
+			t.Helper()
+			if err := db.QueryRowContext(ctx, `SELECT l.id, l.trigger_id FROM bans b JOIN ledger l ON l.id = b.ledger_id`).
+				Scan(&id, &trigger); err != nil {
+				t.Fatal(err)
+			}
+			return id, trigger
+		}
+		add(t, te, number, already)
+		resolved(t, st)
+		id, trigger := link(t)
+		if !strings.HasPrefix(trigger, store.CLITrigger) {
+			t.Fatalf("the entry links to a row triggered %q, want the ban command's (%s...)", trigger, store.CLITrigger)
+		}
+		// Again, by the LID: the entry keeps the command line's link.
+		add(t, te, spammerLID, already)
+		resolved(t, st)
+		if again, _ := link(t); again != id {
+			t.Fatalf("the entry links to row %d, want the command line's first ban (row %d) kept", again, id)
+		}
+		if n := count(t, db, `SELECT COUNT(*) FROM reports WHERE kind = ?`, ledger.KindBanCLI); n != 0 {
+			t.Fatalf("%d %s report(s), want none: nobody was added", n, ledger.KindBanCLI)
+		}
+	})
+	// An earlier `ban add` of the number found no LID, then the bot banned
+	// them by LID alone: once the pair is known, `ban add` merges the two.
+	t.Run("merges-number-entry", func(t *testing.T) {
+		te, st := open(t)
+		add(t, te, number, unknown)
+		ban(t, st, ledger.Plan{Trigger: "M1", Target: client.Member{LID: spammerLID}})
+		saved(t, te)
+		add(t, te, number, already)
+		resolved(t, st)
+	})
+}
+
 type shown struct {
 	Addresses []string
 	Bans      []map[string]any
