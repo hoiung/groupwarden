@@ -437,6 +437,53 @@ func TestBanCLIRemoveKeepsAnEarlierHoldersBan(t *testing.T) {
 	}
 }
 
+// TestBanCLIRemoveOfAnEarlierHolderKeepsTheHoldersBan (#8 Gate 1): someone
+// who held a number before and its holder now are both banned with it.
+// `ban remove <lid>` of the earlier one finds the number is someone else's
+// now (pair: the saved WhatsApp IDs, else the record of the number made
+// last), so it lifts their ban alone and the holder's keeps the number. In
+// the saved-ids case the earlier one's ban was recorded last, so only the
+// saved IDs tell.
+func TestBanCLIRemoveOfAnEarlierHolderKeepsTheHoldersBan(t *testing.T) {
+	const earlier = "99999000000777@lid"
+	ctx := context.Background()
+	for name, saved := range map[string]bool{"saved-ids": true, "records": false} {
+		t.Run(name, func(t *testing.T) {
+			te, st := provisionedStore(t)
+			order := []client.Member{{LID: earlier, Phone: spammerPhone}, {LID: spammerLID, Phone: spammerPhone}}
+			if saved {
+				db := sessiontest.Create(t, filepath.Join(te.dir, "data", "whatsmeow.db"))
+				sessiontest.Exec(t, db, `INSERT INTO whatsmeow_lid_map (lid, pn) VALUES ('99999000000444', '447700900123')`)
+				order[0], order[1] = order[1], order[0]
+			}
+			now := time.Now()
+			for i, who := range order {
+				p := ledger.Plan{Trigger: "M" + who.Key(), Target: who, ConfigHash: "h", BanCommunity: cmdCommunity,
+					Ban: []string{store.BanEverywhere}, BanEnforce: true, Reason: "pitch"}
+				if err := st.Write(ctx, func(tx *sql.Tx) error {
+					_, err := ledger.Write(ctx, tx, p, now.Add(time.Duration(i-2)*time.Hour))
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if code := te.sub("ban", "remove", earlier); code != 0 || te.out.String() != "unbanned "+earlier+"\n" {
+				t.Fatalf("ban remove %s: exit %d %q %q", earlier, code, te.out, te.errb)
+			}
+			if _, banned, err := st.FindBan(ctx, []string{earlier}, ""); err != nil || banned {
+				t.Fatalf("the earlier holder is still banned (%v)", err)
+			}
+			b, banned, err := st.FindBan(ctx, []string{spammerLID}, "")
+			if err != nil || !banned || b.Member != spammerLID || b.Phone != spammerPhone {
+				t.Fatalf("holder's ban %+v, banned %v (%v); want it kept with the number", b, banned, err)
+			}
+			if _, banned, err := st.FindBan(ctx, []string{spammerPhone}, ""); err != nil || !banned {
+				t.Fatalf("the number alone is no longer banned (%v)", err)
+			}
+		})
+	}
+}
+
 // TestBanCLIResolvesAtOnce: `ban add` pairs the address given with the other
 // through the command line's steps of pipeline.LIDForNumber (the WhatsApp
 // session store's saved IDs, then groupwarden's records; one hop) and writes
