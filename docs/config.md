@@ -132,3 +132,8 @@ Finding a community or group ID for `assigned`:
   number at different times were both banned, the latest it recorded of the
   number decides whose it is, and that can be out of date. After lifting either
   of them, `groupwarden ban list` shows which ban still carries the number.
+  The same limit applies when a ban the list holds by WhatsApp ID alone is
+  later given a number (a `/ban <number>` or `groupwarden ban add <phone>` of
+  someone already banned): the entry counts from when it was first written, so
+  someone the bot recorded posting from that number in between, before it went
+  to the banned person, can be taken for them until that record expires.
