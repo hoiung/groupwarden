@@ -58,16 +58,16 @@ func TestHeldBanSettlesOnce(t *testing.T) {
 	if err := s.FailHeldBan(ctx, c1.ID, "refuted"); err != nil || statusOf(c1) != Requested {
 		t.Fatalf("failing a settled held ban: %s (%v)", statusOf(c1), err)
 	}
-	if applied, err := s.ApplyHeldBan(ctx, c1, []string{"c1"}); err != nil || applied {
-		t.Fatalf("applying a settled held ban: applied %v (%v)", applied, err)
+	if res, err := s.ApplyHeldBan(ctx, c1, []string{"c1"}); err != nil || res != (HeldBanApplied{}) {
+		t.Fatalf("applying a settled held ban: %+v (%v)", res, err)
 	}
 	if _, banned, err := s.FindBan(ctx, []string{x}, "c1"); err != nil || banned {
 		t.Fatalf("a settled held ban wrote a ban entry: %v (%v)", banned, err)
 	}
 	// The held ban in c2 applies once, and then cannot be failed.
-	for i, want := range []bool{true, false} {
-		if applied, err := s.ApplyHeldBan(ctx, c2, []string{"c2"}); err != nil || applied != want {
-			t.Fatalf("apply %d: applied %v (%v), want %v", i+1, applied, err, want)
+	for i, want := range []HeldBanApplied{{Applied: true, BansAdded: 1}, {}} {
+		if res, err := s.ApplyHeldBan(ctx, c2, []string{"c2"}); err != nil || res != want {
+			t.Fatalf("apply %d: %+v (%v), want %+v", i+1, res, err, want)
 		}
 	}
 	if _, banned, err := s.FindBan(ctx, []string{x}, "c2"); err != nil || !banned {
@@ -75,6 +75,39 @@ func TestHeldBanSettlesOnce(t *testing.T) {
 	}
 	if err := s.FailHeldBan(ctx, c2.ID, "refuted"); err != nil || statusOf(c2) != Requested {
 		t.Fatalf("failing an applied held ban: %s (%v)", statusOf(c2), err)
+	}
+}
+
+// TestApplyHeldBanOnEntryAlreadyThere: a held ban applied for someone whose
+// ban list entry links a row purged since adds no entry and moves the link to
+// its own row, and says so.
+func TestApplyHeldBanOnEntryAlreadyThere(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	s := openAt(t, &now)
+	const x = "99999000000444@lid"
+	var row LedgerRow
+	if err := s.Write(ctx, func(tx *sql.Tx) error {
+		if err := AddBan(ctx, tx, Ban{Member: x, Scope: BanEverywhere, LID: x, Reason: "spam", LedgerID: 999}, now); err != nil {
+			return err
+		}
+		id, _, err := InsertLedger(ctx, tx, LedgerRow{Action: ActBan, Chat: BanEverywhere, Target: x, TriggerID: "T2",
+			Community: "c1", Mode: ModeEnforce, ConfigHash: "h"}, now)
+		row.ID = id
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	row, err := s.Ledger(ctx, row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := s.ApplyHeldBan(ctx, row, []string{BanEverywhere}); err != nil ||
+		res != (HeldBanApplied{Applied: true, LinksMoved: 1}) {
+		t.Fatalf("applied %+v (%v), want no entry added and one link moved", res, err)
+	}
+	if bans, err := s.Bans(ctx); err != nil || len(bans) != 1 || bans[0].LedgerID != row.ID {
+		t.Fatalf("bans %+v (%v), want the one entry linked to row %d", bans, err, row.ID)
 	}
 }
 
