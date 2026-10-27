@@ -128,6 +128,89 @@ func TestOtherAddressBanRows(t *testing.T) {
 	}
 }
 
+// TestOtherAddressBanListEntries (#8 Ralph restart 1): a ban list entry pairs
+// its LID and number, as of when it was written, in the same time-ordered
+// read as the posts and ban rows: of two people paired with one number, the
+// one recorded last holds it now, whichever kind of record each is. An entry
+// keyed by the number, with no LID, pairs nothing.
+func TestOtherAddressBanListEntries(t *testing.T) {
+	ctx := context.Background()
+	const (
+		earlier = "99999000000777@lid" // synthetic IDs, listed in .secret-pii-allowlist
+		holder  = "99999000000888@lid"
+		number  = "447700900321@s.whatsapp.net"
+	)
+	t0 := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	t1 := t0.Add(time.Hour)
+	entry := func(lid string, at time.Time) func(context.Context, *sql.Tx) error {
+		return func(ctx context.Context, tx *sql.Tx) error {
+			return AddBan(ctx, tx, Ban{Member: lid, Scope: BanEverywhere, LID: lid, Phone: number, Reason: "r"}, at)
+		}
+	}
+	// A ban the bot wrote from a post that carried both addresses: its row
+	// pairs them, and its entry links the row.
+	banRow := func(lid string, at time.Time) func(context.Context, *sql.Tx) error {
+		return func(ctx context.Context, tx *sql.Tx) error {
+			id, _, err := InsertLedger(ctx, tx, LedgerRow{Action: ActBan, Chat: BanEverywhere, Target: lid, Address: number,
+				TriggerID: "T" + lid, Community: "c", Mode: ModeEnforce, Status: Requested, ConfigHash: "h"}, at)
+			if err != nil {
+				return err
+			}
+			return AddBan(ctx, tx, Ban{Member: lid, Scope: BanEverywhere, LID: lid, Phone: number, Reason: "r", LedgerID: id}, at)
+		}
+	}
+	post := func(lid string, at time.Time) func(context.Context, *sql.Tx) error {
+		return func(ctx context.Context, tx *sql.Tx) error {
+			_, err := InsertEvidence(ctx, tx, Evidence{Chat: "99999000000111@g.us", Community: "c", Sender: lid,
+				SenderAlt: number, Subject: lid, MsgID: "P" + lid, TargetID: "P" + lid, MsgTime: at, Fields: "{}",
+				Normalised: "{}"}, at)
+			return err
+		}
+	}
+	for name, c := range map[string]struct {
+		writes []func(context.Context, *sql.Tx) error
+		want   map[string]string // OtherAddress of each address
+	}{
+		"entry-pairs-both-ways": {writes: []func(context.Context, *sql.Tx) error{entry(holder, t0)},
+			want: map[string]string{number: holder, holder: number}},
+		"later-entry-beats-earlier-ban-row": {writes: []func(context.Context, *sql.Tx) error{banRow(earlier, t0),
+			entry(holder, t1)}, want: map[string]string{number: holder}},
+		"later-ban-row-beats-earlier-entry": {writes: []func(context.Context, *sql.Tx) error{entry(holder, t0),
+			banRow(earlier, t1)}, want: map[string]string{number: earlier}},
+		"later-post-beats-earlier-entry": {writes: []func(context.Context, *sql.Tx) error{entry(holder, t0),
+			post(earlier, t1)}, want: map[string]string{number: earlier}},
+		"later-entry-beats-earlier-post": {writes: []func(context.Context, *sql.Tx) error{post(earlier, t0),
+			entry(holder, t1)}, want: map[string]string{number: holder}},
+		"number-keyed-entry-pairs-nothing": {writes: []func(context.Context, *sql.Tx) error{
+			func(ctx context.Context, tx *sql.Tx) error {
+				return AddBan(ctx, tx, Ban{Member: number, Scope: BanEverywhere, Phone: number, Reason: "r"}, t0)
+			}}, want: map[string]string{number: ""}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := t1
+			s := openAt(t, &now)
+			if err := s.Write(ctx, func(tx *sql.Tx) error {
+				for _, w := range c.writes {
+					if err := w(ctx, tx); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for addr, want := range c.want {
+				if got, err := s.OtherAddress(ctx, addr); err != nil || got != want {
+					t.Errorf("OtherAddress(%s) = %q (%v), want %q", addr, got, err, want)
+				}
+				if got, err := s.OtherAddressEver(ctx, addr); err != nil || got != want {
+					t.Errorf("OtherAddressEver(%s) = %q (%v), want %q", addr, got, err, want)
+				}
+			}
+		})
+	}
+}
+
 // TestForgetMemberCountsHeldBanByPhone: `member forget <phone>` keeps, and
 // counts, a ban a pause holds that names the member by LID and keeps their
 // phone, as /unban <number> finds it.
