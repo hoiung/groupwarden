@@ -341,7 +341,8 @@ func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m 
 		}
 	}
 	if m.LID == "" {
-		m.LID = banListHolder(bans, m.Phone)
+		// A number alone (no record gave its LID): bans are the number's.
+		m.LID = banListHolder(bans)
 	}
 	if lidOnly && m.Phone != "" {
 		// LIDForNumber's steps 1 and 4; its records step reads outside tx, so
@@ -368,7 +369,7 @@ func Identify(ctx context.Context, d *Directory, st *store.Store, tx *sql.Tx, m 
 			if err != nil {
 				return m, err
 			}
-			holder = banListHolder(held, m.Phone)
+			holder = banListHolder(held)
 		}
 		if holder.Server() == "lid" && holder.Bare() != m.LID.Bare() {
 			m.Phone = ""
@@ -437,7 +438,7 @@ func RecordedPair(ctx context.Context, st *store.Store, addr client.JID) (client
 	}
 	bans, err := st.BansFor(ctx, []string{string(addr)})
 	if err != nil || addr.Server() != "lid" {
-		return banListHolder(bans, addr), err
+		return banListHolder(bans), err
 	}
 	for _, b := range bans {
 		if m := client.MemberOf(client.JID(b.LID), client.JID(b.Phone)); m.Phone != "" {
@@ -447,16 +448,16 @@ func RecordedPair(ctx context.Context, st *store.Store, addr client.JID) (client
 	return "", nil
 }
 
-// banListHolder is the LID of the ban list entry in bans (oldest first, as
-// BansFor lists them) that holds phone and was written last, "" when none
-// does. WhatsApp gives a number to someone new once its holder leaves it, so
+// banListHolder is the LID of the ban written last among bans, the ban list
+// entries of one number (BansFor of it, oldest first), "" when none has a
+// LID. WhatsApp gives a number to someone new once its holder leaves it, so
 // of two people's bans holding one number the later one names who holds it
 // now. An entry that took the number after it was written counts from when it
 // was written.
-func banListHolder(bans []store.Ban, phone client.JID) client.JID {
+func banListHolder(bans []store.Ban) client.JID {
 	for i := len(bans) - 1; i >= 0; i-- {
-		if b := bans[i]; b.LID != "" && client.JID(b.Phone).Bare() == phone.Bare() {
-			return client.JID(b.LID).Bare()
+		if bans[i].LID != "" {
+			return client.JID(bans[i].LID).Bare()
 		}
 	}
 	return ""
