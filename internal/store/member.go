@@ -53,15 +53,7 @@ func otherAddress(ctx context.Context, q queryer, addr, banRows string) (string,
 		return "", nil
 	}
 	var other string
-	err := q.QueryRowContext(ctx, `SELECT other FROM (
-	SELECT sender_alt AS other, decided_at AS at FROM seen WHERE sender = ?1 AND sender_alt != ''
-	UNION ALL SELECT sender, decided_at FROM seen WHERE sender_alt = ?1 AND sender != ''
-	UNION ALL SELECT sender_alt, created_at FROM evidence WHERE sender = ?1 AND sender_alt != ''
-	UNION ALL SELECT sender, created_at FROM evidence WHERE sender_alt = ?1
-	UNION ALL SELECT address, created_at FROM ledger WHERE action = 'ban' AND target = ?1 AND address NOT IN ('', ?1)
-		AND `+banRows+`
-	UNION ALL SELECT target, created_at FROM ledger WHERE action = 'ban' AND address = ?1 AND target != ?1 AND `+banRows+`)
-ORDER BY at DESC LIMIT 1`, addr).Scan(&other)
+	err := q.QueryRowContext(ctx, otherAddressQuery(banRows), addr).Scan(&other)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -69,6 +61,26 @@ ORDER BY at DESC LIMIT 1`, addr).Scan(&other)
 		return "", fmt.Errorf("read other address: %w", err)
 	}
 	return other, nil
+}
+
+// otherAddressQuery is otherAddress's query, ?1 the address, taking the ban
+// rows banRows selects. Each read searches an index (migration 13). Beside
+// the column it matches with ?1 a read also asks that column not to be
+// empty: the column's index is partial (empty values left out), and SQLite
+// uses one only when the query's own terms imply its condition. The address
+// is never empty here (otherAddress returns first), so the extra terms change
+// no result.
+func otherAddressQuery(banRows string) string {
+	return `SELECT other FROM (
+	SELECT sender_alt AS other, decided_at AS at FROM seen WHERE sender = ?1 AND sender != '' AND sender_alt != ''
+	UNION ALL SELECT sender, decided_at FROM seen WHERE sender_alt = ?1 AND sender_alt != '' AND sender != ''
+	UNION ALL SELECT sender_alt, created_at FROM evidence WHERE sender = ?1 AND sender != '' AND sender_alt != ''
+	UNION ALL SELECT sender, created_at FROM evidence WHERE sender_alt = ?1 AND sender_alt != ''
+	UNION ALL SELECT address, created_at FROM ledger WHERE action = 'ban' AND target = ?1 AND address NOT IN ('', ?1)
+		AND ` + banRows + `
+	UNION ALL SELECT target, created_at FROM ledger WHERE action = 'ban' AND address = ?1 AND address != ''
+		AND target != ?1 AND ` + banRows + `)
+ORDER BY at DESC LIMIT 1`
 }
 
 // ForgetMember deletes everything groupwarden.db holds about the member known
