@@ -433,6 +433,12 @@ type Adapter interface {
 	// LinkedDevices lists the bot account's OTHER linked devices (the phone
 	// and this device excluded).
 	LinkedDevices(ctx context.Context) ([]JID, error)
+	// SavedLID is the LID the WhatsApp library has saved for a phone number
+	// ("" when it has none). It reads the library's store and never asks
+	// WhatsApp.
+	SavedLID(ctx context.Context, phone JID) (JID, error)
+	// ResolvePhoneToLID finds the LID of a phone number: the saved one
+	// (SavedLID), else one lookup on WhatsApp.
 	ResolvePhoneToLID(ctx context.Context, phone JID) (JID, error)
 	Close() error
 }
