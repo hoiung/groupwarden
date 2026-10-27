@@ -49,6 +49,10 @@ func (c controls) Undo(ctx context.Context, reportID int64, by telegram.Actor) (
 	}
 	text := fmt.Sprintf("Undone by %s (#%d): %s is unbanned everywhere (%d ban(s) lifted, %d action(s) overturned). ",
 		by.Name, reportID, mask.IDs(res.Member.Key()), res.BansLifted, res.Overturned)
+	if res.BansKept > 0 {
+		text += fmt.Sprintf("%d ban(s) of someone who had their number before stay on that person, without the number. ",
+			res.BansKept)
+	}
 	if len(res.RemovedFrom) == 0 {
 		text += "The bot had not removed them from any group."
 	} else {
