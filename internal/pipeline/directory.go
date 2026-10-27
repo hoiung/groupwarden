@@ -366,7 +366,7 @@ func LIDForNumber(ctx context.Context, phone client.JID, src LIDSources) (lid cl
 		}
 	}
 	if src.Saved != nil {
-		if lid, err = src.Saved(ctx, phone); err != nil || lid != "" {
+		if lid, err = src.Saved(ctx, phone); err != nil || lid.Server() == "lid" {
 			return lid.Bare(), nil, err
 		}
 	}
