@@ -239,6 +239,46 @@ func TestBanByNumber(t *testing.T) {
 			t.Fatalf("reply %q, bans %+v, %d ledger rows", got, h.bans(), h.ledgerRows())
 		}
 	})
+	// A number that someone else held before: the record of a post the bot
+	// reported pairs it with that old owner's LID. The ban goes on its current
+	// holder's LID, which the saved WhatsApp IDs give (in the first) or,
+	// with none saved, WhatsApp (in the second): the bot's records come last.
+	// The group list does not pair the number (they joined since it was read).
+	for name, current := range map[string]func(h *harness){
+		"number-moved-to-someone-else": func(h *harness) {
+			h.k.Fake.Saved = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		},
+		"whatsapp-beats-records": func(h *harness) {
+			h.k.Fake.LIDs = map[client.JID]client.JID{modtest.SpammerPhone: modtest.Spammer}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t, "")
+			recentJoiner(h)
+			oldOwnerRecord(h)
+			current(h)
+			h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+			if bans := h.bans(); len(bans) != 1 || bans[0].Member != string(modtest.Spammer) ||
+				bans[0].Phone != string(modtest.SpammerPhone) {
+				t.Fatalf("bans %+v, want the ban on the number's current holder %s", bans, modtest.Spammer)
+			}
+		})
+	}
+}
+
+// oldOwnerRecord records a post the bot reported from modtest.Other1 that
+// carried the kit spammer's number: someone who held the number before.
+func oldOwnerRecord(h *harness) {
+	h.t.Helper()
+	at := h.k.Clock.Now()
+	if err := h.k.Store.Write(h.k.Ctx, func(tx *sql.Tx) error {
+		_, err := store.InsertEvidence(h.k.Ctx, tx, store.Evidence{Chat: string(modtest.G1), Community: string(modtest.Community),
+			Sender: string(modtest.Other1), SenderAlt: string(modtest.SpammerPhone), Subject: string(modtest.Other1), MsgID: "O1",
+			TargetID: "O1", MsgTime: at, Fields: "{}", Normalised: "{}"}, at)
+		return err
+	}); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 // TestUnbanByNumber (AC 5.2): /unban <number> lifts the bans of a phone
@@ -1500,6 +1540,32 @@ func TestBanRecentJoiner(t *testing.T) {
 			}
 		})
 	}
+	// WhatsApp cannot be asked (rate-limited) and the record of their post
+	// pairs their two addresses: /ban <number> resolves the ban on their LID,
+	// and /unban <number> lifts a ban that names them by LID alone, as the
+	// records are still read after WhatsApp.
+	t.Run("ban-number-whatsapp-down-uses-record", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Fake.FailNext("ResolvePhoneToLID", fmt.Errorf("%w: status 429", client.ErrRateLimited))
+		h.command(telegramtest.ChatID, adminUser, "/ban "+spammerNumber, 0)
+		if bans := h.bans(); len(bans) != 1 || bans[0].Member != string(modtest.Spammer) ||
+			bans[0].Phone != string(modtest.SpammerPhone) {
+			t.Fatalf("bans %+v, want the number's ban resolved on their LID", bans)
+		}
+	})
+	t.Run("unban-number-whatsapp-down-uses-record", func(t *testing.T) {
+		h := newHarness(t, "")
+		recentJoiner(h)
+		h.post("P1", modtest.G1, modtest.Spammer, modtest.SpammerPhone)
+		h.k.Ban(client.Member{LID: modtest.Spammer})
+		h.k.Fake.FailNext("ResolvePhoneToLID", fmt.Errorf("%w: status 429", client.ErrRateLimited))
+		h.command(telegramtest.ChatID, adminUser, "/unban "+spammerNumber, 0)
+		if bans := h.bans(); len(bans) != 0 {
+			t.Fatalf("bans %+v after /unban <number>, want the ban by their LID lifted; reply %q", bans, h.lastReply())
+		}
+	})
 	// /ban <number> while a pause holds their ban leaves that held ban to
 	// apply: when their LID is not known the number's ban puts none on the
 	// ban list, so settling the held ban would leave their queued delete and
