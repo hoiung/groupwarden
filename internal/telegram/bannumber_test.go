@@ -1312,6 +1312,45 @@ func TestBanRecentJoiner(t *testing.T) {
 				rowsOf(h, modtest.SpammerM))
 		}
 	})
+	// Banned by number with the ban command and not resolved yet, they post,
+	// join and ask to join under their LID alone, with no record of a post
+	// pairing the two: the group list's pair (Identify's one Complete) gives
+	// the number, so the post is deleted, the join removed and the request
+	// rejected. The request is checked as the sweep checks each group, without
+	// the sweep's own resolve of the ban first.
+	for name, act := range map[string]func(h *harness) (string, bool){
+		"post": func(h *harness) (string, bool) {
+			h.post("P1", modtest.G1, modtest.Spammer, "")
+			h.k.Fire()
+			return "P1 deleted", h.revoked(modtest.G1, "P1")
+		},
+		"join": func(h *harness) (string, bool) {
+			h.k.Deliver(&client.GroupChange{Group: modtest.G2, Time: h.k.Clock.Now(), JoinReason: "invite",
+				Joined: []client.JID{modtest.Spammer}})
+			h.k.Fire()
+			return "removed from G2", h.k.Fake.Count("Remove "+string(modtest.G2)+" "+string(modtest.Spammer)) == 1
+		},
+		"join-request": func(h *harness) (string, bool) {
+			h.k.Fake.Requests = map[client.JID][]client.JoinRequest{modtest.G2: {{JID: modtest.Spammer}}}
+			if err := h.app.Sweep.Enforcer.CheckJoinRequests(h.k.Ctx, modtest.G2, "r1"); err != nil {
+				h.t.Fatal(err)
+			}
+			h.k.Fire()
+			return "request to G2 rejected",
+				h.k.Fake.Count("RejectJoinRequests "+string(modtest.G2)+" "+string(modtest.Spammer)) == 1
+		},
+	} {
+		t.Run("group-list-pair/"+name, func(t *testing.T) {
+			h := newHarness(t, "")
+			h.cliBan()
+			if b := h.bans(); len(b) != 1 || b[0].LID != "" {
+				t.Fatalf("bans %+v, want one keyed by the number alone", b)
+			}
+			if what, ok := act(h); !ok {
+				t.Fatalf("want %s; calls %v, rows %v", what, h.k.Fake.Calls(), rowsOf(h, modtest.SpammerM))
+			}
+		})
+	}
 	// Their request to join a group, after a ban by number with the ban
 	// command, names their LID alone: the record of their earlier post gives
 	// the number, so the sweep rejects it.
