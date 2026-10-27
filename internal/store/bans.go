@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -45,6 +46,102 @@ ON CONFLICT (member, scope) DO UPDATE SET
 		b.Member, b.Scope, b.LID, b.Phone, b.Reason, nullID(b.LedgerID), now.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("ban insert: %w", err)
+	}
+	return nil
+}
+
+// BanEntry is a person's ban list entry in one scope with the ledger row its
+// link names (Linked false: it has no link, or the row was purged since).
+type BanEntry struct {
+	Ban
+	Row    LedgerRow
+	Linked bool
+}
+
+// Keeps reports whether a new ban (admin: an admin ordered it, AdminOrdered)
+// leaves the entry's link where it is. An admin's ban outranks the bot's: a
+// link to an admin's row always stays, a link to the bot's stays unless an
+// admin bans them, and a link to no row always moves.
+func (e BanEntry) Keeps(admin bool) bool {
+	return e.Linked && (AdminOrdered(e.Row.TriggerID) || !admin)
+}
+
+// BanEntryIn returns the ban list entry in scope of the person known by lid
+// and phone (either may be ""), read through q: one whose key or LID is lid,
+// or one with no LID that holds phone; with no lid, any entry holding phone.
+// An entry with another LID is another person, whatever number it holds. An
+// entry found by the LID comes first, then one keyed by the number.
+func BanEntryIn(ctx context.Context, q queryer, lid, phone, scope string) (BanEntry, bool, error) {
+	var e BanEntry
+	b, err := scanBan(q.QueryRowContext(ctx, `SELECT `+banCols+` FROM bans WHERE scope = ?3 AND (
+	(?1 != '' AND (member = ?1 OR lid = ?1))
+	OR (?2 != '' AND (phone = ?2 OR member = ?2) AND (?1 = '' OR lid = '')))
+ORDER BY (?1 != '' AND (member = ?1 OR lid = ?1)) DESC, member = ?2 DESC, created_at LIMIT 1`, lid, phone, scope))
+	if errors.Is(err, sql.ErrNoRows) {
+		return e, false, nil
+	}
+	if err != nil {
+		return e, false, fmt.Errorf("read ban list: %w", err)
+	}
+	e.Ban = b
+	if b.LedgerID != 0 {
+		if e.Row, e.Linked, err = oneRow(q.QueryRowContext(ctx, `SELECT `+ledgerCols+` FROM ledger WHERE id = ?`,
+			b.LedgerID)); err != nil {
+			return e, false, err
+		}
+	}
+	return e, true, nil
+}
+
+// PutBan puts b (a scope, the key and addresses of a new entry, its ledger
+// row) on the ban list in tx, one entry per person and scope. The entry the
+// person known by lid and phone already has there (BanEntryIn) is kept: its
+// link moves to b's row unless it keeps it (BanEntry.Keeps; admin: an admin
+// ordered b), and the number or LID it lacks is filled in (a LID resolves it
+// as the sweep would, ResolveBanIn). With no entry, b is added. added and
+// moved report which happened.
+func PutBan(ctx context.Context, tx *sql.Tx, b Ban, lid, phone string, admin bool, now time.Time) (added, moved bool, err error) {
+	e, found, err := BanEntryIn(ctx, tx, lid, phone, b.Scope)
+	if err != nil {
+		return false, false, err
+	}
+	if !found {
+		return true, false, AddBan(ctx, tx, b, now)
+	}
+	if moved = !e.Keeps(admin) && b.LedgerID != 0 && b.LedgerID != e.LedgerID; moved {
+		if _, err := tx.ExecContext(ctx, `UPDATE bans SET ledger_id = ? WHERE member = ? AND scope = ?`,
+			b.LedgerID, e.Member, e.Scope); err != nil {
+			return false, false, fmt.Errorf("move ban link: %w", err)
+		}
+	}
+	return false, moved, fill(ctx, tx, e, lid, phone)
+}
+
+// FillBan fills in the number or LID the ban list entry in scope of the person
+// known by lid and phone lacks (BanEntryIn), in tx: a ban of someone already
+// on the list that reuses their entry's row still records what it knows of
+// them. It adds no entry.
+func FillBan(ctx context.Context, tx *sql.Tx, lid, phone, scope string) error {
+	e, found, err := BanEntryIn(ctx, tx, lid, phone, scope)
+	if err != nil || !found {
+		return err
+	}
+	return fill(ctx, tx, e, lid, phone)
+}
+
+// fill gives entry e the phone or LID it lacks; a LID resolves it as the
+// sweep would (ResolveBanIn).
+func fill(ctx context.Context, tx *sql.Tx, e BanEntry, lid, phone string) error {
+	if e.Phone == "" && phone != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE bans SET phone = ? WHERE member = ? AND scope = ?`,
+			phone, e.Member, e.Scope); err != nil {
+			return fmt.Errorf("fill ban phone: %w", err)
+		}
+	}
+	if e.LID == "" && lid != "" && e.Phone != "" {
+		if err := ResolveBanIn(ctx, tx, e.Phone, lid); err != nil {
+			return fmt.Errorf("resolve ban: %w", err)
+		}
 	}
 	return nil
 }
@@ -158,8 +255,9 @@ func bans(ctx context.Context, q queryer, query string, args ...any) ([]Ban, err
 }
 
 // ResolveBan records the LID found for a phone-only ban: the entry is re-keyed
-// on the LID (merging with an existing LID entry of the same scope), and a
-// failed lookup it carried (lid_failed) is cleared.
+// on the LID (merging with an existing LID entry of the same scope, which
+// keeps an admin's link from either side, the LID entry's when both are an
+// admin's), and a failed lookup it carried (lid_failed) is cleared.
 func (s *Store) ResolveBan(ctx context.Context, phone, lid string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error { return ResolveBanIn(ctx, tx, phone, lid) })
 }
@@ -176,6 +274,16 @@ func ResolveBanIn(ctx context.Context, tx *sql.Tx, phone, lid string) error {
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE bans SET phone = ?1 WHERE member = ?2 AND phone = ''
 	AND scope IN (SELECT scope FROM bans WHERE phone = ?1 AND member = phone)`, phone, lid); err != nil {
+		return err
+	}
+	// The kept entry takes the number entry's link when that one is an
+	// admin's and its own is not (the bot's, or a row purged since): an
+	// admin's ban outranks the bot's, as when it is written (PutBan).
+	if _, err := tx.ExecContext(ctx, `UPDATE bans SET ledger_id = (
+	SELECT n.ledger_id FROM bans n WHERE n.phone = ?1 AND n.member = n.phone AND n.scope = bans.scope)
+WHERE member = ?2 AND NOT `+adminLinked("bans")+`
+	AND EXISTS (SELECT 1 FROM bans n WHERE n.phone = ?1 AND n.member = n.phone AND n.scope = bans.scope
+		AND `+adminLinked("n")+`)`, phone, lid); err != nil {
 		return err
 	}
 	_, err := tx.ExecContext(ctx, `DELETE FROM bans WHERE phone = ? AND member = phone`, phone)
