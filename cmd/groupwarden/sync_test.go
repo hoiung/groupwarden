@@ -149,10 +149,27 @@ func TestSyncConfigReloadsTheRunningBot(t *testing.T) {
 	if err := os.RemoveAll(repo.Remote); err != nil {
 		t.Fatal(err)
 	}
+	// Failed pulls alert only once they have failed for 30 minutes straight
+	// (configsync.FailAlertAfter), and once per run of failures.
+	t0 := time.Date(2026, 11, 4, 14, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) { te.now = func() time.Time { return t0.Add(d) } }
+	failedPull := func(d time.Duration) {
+		t.Helper()
+		at(d)
+		if code := sync(); code != exitFail || !strings.HasPrefix(te.out.String(), "FAILED -: git pull: ") {
+			t.Fatalf("failed pull at %v: exit %d\n%s", d, code, te.out)
+		}
+	}
+	failedPull(0)
+	failedPull(25 * time.Minute)
+	if rs := reports(alert.SyncFailed); len(rs) != 0 {
+		t.Fatalf("sync_failed reports %+v after 25 minutes of failed pulls, want none", rs)
+	}
 	// The alert and the status recording it are written together: while the
-	// status cannot be written, a failed sync raises no alert, so the next
-	// run's alert is the only one.
+	// status cannot be written, the alert now due is not raised, and the next
+	// run raises it, once.
 	lift := modtest.FailWritesInFile(t, st, "status", "")
+	at(30 * time.Minute)
 	if code := sync(); code != exitFail {
 		t.Fatalf("failed pull while the status cannot be written: exit %d\n%s", code, te.out)
 	}
@@ -160,13 +177,15 @@ func TestSyncConfigReloadsTheRunningBot(t *testing.T) {
 		t.Fatalf("sync_failed reports %+v while their status could not be written, want none", rs)
 	}
 	lift()
-	for i := 0; i < 2; i++ {
-		if code := sync(); code != exitFail || !strings.HasPrefix(te.out.String(), "FAILED -: git pull: ") {
-			t.Fatalf("failed pull %d: exit %d\n%s", i, code, te.out)
-		}
+	failedPull(35 * time.Minute)
+	failedPull(40 * time.Minute)
+	if rs := reports(alert.SyncFailed); len(rs) != 1 || !rs[0].Priority ||
+		!strings.Contains(rs[0].Text, "has FAILED for 35 minutes: ") || !strings.Contains(rs[0].Text, "tries again every 5 minutes") {
+		t.Fatalf("sync_failed reports %+v, want one, after 35 minutes", rs)
 	}
-	if rs := reports(alert.SyncFailed); len(rs) != 1 || !rs[0].Priority || !strings.Contains(rs[0].Text, "tries again every 5 minutes") {
-		t.Fatalf("sync_failed reports %+v, want one", rs)
+	status, err = st.Status(context.Background())
+	if err != nil || !status[store.StatusSyncFailingSince].Time().Equal(t0) || status[store.StatusSyncFailAlerted].Value != "1" {
+		t.Fatalf("the failed-pull run's status: %+v / %+v (%v)", status[store.StatusSyncFailingSince], status[store.StatusSyncFailAlerted], err)
 	}
 	if l, err := config.Read(live); err != nil || l.Config.Mode != "enforce" {
 		t.Fatalf("the live config moved after a rejected commit and a failed pull: %v", err)

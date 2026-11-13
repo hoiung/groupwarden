@@ -38,7 +38,8 @@ func hangup(pid int) error { return syscall.Kill(pid, syscall.SIGHUP) }
 // syncConfig runs one config sync (internal/configsync) for the bot whose
 // config file is livePath, from the staging clone repo. It prints the result
 // line, records it and the run time for /status and the overdue check, and
-// alerts once per failure episode. Exit 1 when the sync failed or the new
+// alerts once per failure episode: a rejected commit at once, failed pulls
+// once they have failed for configsync.FailAlertAfter straight. Exit 1 when the sync failed or the new
 // config was rejected.
 func (e *env) syncConfig(ctx context.Context, livePath, repo string, log *slog.Logger) int {
 	if repo == "" {
@@ -63,20 +64,35 @@ func (e *env) syncConfig(ctx context.Context, livePath, repo string, log *slog.L
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
 		return exitFail
 	}
+	now := e.now()
+	due, ep := configsync.Alert(status[store.StatusSyncResult].Value, configsync.Episode{
+		Since:   status[store.StatusSyncFailingSince].Time(),
+		Alerted: status[store.StatusSyncFailAlerted].Value != "",
+	}, o, now)
 	var report *store.Report
-	if configsync.NewEpisode(status[store.StatusSyncResult].Value, o) {
+	if due {
 		report = &store.Report{Kind: string(alert.SyncFailed),
-			Text: "The config sync FAILED: " + o.Err.Error() + ". The bot keeps its current config; it tries again " +
-				"every " + strconv.Itoa(o.Settings.ConfigSyncMinutes) + " minutes."}
+			Text: "The config sync has FAILED for " + strconv.Itoa(int(now.Sub(ep.Since).Minutes())) + " minutes: " +
+				o.Err.Error() + ". The bot keeps its current config; it tries again every " +
+				strconv.Itoa(o.Settings.ConfigSyncMinutes) + " minutes."}
 		if o.Status == configsync.Rejected {
 			report.Kind = string(alert.ConfigRejected)
 			report.Text = "Config commit " + o.Commit + " was REJECTED by the check: " + o.Err.Error() +
 				". The bot keeps its current config; fix the config repo."
 		}
 	}
+	since, alerted := "0", ""
+	if !ep.Since.IsZero() {
+		since = store.StatusTime(ep.Since)
+	}
+	if ep.Alerted {
+		alerted = "1"
+	}
 	if err := st.SetStatusReporting(ctx, map[string]string{
-		store.StatusSyncLastRun: store.StatusTime(e.now()),
-		store.StatusSyncResult:  o.Result,
+		store.StatusSyncLastRun:      store.StatusTime(now),
+		store.StatusSyncResult:       o.Result,
+		store.StatusSyncFailingSince: since,
+		store.StatusSyncFailAlerted:  alerted,
 	}, report); err != nil {
 		fmt.Fprintf(e.stderr, "groupwarden: %v\n", err)
 		return exitFail

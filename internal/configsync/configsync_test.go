@@ -279,26 +279,40 @@ func TestSyncPullTimesOut(t *testing.T) {
 
 // TestNewEpisode: an alert goes out when a failure starts, when the status
 // changes, and when a different commit is rejected; never on success.
-func TestNewEpisode(t *testing.T) {
+func TestAlert(t *testing.T) {
+	t0 := time.Date(2026, 11, 4, 14, 0, 0, 0, time.UTC)
 	failed := Outcome{Status: Failed, Commit: "-"}
 	rejected := Outcome{Status: Rejected, Commit: "abc123abc123"}
+	const lastFailed = "FAILED -: git pull: timeout"
+	run := Episode{Since: t0}
 	cases := []struct {
+		name     string
 		previous string
+		ep       Episode
 		o        Outcome
+		now      time.Time
 		want     bool
+		wantEp   Episode
 	}{
-		{"", failed, true},
-		{"ok abc123abc123: no change", failed, true},
-		{"FAILED -: git pull: timeout", failed, false},
-		{"REJECTED abc123abc123: bad", failed, true},
-		{"FAILED -: git pull: timeout", rejected, true},
-		{"REJECTED abc123abc123: bad", rejected, false},
-		{"REJECTED 999999999999: bad", rejected, true},
-		{"FAILED -: git pull: timeout", Outcome{Status: OK, Commit: "abc"}, false},
+		// failed pulls: no alert until they have failed for FailAlertAfter straight, then one
+		{"first failed pull starts a run", "ok abc123abc123: no change", Episode{}, failed, t0, false, run},
+		{"first ever sync failing starts a run", "", Episode{}, failed, t0, false, run},
+		{"still failing at 25 minutes", lastFailed, run, failed, t0.Add(25 * time.Minute), false, run},
+		{"failing at 30 minutes alerts", lastFailed, run, failed, t0.Add(FailAlertAfter), true, Episode{Since: t0, Alerted: true}},
+		{"alerted once per run", lastFailed, Episode{Since: t0, Alerted: true}, failed, t0.Add(2 * time.Hour), false, Episode{Since: t0, Alerted: true}},
+		{"a failed pull after a rejected commit starts a new run", "REJECTED abc123abc123: bad", Episode{}, failed, t0, false, run},
+		{"a run with no recorded start starts now", lastFailed, Episode{}, failed, t0, false, run},
+		// an ok sync ends the run; a rejected commit alerts at once, once per commit, and ends the run
+		{"ok ends the run", lastFailed, Episode{Since: t0, Alerted: true}, Outcome{Status: OK, Commit: "abc"}, t0.Add(time.Hour), false, Episode{}},
+		{"rejected after failed pulls alerts at once", lastFailed, run, rejected, t0.Add(5 * time.Minute), true, Episode{}},
+		{"the same rejected commit again", "REJECTED abc123abc123: bad", Episode{}, rejected, t0, false, Episode{}},
+		{"another rejected commit", "REJECTED 999999999999: bad", Episode{}, rejected, t0, true, Episode{}},
+		{"first ever sync rejected", "", Episode{}, rejected, t0, true, Episode{}},
 	}
 	for _, c := range cases {
-		if got := NewEpisode(c.previous, c.o); got != c.want {
-			t.Errorf("NewEpisode(%q, %s %s) = %v", c.previous, c.o.Status, c.o.Commit, got)
+		got, ep := Alert(c.previous, c.ep, c.o, c.now)
+		if got != c.want || !ep.Since.Equal(c.wantEp.Since) || ep.Alerted != c.wantEp.Alerted {
+			t.Errorf("%s: Alert = %v %+v, want %v %+v", c.name, got, ep, c.want, c.wantEp)
 		}
 	}
 }

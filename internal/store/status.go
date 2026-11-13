@@ -45,10 +45,15 @@ const (
 	StatusDailyCheckDay = "daily_check_day"
 	// Timers outside the bot (config sync, backup): unix ms of the last run
 	// and its result line.
-	StatusSyncLastRun   = "sync_last_run"
-	StatusSyncResult    = "sync_result"
-	StatusBackupLastRun = "backup_last_run"
-	StatusBackupResult  = "backup_result"
+	StatusSyncLastRun = "sync_last_run"
+	StatusSyncResult  = "sync_result"
+	// The run of failed config pulls (configsync.Episode): unix ms of its
+	// first failed pull ("0" when the last sync did not fail one), and "1"
+	// once it has alerted.
+	StatusSyncFailingSince = "sync_failing_since"
+	StatusSyncFailAlerted  = "sync_fail_alerted"
+	StatusBackupLastRun    = "backup_last_run"
+	StatusBackupResult     = "backup_result"
 	// The systemd invocation ID of the backup run that recorded the result
 	// (empty when run by hand): the unit's failure handler leaves a result
 	// the failed run recorded itself.

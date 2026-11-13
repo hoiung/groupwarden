@@ -309,16 +309,39 @@ func prune(releases string, keep ...string) error {
 	return errors.Join(errs...)
 }
 
-// NewEpisode reports whether a failed outcome needs an alert, given the
-// previous result line: a change of status starts an episode, and so does a
-// different commit being rejected.
-func NewEpisode(previous string, o Outcome) bool {
-	if o.Status == OK {
-		return false
-	}
+// FailAlertAfter is how long pulls must keep failing before they alert: a
+// short outage of the config repo's host clears on its own, and every sync
+// alert seen in the first weeks was one of those.
+const FailAlertAfter = 30 * time.Minute
+
+// Episode is the run of failed pulls the syncs are in: when it began (zero
+// when the last sync did not fail a pull) and whether it has alerted.
+type Episode struct {
+	Since   time.Time
+	Alerted bool
+}
+
+// Alert reports whether an outcome needs an alert, given the previous result
+// line and the failed-pull episode so far, and returns the episode to record.
+// A rejected commit alerts at once: a change of status starts an episode, and
+// so does a different commit being rejected. Failed pulls alert once per run
+// of failures, at the first sync FailAlertAfter or more after the run began.
+// An ok sync alerts nothing and ends the run, and so does a rejected commit.
+func Alert(previous string, ep Episode, o Outcome, now time.Time) (bool, Episode) {
 	f := strings.Fields(previous)
-	if len(f) < 2 || f[0] != o.Status {
-		return true
+	same := len(f) >= 2 && f[0] == o.Status
+	switch o.Status {
+	case OK:
+		return false, Episode{}
+	case Rejected:
+		return !same || strings.TrimSuffix(f[1], ":") != o.Commit, Episode{}
 	}
-	return o.Status == Rejected && strings.TrimSuffix(f[1], ":") != o.Commit
+	if !same || ep.Since.IsZero() {
+		ep = Episode{Since: now}
+	}
+	if ep.Alerted || now.Sub(ep.Since) < FailAlertAfter {
+		return false, ep
+	}
+	ep.Alerted = true
+	return true, ep
 }

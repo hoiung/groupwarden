@@ -98,7 +98,7 @@ WhatsApp ──► internal/client/whatsmeow (the only package that imports what
 | `internal/rules` | Rule compilation and checks, built-in conditions, the decision |
 | `internal/normalise` | The matching views of a text, each word traced to the characters of the original text it came from, and the word/phrase matcher |
 | `internal/corpus` | Labelled spam and legit samples; the corpus test (per-rule hits, the closest rule for missed spam, the rules behind a legit false hit); `corpus add` (redaction that keeps a pattern's shape, or full redaction with `--public`; dedupe; a new private corpus seeded from the public legit set) |
-| `internal/configsync` | The config sync: pull with the deploy key and a time limit, check, swap the live config directory's symlink, signal `run`; one alert per failure episode |
+| `internal/configsync` | The config sync: pull with the deploy key and a time limit, check, swap the live config directory's symlink, signal `run`; a rejected commit alerts at once, failed pulls once they have failed for 30 minutes straight (`FailAlertAfter`), once per run |
 | `internal/store` | SQLite: migrations, inbox, ledger, outbox, ban list, evidence, reports, pauses, group coverage, the `/enable` list; maintenance of the WhatsApp session store (message-secret purge, `member forget`) |
 | `internal/mask` | Masks phone numbers, LIDs and group IDs in logs and reports (a digit run touching a letter, such as a config hash, is left alone) |
 | `schema` | The config schema (embedded in the binary) |
